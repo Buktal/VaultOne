@@ -22,3 +22,11 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# 本地工程 / AI 协作文档（不入库）
+BLUEPRINT.md
+CLAUDE.md
+CONTEXT.md
+docs/adr/
+docs/agents/
+docs/research/
