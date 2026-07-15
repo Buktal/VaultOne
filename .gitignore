@@ -23,10 +23,10 @@ dist-ssr
 *.sln
 *.sw?
 
-# 本地工程 / AI 协作文档（不入库）
-BLUEPRINT.md
-CLAUDE.md
-CONTEXT.md
+# Local
 docs/adr/
 docs/agents/
 docs/research/
+BLUEPRINT.md
+CLAUDE.md
+CONTEXT.md
