@@ -24,9 +24,12 @@ dist-ssr
 *.sw?
 
 # Local
+/.claude/
 docs/adr/
 docs/agents/
 docs/research/
 BLUEPRINT.md
 CLAUDE.md
 CONTEXT.md
+skills-lock.json
+yarn.lock
