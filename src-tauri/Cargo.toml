@@ -1,11 +1,9 @@
 [package]
 name = "vaultone"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "VaultOne — local LLM usage dashboard with optional GitHub-repo multi-device sync."
+authors = ["VaultOne"]
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
@@ -18,8 +16,34 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["specta"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# tauri-specta v2 (ADR-0008): pin exact RC — specta v2 not yet stable.
+specta = { version = "=2.0.0-rc.25", features = ["derive", "function"] }
+specta-typescript = "0.0.12"
+tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
+thiserror = "2"
 
+# Local store (ADR-0004): rusqlite with bundled SQLite so no system SQLite needed.
+rusqlite = { version = "0.31", features = ["bundled"] }
+# Cost precision (ADR-0009): Decimal stored as TEXT.
+rust_decimal = { version = "1", features = ["serde"] }
+# Timestamps as ISO8601 UTC (ADR-0003 / 0004).
+chrono = { version = "0.4", features = ["serde"] }
+# Device identity (ADR-0002) + record ids.
+rand = "0.8"
+# ~/.config/vaultone home-relative paths (ADR-0004).
+dirs = "5"
+# Session-log discovery (ADR-0001): walk ~/.claude/projects/**/*.jsonl.
+walkdir = "2"
+# LiteLLM upstream pricing fetch (ADR-0006). ureq = blocking + rustls (pure Rust).
+ureq = "2"
+# GitHub-repo sync over libgit2 (ADR-0010). HTTPS-only (PAT); no SSH feature to
+# keep the dependency surface small. Windows TLS uses Schannel via libgit2.
+git2 = { version = "0.19", default-features = false, features = ["https"] }
+
+[dev-dependencies]
+# Test-only temp dirs for db / config / ingest / providers tests (S1).
+tempfile = "3"

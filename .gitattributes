@@ -1,0 +1,17 @@
+# Normalize text files to LF in the repository (ADR-0004: deterministic
+# line endings across Windows/POSIX — also protects JSONL Artifacts).
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# Binary assets are never normalized
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.icns  binary
+*.woff  binary
+*.woff2 binary

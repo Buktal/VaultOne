@@ -1,0 +1,177 @@
+// Usage trend chart (BLUEPRINT 使用趋势): dual Y-axis ComposedChart — tokens on
+// the left axis, cost on the right; multiple series toggled via the legend.
+
+import {
+  Area,
+  CartesianGrid,
+  ComposedChart,
+  Legend,
+  Line,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts"
+import { QueryState } from "@/components/query-state"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { useQueryUsageTrendQuery } from "@/features/usage/api"
+import { formatCost, formatDay, formatTokens } from "@/lib/format"
+
+import type { TrendPoint, UsageFilter } from "@/types/generated/bindings"
+
+const SERIES = [
+  {
+    key: "total_tokens",
+    name: "Tokens",
+    color: "var(--chart-1)",
+    axis: "left" as const,
+  },
+  {
+    key: "input_tokens",
+    name: "输入",
+    color: "var(--chart-2)",
+    axis: "left" as const,
+  },
+  {
+    key: "output_tokens",
+    name: "输出",
+    color: "var(--chart-3)",
+    axis: "left" as const,
+  },
+  {
+    key: "cache_read_tokens",
+    name: "缓存命中",
+    color: "var(--chart-4)",
+    axis: "left" as const,
+  },
+  {
+    key: "total_cost_usd",
+    name: "成本",
+    color: "var(--chart-5)",
+    axis: "right" as const,
+  },
+]
+
+export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
+  const {
+    data = [],
+    isLoading,
+    error,
+  } = useQueryUsageTrendQuery(filter, {
+    pollingInterval: 30_000,
+  })
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>使用趋势</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <QueryState
+          isLoading={isLoading}
+          error={error}
+          isEmpty={data.length === 0}
+          emptyLabel="无趋势数据"
+        >
+          <div className="h-72 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart
+                data={data}
+                margin={{ top: 8, right: 16, bottom: 0, left: 0 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                <XAxis
+                  dataKey="day"
+                  tickFormatter={formatDay}
+                  fontSize={12}
+                  stroke="var(--muted-foreground)"
+                />
+                <YAxis
+                  yAxisId="left"
+                  tickFormatter={(v) => formatTokens(Number(v))}
+                  fontSize={12}
+                  stroke="var(--muted-foreground)"
+                />
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  tickFormatter={(v) => formatCost(Number(v))}
+                  fontSize={12}
+                  stroke="var(--muted-foreground)"
+                />
+                <Tooltip content={<TrendTooltip />} />
+                <Legend />
+                {SERIES.map((s) =>
+                  s.key === "total_tokens" ? (
+                    <Area
+                      key={s.key}
+                      yAxisId={s.axis}
+                      type="monotone"
+                      dataKey={s.key}
+                      name={s.name}
+                      stroke={s.color}
+                      fill={s.color}
+                      fillOpacity={0.08}
+                      strokeWidth={2}
+                    />
+                  ) : (
+                    <Line
+                      key={s.key}
+                      yAxisId={s.axis}
+                      type="monotone"
+                      dataKey={s.key}
+                      name={s.name}
+                      stroke={s.color}
+                      dot={false}
+                      strokeWidth={1.5}
+                    />
+                  ),
+                )}
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        </QueryState>
+      </CardContent>
+    </Card>
+  )
+}
+
+function TrendTooltip(props: {
+  active?: boolean
+  payload?: Array<{
+    dataKey: string
+    value: number | null
+    name: string
+    color: string
+  }>
+  label?: string
+}) {
+  const { active, payload, label } = props
+  if (!active || !payload?.length) return null
+  return (
+    <div className="bg-popover rounded-md border p-2 text-xs shadow-sm">
+      <div className="mb-1 font-medium">{label ? formatDay(label) : ""}</div>
+      {payload.map((p) => (
+        <div
+          key={p.dataKey}
+          className="flex items-center justify-between gap-4"
+        >
+          <span className="flex items-center gap-1">
+            <span
+              className="inline-block size-2 rounded-full"
+              style={{ backgroundColor: p.color }}
+            />
+            {p.name}
+          </span>
+          <span className="tabular-nums">
+            {p.dataKey === "total_cost_usd"
+              ? formatCost(p.value)
+              : formatTokens(Number(p.value))}
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+export type { TrendPoint }
