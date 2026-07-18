@@ -4,13 +4,23 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "tauri dev",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
-    "tauri": "tauri",
-    "lint": "biome check",
-    "lint:fix": "biome check --write",
-    "format": "biome format --write"
+    "dev": "yarn tauri:dev",
+    "check": "yarn web:check && yarn rust:check",
+    "test": "yarn rust:test",
+    "fix": "yarn web:fix && yarn rust:fix",
+    "ci": "yarn check && yarn test && yarn web:build",
+    "dist": "yarn tauri:build",
+    "web:dev": "vite",
+    "web:check": "biome check && tsc --noEmit",
+    "web:typecheck": "tsc --noEmit",
+    "web:fix": "biome check --write",
+    "web:build": "tsc && vite build",
+    "rust:check": "cd src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings",
+    "rust:test": "cd src-tauri && cargo test",
+    "rust:fix": "cd src-tauri && cargo fmt",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "tauri:gen": "cd src-tauri && cross-env VAULTONE_GEN_BINDINGS=1 cargo run"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",
@@ -41,6 +51,7 @@
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "cross-env": "^10.1.0",
     "tailwindcss": "^4.3.2",
     "typescript": "~5.8.3",
     "vite": "^7.0.4"

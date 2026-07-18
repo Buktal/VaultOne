@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   frontend:
-    name: Frontend (lint + build)
+    name: Frontend (check + build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,11 +23,11 @@ jobs:
       - name: Install dependencies
         run: yarn install
 
-      - name: Lint and format check
-        run: yarn lint
+      - name: Check (lint + typecheck)
+        run: yarn web:check
 
       - name: Build
-        run: yarn build
+        run: yarn web:build
 
   rust:
     name: Rust (fmt + clippy + test)
@@ -53,14 +53,15 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
-      - name: Format check
-        run: cargo fmt --check
-        working-directory: src-tauri
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
 
-      - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
-        working-directory: src-tauri
+      - name: Install dependencies
+        run: yarn install
 
-      - name: Test
-        run: cargo test
-        working-directory: src-tauri
+      - name: Rust check (fmt + clippy)
+        run: yarn rust:check
+
+      - name: Rust test
+        run: yarn rust:test

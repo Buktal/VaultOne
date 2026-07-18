@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "app.vaultone",
   "build": {
-    "beforeDevCommand": "yarn dev",
+    "beforeDevCommand": "yarn web:dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "yarn build",
+    "beforeBuildCommand": "yarn web:build",
     "frontendDist": "../dist"
   },
   "app": {
