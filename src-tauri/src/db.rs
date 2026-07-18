@@ -447,8 +447,8 @@ impl Store {
     pub fn query_logs(&self, q: &LogsQuery) -> AppResult<Vec<UsageLogRow>> {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let (clause, params_vec) = build_where(&q.filter);
-        let limit = q.limit.max(1).min(1000) as i64;
-        let offset = q.offset.max(0) as i64;
+        let limit = q.limit.clamp(1, 1000) as i64;
+        let offset = q.offset as i64;
         let sql = format!(
             "SELECT uuid, timestamp, model, source, device_id,
                     input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
@@ -664,7 +664,7 @@ mod tests {
     fn ingest_inserts_then_dedups_same_uuid() {
         let s = mem();
         let r = rec("u1", "2026-07-13", "glm-5.2", "dev1", 100, 50, 1.0);
-        assert_eq!(s.ingest(&[r.clone()]).unwrap().len(), 1);
+        assert_eq!(s.ingest(std::slice::from_ref(&r)).unwrap().len(), 1);
         assert_eq!(s.ingest(&[r]).unwrap().len(), 0, "same uuid must dedupe");
     }
 

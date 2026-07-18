@@ -6,7 +6,7 @@
 
 ## 一句话现状
 
-**Standalone 闭环 + #5 git2 多设备同步 + #6 云配置手动同步（冲突提示）均已打通且可构建**（采集 → SQLite → cost → 看板；Synced 模式下 usage JSONL clone/pull/commit/push + 启动 pull / 退出 flush / 定时 push / 手动「立即同步」，SQLite↔JSONL uuid 去重互转，写库后 emit `usage_changed`；config/{app,user,pricing}.json 手动同步 + 双向冲突检测/逐文件解决）。剩余：终验清理（dead-code + db.rs/ingest.rs 既有 clippy lint）+ commit 决策。前端 `tsc`/`biome`/`vite build` 全绿；Rust `cargo check` 通过、`cargo test` **48 例全绿**、bindings 已重生成（含 `syncNow`/`syncConfig`/`resolveConfigConflict`）。
+**VaultOne v1 全部完成并已推送 `origin/main`**：#1–#8 全落地（Standalone 闭环 + Synced 模式 git2 多设备同步 + 云配置手动同步/冲突解决），S4 终验后 `cargo clippy --all-targets -- -D warnings` **零警告**。前端 `tsc`/`biome`/`vite build` 全绿；Rust `cargo test` **48 例全绿**；bindings 稳定（regen 无 diff）。主 commit `1735975 feat: implement VaultOne core (closes #1-#8)` + S4 清理 commit 均已 push。
 
 ---
 
@@ -103,21 +103,17 @@ yarn build           # tsc + vite build
    - **S2a**（原语）：`git2 = "0.19" { default-features=false, features=["https"] }`（不带 ssh；Windows Schannel，**无需 cmake/openssl**）；`sync.rs` pat_credential/build_callbacks（PAT 进程内回调 + 防循环）/ open_or_clone（clone 后强制 `core.autocrlf=false` + force checkout，保 JSONL 跨平台 LF）/ pull（fetch+fast-forward，diverge 拒绝）/ commit_all（add -A + unborn HEAD）/ push / require_synced+ensure_repo（Standalone 守卫）。
    - **S2b**（接入）：高层 API `pull_and_import`（pull → `read_all_artifacts` → `store.ingest` uuid 去重）/ `commit_and_push`（有改动才 commit+push）/ `sync_now`（手动）；`commands.rs` 加 `sync_now` 命令（Standalone no-op）+ `collect_now` 写库后 best-effort commit+push + emit `usage_changed`；`lib.rs` setup 启动 pull（`std::thread::spawn`）+ ~10min 定时 push + `RunEvent::ExitRequested` flush（全 Synced 守卫）；前端 AppProviders listen `usage_changed` → `invalidateTags(['Usage'])` + settings「立即同步」按钮。AppState **不持 Repository**（每次 open_or_clone，规避 git2 Send/Sync）；emit 用原生 `app_handle.emit`（tauri-specta 类型化 event 待 RC 稳定后升级，ADR-0008 预留缝）。
 3. ~~**#6 云配置手动同步+冲突**~~ ✅ **完成（S3，2026-07-18，4 测试）**：`sync_config`（fetch → 冲突=dirty∩远端改动 → 无冲突则 pull/commit/push + reload pricing，有则返回 `ConfigConflict` 列表）/ `resolve_config_conflict`（逐文件 keep_local/keep_remote → pull_preserving_dirty + 写回本地缓存 → 总 reload pricing）；前端 `conflict-resolver.tsx`（双方 preview + 逐文件选择）+ settings「同步云配置」按钮（Standalone 隐藏）。决策见 #13。
-4. **终验**：清掉 dead-code 警告（见下）、`cargo fmt --check`、`cargo clippy -D warnings`、`cargo test`、regen bindings、`yarn lint`、`yarn build`、`/code-review`。
+4. ~~**终验**~~ ✅ **完成（S4，2026-07-18）**：dead-code / clippy 全清（见下），`cargo clippy --all-targets -- -D warnings` 零警告、`cargo fmt --check` 过、`cargo test` 48 全绿、bindings regen 无 diff、`tsc`/`biome`/`yarn build` 全绿。S4 清理单独 commit。
 
-### 当前 dead-code 警告（S3 已清自身；以下留 S4 统一处理）
+### dead-code / clippy 清理（S4 已完成，2026-07-18）
 
-`cargo clippy` 共 10 warning，**S3 新增代码（`sync_config`/`resolve_config_conflict`/`pull_preserving_dirty` 等及 DTO）零警告**——全部被 commands.rs 引用。剩余 dead-code（非 test 构建报，多仅在 `#[cfg(test)]` 用）：
+`cargo clippy --all-targets -- -D warnings` **零警告**。S4 处理方式（优先删 / `#[cfg(test)]`，不用 `#[allow(dead_code)]`）：
 
-- `config.rs`：`cloud_app_json`/`cloud_user_json`（**S3 实际未用**——仅 pricing.json 走通；app/user 待加读写命令）。
-- `ingest.rs`：`ensure_artifact_dir`；另 `ingest.rs:112` clippy 建议改 `std::io::Error::other(_)`。
-- `model.rs`：`CostBreakdown::total_f64`（仅 test）。
-- `pricing.rs`：`PricingBook::{insert,len,is_empty}`。
-- `providers.rs`：`with_dir`（仅 test）、`looks_like_projects_dir`。
-- `sync.rs`：`ensure_repo`（高层改用 open_or_clone，仅 test 引用）。
-- `db.rs`：`db.rs:450` clamp-like 模式建议用 `clamp`；`db.rs:451` `q.offset` 恒 ≥0 无效（既有 lint）。
+- **删除（冗余 / YAGNI）**：`ingest.rs::ensure_artifact_dir`（`append_jsonl` 已自建目录）、`config.rs::{cloud_app_json,cloud_user_json}`（`ConfigFile` 用字符串 rel_path 不依赖）、`pricing.rs::PricingBook::{insert,len,is_empty}`（均未用）、`providers.rs::looks_like_projects_dir`（恒 `true` 占位 stub）。
+- **`#[cfg(test)]`（仅 test 引用）**：`model.rs::CostBreakdown::total_f64`、`providers.rs::ClaudeCodeProvider::with_dir`、`sync.rs::ensure_repo`。
+- **clippy 修复**：`ingest.rs` `io::Error::new(Other,_)` → `io::Error::other`；`db.rs` `limit.max(1).min(1000)` → `.clamp(1,1000)`、删 `offset.max(0)`（u32 恒 ≥0）；`db.rs` test `&[r.clone()]` → `std::slice::from_ref(&r)`。
 
-> S3 更新：`sync.rs` 新增 `sync_config`/`resolve_config_conflict`/`pull_preserving_dirty`/`fetch_origin`/`origin_tip_oid`/`dirty_config_files`/`remote_changed_config_files`/`read_blob`/`preview`/`pricing_fingerprint`/`reload_pricing_into_store` 均已被 commands.rs 引用，**非 dead-code**。统一 S4 对上述列表 `#[allow(dead_code)]` 或删除 + 修 db.rs/ingest.rs clippy。
+> S4 后：`sync.rs` S3 新增函数全部被 commands.rs 引用，非 dead-code；bindings regen 无 diff（边界类型未动）。
 
 ---
 
@@ -141,7 +137,7 @@ yarn build           # tsc + vite build
 | S2a | #5 git2 核心（依赖 + clone/pull/commit/push + PAT 回调） | `cargo check` + 测试 | ✅ 2026-07-16（6 测试，41 全绿） |
 | S2b | #5 git2 接入（SQLite↔JSONL 互转 + 同步时机 + emit 事件 + 前端） | 闭环测试 + lint/build | ✅ 2026-07-16（3 闭环测试，44 全绿） |
 | S3 | #6 云配置手动同步 + 冲突提示 | UI + 测试 | ✅ 2026-07-18（4 测试，48 全绿） |
-| S4 | 终验 + commit 决策 | clippy/fmt/test/lint/build 全绿 + diff 复核 | ⬜ |
+| S4 | 终验 + commit 决策 | clippy/fmt/test/lint/build 全绿 + diff 复核 | ✅ 2026-07-18（clippy 零警告，48 全绿，已 push） |
 
 **新 session 启动协议**：读本节 → 读目标单元对应 issue + ADR → 用 subagent 摸清要改的文件/签名 → 实现 → 跑验收门 → 更新本表状态 → 停。
 

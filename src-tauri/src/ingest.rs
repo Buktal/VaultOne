@@ -108,8 +108,7 @@ pub fn append_jsonl(paths: &Paths, device_id: &str, records: &[UsageRecord]) -> 
 fn write_day(path: &Path, rows: &[&UsageRecord]) -> std::io::Result<()> {
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     for r in rows {
-        let line = serde_json::to_string(r)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let line = serde_json::to_string(r).map_err(std::io::Error::other)?;
         writeln!(file, "{line}")?;
     }
     Ok(())
@@ -168,12 +167,6 @@ pub fn read_all_artifacts(paths: &Paths) -> AppResult<Vec<UsageRecord>> {
         }
     }
     Ok(out)
-}
-
-/// Guard helper: ensure the per-device Artifact directory exists.
-pub fn ensure_artifact_dir(paths: &Paths, device_id: &str) -> AppResult<()> {
-    std::fs::create_dir_all(paths.device_data_dir(device_id))?;
-    Ok(())
 }
 
 #[cfg(test)]

@@ -215,6 +215,7 @@ pub fn require_synced(cfg: &ConfigData) -> AppResult<(String, String)> {
 }
 
 /// Open or clone the configured sync repo into `local`. Synced-only.
+#[cfg(test)]
 pub fn ensure_repo(cfg: &ConfigData, local: &Path) -> AppResult<Repository> {
     let (url, token) = require_synced(cfg)?;
     open_or_clone(&url, local, &token)

@@ -106,6 +106,8 @@ impl CostBreakdown {
         }
     }
 
+    /// Decimal total as `f64` for test assertions.
+    #[cfg(test)]
     pub fn total_f64(self) -> f64 {
         use rust_decimal::prelude::ToPrimitive;
         self.total_usd.to_f64().unwrap_or(0.0)

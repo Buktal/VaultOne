@@ -63,14 +63,6 @@ impl Paths {
     pub fn pricing_json(&self) -> PathBuf {
         self.repo_config.join("pricing.json")
     }
-
-    pub fn cloud_app_json(&self) -> PathBuf {
-        self.repo_config.join("app.json")
-    }
-
-    pub fn cloud_user_json(&self) -> PathBuf {
-        self.repo_config.join("user.json")
-    }
 }
 
 /// The local `config.json` content (ADR-0004). Never uploaded to the repo.

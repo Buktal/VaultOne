@@ -71,18 +71,6 @@ impl PricingBook {
         Self { by_key }
     }
 
-    pub fn insert(&mut self, p: ModelPricing) {
-        self.by_key.insert(normalize_key(&p.model_key), p);
-    }
-
-    pub fn len(&self) -> usize {
-        self.by_key.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.by_key.is_empty()
-    }
-
     /// Resolve a runtime model string to usable rates (ADR-0009):
     /// normalization candidates → exact → prefix fallback. Cache rates left at
     /// zero are filled with the documented heuristics (cache write ≈ 1.25×

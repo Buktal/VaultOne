@@ -6,7 +6,7 @@
 //! that is applied by the ingest layer, so the same provider output can land in
 //! the Local Store (Standalone) and the JSONL Artifact (ADR-0004).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::error::{AppError, AppResult};
 use crate::model::{ServerToolUse, TokenCounts};
@@ -80,6 +80,7 @@ impl ClaudeCodeProvider {
     }
 
     /// Test/override constructor with an explicit projects dir.
+    #[cfg(test)]
     pub fn with_dir(dir: PathBuf) -> Self {
         Self { projects_dir: dir }
     }
@@ -243,16 +244,12 @@ pub fn default_projects_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".claude").join("projects"))
 }
 
-/// Whether a path looks like a Claude projects dir (used by commands/UI hints).
-pub fn looks_like_projects_dir(_p: &Path) -> bool {
-    true
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use std::io::Write;
+    use std::path::Path;
 
     fn write_lines(path: &Path, lines: &[&str]) {
         let mut f = fs::File::create(path).unwrap();
