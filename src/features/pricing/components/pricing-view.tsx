@@ -1,21 +1,24 @@
 // Pricing view (BLUEPRINT 成本定价; ADR-0006): model pricing table with add /
-// edit / delete, LiteLLM upstream fetch, and local pricing.json read/write.
+// edit / delete (via Dialog), LiteLLM upstream fetch, pricing.json read/write,
+// plus client-side search and single-column sort. Editing/删除 use icon buttons
+// with tooltips; the toolbar is an icon group to keep density high.
 
 import {
+  ChevronUp,
   CloudDownload,
   FileDown,
   FileUp,
   Pencil,
   Plus,
+  Search,
   Trash2,
 } from "lucide-react"
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import {
   Table,
   TableBody,
@@ -25,31 +28,25 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import {
   useDeletePricingEntryMutation,
   useFetchLitellmPricingMutation,
   useListPricingQuery,
   useReloadPricingFromFileMutation,
-  useSavePricingEntryMutation,
   useSavePricingToFileMutation,
 } from "@/features/pricing/api"
 
 import type { PricingEntry } from "@/types/generated/bindings"
+import { EntryEditorDialog, emptyEntry } from "./entry-editor-dialog"
 
-function emptyEntry(): PricingEntry {
-  return {
-    model_key: "",
-    display_name: "",
-    input_per_million: 0,
-    output_per_million: 0,
-    cache_read_per_million: 0,
-    cache_creation_per_million: 0,
-    is_builtin: false,
-  }
-}
+type SortKey = keyof PricingEntry
 
 export function PricingView() {
   const { data: entries = [], isLoading } = useListPricingQuery()
-  const [save, { isLoading: saving }] = useSavePricingEntryMutation()
   const [remove] = useDeletePricingEntryMutation()
   const [fetchLitellm, { isLoading: fetching }] =
     useFetchLitellmPricingMutation()
@@ -57,103 +54,184 @@ export function PricingView() {
     useReloadPricingFromFileMutation()
   const [saveFile, { isLoading: savingFile }] = useSavePricingToFileMutation()
 
-  const [draft, setDraft] = useState<PricingEntry | null>(null)
+  const [search, setSearch] = useState("")
+  const [sortKey, setSortKey] = useState<SortKey | null>(null)
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
+  const [editing, setEditing] = useState<PricingEntry | null>(null)
+  const [dialogOpen, setDialogOpen] = useState(false)
 
-  async function onSave() {
-    if (!draft) return
-    if (!draft.model_key.trim()) {
-      toast.error("请填写模型标识 (model_key)")
-      return
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    let list = q
+      ? entries.filter(
+          (e) =>
+            e.model_key.toLowerCase().includes(q) ||
+            e.display_name.toLowerCase().includes(q),
+        )
+      : entries
+    if (sortKey) {
+      list = [...list].sort((a, b) => {
+        const av = a[sortKey] ?? 0
+        const bv = b[sortKey] ?? 0
+        const cmp =
+          typeof av === "number" && typeof bv === "number"
+            ? av - bv
+            : String(av).localeCompare(String(bv))
+        return sortDir === "asc" ? cmp : -cmp
+      })
     }
-    const res = await save({ entry: draft, is_builtin: draft.is_builtin })
-    if ("error" in res) toast.error("保存失败")
-    else toast.success(`已保存 ${draft.model_key}`)
-    setDraft(null)
+    return list
+  }, [entries, search, sortKey, sortDir])
+
+  function onSort(k: SortKey) {
+    if (sortKey === k) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
+    else {
+      setSortKey(k)
+      setSortDir("asc")
+    }
+  }
+
+  function openNew() {
+    setEditing(emptyEntry())
+    setDialogOpen(true)
+  }
+  function openEdit(e: PricingEntry) {
+    setEditing({ ...e })
+    setDialogOpen(true)
   }
 
   async function onFetchLitellm() {
     const res = await fetchLitellm()
-    if ("error" in res) {
-      toast.error("LiteLLM 拉取失败（离线时使用本地定价）")
-      return
-    }
-    toast.success(`已从 LiteLLM 合并 ${res.data ?? 0} 条定价`)
+    if ("error" in res) toast.error("LiteLLM 拉取失败（离线时使用本地定价）")
+    else toast.success(`已从 LiteLLM 合并 ${res.data ?? 0} 条定价`)
   }
-
   async function onReloadFile() {
     const res = await reloadFile()
     if ("error" in res) toast.error("读取 pricing.json 失败")
     else toast.success(`从 pricing.json 载入 ${res.data ?? 0} 条`)
   }
-
   async function onSaveFile() {
     const res = await saveFile()
     if ("error" in res) toast.error("写入 pricing.json 失败")
     else toast.success("已写入 pricing.json")
   }
 
+  const sortProps = { sortKey, sortDir, onSort }
+
   return (
     <div className="flex flex-col gap-4">
       <Card>
-        <CardHeader className="flex-row items-center justify-between">
+        <CardHeader className="flex-row items-center justify-between gap-3">
           <CardTitle>成本定价（每百万 Token / USD）</CardTitle>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={fetching}
-              onClick={onFetchLitellm}
-            >
-              <CloudDownload className="size-4" />
-              {fetching ? "拉取中…" : "拉取 LiteLLM"}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={reloading}
-              onClick={onReloadFile}
-            >
-              <FileUp className="size-4" />
-              读取 pricing.json
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={savingFile}
-              onClick={onSaveFile}
-            >
-              <FileDown className="size-4" />
-              写入 pricing.json
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative">
+              <Search className="text-muted-foreground absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="搜索模型…"
+                className="h-8 w-44 pl-7"
+                aria-label="搜索模型"
+              />
+            </div>
+            <div className="flex items-center gap-1">
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      variant="outline"
+                      size="icon-sm"
+                      disabled={fetching}
+                      onClick={onFetchLitellm}
+                      aria-label="拉取 LiteLLM"
+                    />
+                  }
+                >
+                  <CloudDownload />
+                </TooltipTrigger>
+                <TooltipContent>拉取 LiteLLM</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      variant="outline"
+                      size="icon-sm"
+                      disabled={reloading}
+                      onClick={onReloadFile}
+                      aria-label="读取 pricing.json"
+                    />
+                  }
+                >
+                  <FileUp />
+                </TooltipTrigger>
+                <TooltipContent>读取 pricing.json</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      variant="outline"
+                      size="icon-sm"
+                      disabled={savingFile}
+                      onClick={onSaveFile}
+                      aria-label="写入 pricing.json"
+                    />
+                  }
+                >
+                  <FileDown />
+                </TooltipTrigger>
+                <TooltipContent>写入 pricing.json</TooltipContent>
+              </Tooltip>
+            </div>
+            <Button size="sm" onClick={openNew}>
+              <Plus />
+              新增
             </Button>
           </div>
         </CardHeader>
         <CardContent>
-          <div className="mb-3 flex justify-end">
-            <Button size="sm" onClick={() => setDraft(emptyEntry())}>
-              <Plus className="size-4" />
-              新增模型定价
-            </Button>
-          </div>
-
-          {draft ? (
-            <EntryEditor
-              draft={draft}
-              onChange={setDraft}
-              onSave={onSave}
-              onCancel={() => setDraft(null)}
-              saving={saving}
-            />
-          ) : null}
-
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>模型标识</TableHead>
-                <TableHead>显示名称</TableHead>
-                <TableHead className="text-right">输入</TableHead>
-                <TableHead className="text-right">输出</TableHead>
-                <TableHead className="text-right">缓存命中</TableHead>
-                <TableHead className="text-right">缓存创建</TableHead>
+                <TableHead>
+                  <SortHeader label="模型标识" k="model_key" {...sortProps} />
+                </TableHead>
+                <TableHead>
+                  <SortHeader
+                    label="显示名称"
+                    k="display_name"
+                    {...sortProps}
+                  />
+                </TableHead>
+                <TableHead>
+                  <SortHeader
+                    label="输入"
+                    k="input_per_million"
+                    {...sortProps}
+                  />
+                </TableHead>
+                <TableHead>
+                  <SortHeader
+                    label="输出"
+                    k="output_per_million"
+                    {...sortProps}
+                  />
+                </TableHead>
+                <TableHead>
+                  <SortHeader
+                    label="缓存命中"
+                    k="cache_read_per_million"
+                    {...sortProps}
+                  />
+                </TableHead>
+                <TableHead>
+                  <SortHeader
+                    label="缓存创建"
+                    k="cache_creation_per_million"
+                    {...sortProps}
+                  />
+                </TableHead>
                 <TableHead>来源</TableHead>
                 <TableHead className="text-right">操作</TableHead>
               </TableRow>
@@ -165,23 +243,35 @@ export function PricingView() {
                     加载中…
                   </TableCell>
                 </TableRow>
+              ) : filtered.length === 0 ? (
+                <TableRow>
+                  <TableCell
+                    colSpan={8}
+                    className="text-muted-foreground py-8 text-center"
+                  >
+                    无匹配条目
+                  </TableCell>
+                </TableRow>
               ) : (
-                entries.map((e) => (
-                  <TableRow key={e.model_key}>
+                filtered.map((e) => (
+                  <TableRow
+                    key={e.model_key}
+                    className="transition-colors hover:bg-muted/40"
+                  >
                     <TableCell className="font-mono text-xs">
                       {e.model_key}
                     </TableCell>
                     <TableCell>{e.display_name}</TableCell>
-                    <TableCell className="text-right tabular-nums">
+                    <TableCell className="pr-4 text-right tabular-nums">
                       {fmtRate(e.input_per_million)}
                     </TableCell>
-                    <TableCell className="text-right tabular-nums">
+                    <TableCell className="pr-4 text-right tabular-nums">
                       {fmtRate(e.output_per_million)}
                     </TableCell>
-                    <TableCell className="text-right tabular-nums">
+                    <TableCell className="pr-4 text-right tabular-nums">
                       {fmtRate(e.cache_read_per_million)}
                     </TableCell>
-                    <TableCell className="text-right tabular-nums">
+                    <TableCell className="pr-4 text-right tabular-nums">
                       {fmtRate(e.cache_creation_per_million)}
                     </TableCell>
                     <TableCell className="text-muted-foreground text-xs">
@@ -189,20 +279,36 @@ export function PricingView() {
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setDraft({ ...e })}
-                        >
-                          <Pencil className="size-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => remove(e.model_key)}
-                        >
-                          <Trash2 className="size-4" />
-                        </Button>
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                onClick={() => openEdit(e)}
+                                aria-label="编辑"
+                              />
+                            }
+                          >
+                            <Pencil />
+                          </TooltipTrigger>
+                          <TooltipContent>编辑</TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                onClick={() => remove(e.model_key)}
+                                aria-label="删除"
+                              />
+                            }
+                          >
+                            <Trash2 />
+                          </TooltipTrigger>
+                          <TooltipContent>删除</TooltipContent>
+                        </Tooltip>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -212,98 +318,49 @@ export function PricingView() {
           </Table>
         </CardContent>
       </Card>
+
+      <EntryEditorDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        entry={editing}
+        onSaved={() => {
+          setDialogOpen(false)
+          setEditing(null)
+        }}
+      />
     </div>
   )
 }
 
-function EntryEditor({
-  draft,
-  onChange,
-  onSave,
-  onCancel,
-  saving,
-}: {
-  draft: PricingEntry
-  onChange: (next: PricingEntry) => void
-  onSave: () => void
-  onCancel: () => void
-  saving: boolean
-}) {
-  const set = (patch: Partial<PricingEntry>) => onChange({ ...draft, ...patch })
-  return (
-    <div className="bg-muted/40 mb-3 grid grid-cols-2 gap-3 rounded-md border p-3 md:grid-cols-4">
-      <Field label="模型标识">
-        <Input
-          value={draft.model_key}
-          onChange={(e) => set({ model_key: e.target.value })}
-        />
-      </Field>
-      <Field label="显示名称">
-        <Input
-          value={draft.display_name}
-          onChange={(e) => set({ display_name: e.target.value })}
-        />
-      </Field>
-      <Field label="输入 / 1M">
-        <Input
-          type="number"
-          step="0.01"
-          value={draft.input_per_million ?? 0}
-          onChange={(e) => set({ input_per_million: Number(e.target.value) })}
-        />
-      </Field>
-      <Field label="输出 / 1M">
-        <Input
-          type="number"
-          step="0.01"
-          value={draft.output_per_million ?? 0}
-          onChange={(e) => set({ output_per_million: Number(e.target.value) })}
-        />
-      </Field>
-      <Field label="缓存命中 / 1M">
-        <Input
-          type="number"
-          step="0.01"
-          value={draft.cache_read_per_million ?? 0}
-          onChange={(e) =>
-            set({ cache_read_per_million: Number(e.target.value) })
-          }
-        />
-      </Field>
-      <Field label="缓存创建 / 1M">
-        <Input
-          type="number"
-          step="0.01"
-          value={draft.cache_creation_per_million ?? 0}
-          onChange={(e) =>
-            set({ cache_creation_per_million: Number(e.target.value) })
-          }
-        />
-      </Field>
-      <div className="col-span-2 flex items-end justify-end gap-2">
-        <Button variant="outline" size="sm" onClick={onCancel}>
-          取消
-        </Button>
-        <Button size="sm" disabled={saving} onClick={onSave}>
-          保存
-        </Button>
-      </div>
-    </div>
-  )
-}
-
-function Field({
+function SortHeader({
   label,
-  children,
+  k,
+  sortKey,
+  sortDir,
+  onSort,
 }: {
   label: string
-  children: React.ReactNode
+  k: SortKey
+  sortKey: SortKey | null
+  sortDir: "asc" | "desc"
+  onSort: (k: SortKey) => void
 }) {
+  const active = sortKey === k
   return (
-    <div className="flex flex-col gap-1.5">
-      <Label className="text-muted-foreground text-xs">{label}</Label>
-      {children}
-    </div>
+    <button
+      type="button"
+      onClick={() => onSort(k)}
+      className={`inline-flex items-center gap-1 transition-colors hover:text-foreground ${
+        active ? "text-foreground" : ""
+      }`}
+    >
+      {label}
+      <ChevronUp
+        className={`size-3 transition-transform ${
+          active && sortDir === "desc" ? "rotate-180" : ""
+        } ${active ? "opacity-100" : "opacity-0"}`}
+      />
+    </button>
   )
 }
 

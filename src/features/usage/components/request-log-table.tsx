@@ -1,8 +1,13 @@
 // Request log table (BLUEPRINT 请求日志; ADR-0003 columns): Time / Provider /
 // Billed Model / 输入 / 输出 / 缓存创建 / 缓存命中 / Cost / Source.
 // No latency / TTFT / status columns (ADR-0003: cut — no source). Paginated.
+// Rows highlight on hover; the empty state offers an inline 采集 CTA so the
+// user isn't bounced to the command bar to seed the first rows.
 
+import { FileText } from "lucide-react"
 import { useState } from "react"
+import { toast } from "sonner"
+
 import { QueryState } from "@/components/query-state"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -15,6 +20,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import {
+  useCollectNowMutation,
   useCountUsageLogsQuery,
   useQueryUsageLogsQuery,
 } from "@/features/usage/api"
@@ -36,9 +42,19 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
     offset,
   })
   const { data: total = 0 } = useCountUsageLogsQuery(filter)
+  const [collect, { isLoading: collecting }] = useCollectNowMutation()
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const page = Math.floor(offset / PAGE_SIZE) + 1
+
+  async function onCollect() {
+    const res = await collect()
+    if ("error" in res) {
+      toast.error("采集失败")
+      return
+    }
+    toast.success(`采集完成：新增 ${res.data?.rows_inserted ?? 0} 条`)
+  }
 
   return (
     <Card>
@@ -50,7 +66,13 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
           isLoading={isLoading}
           error={error}
           isEmpty={!isLoading && rows.length === 0}
-          emptyLabel="无请求记录（点上方「采集本地日志」导入）"
+          emptyIcon={FileText}
+          emptyLabel="暂无请求记录"
+          emptyAction={{
+            label: collecting ? "采集中…" : "采集本地日志",
+            onClick: onCollect,
+            disabled: collecting,
+          }}
         >
           <Table>
             <TableHeader>
@@ -68,8 +90,11 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
             </TableHeader>
             <TableBody>
               {rows.map((r) => (
-                <TableRow key={r.uuid}>
-                  <TableCell className="whitespace-nowrap tabular-nums">
+                <TableRow
+                  key={r.uuid}
+                  className="transition-colors hover:bg-muted/40"
+                >
+                  <TableCell className="tabular-nums whitespace-nowrap">
                     {formatTime(r.timestamp)}
                   </TableCell>
                   <TableCell>{providerLabel(r.source)}</TableCell>

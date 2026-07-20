@@ -1,5 +1,8 @@
 // Usage trend chart (BLUEPRINT 使用趋势): dual Y-axis ComposedChart — tokens on
-// the left axis, cost on the right; multiple series toggled via the legend.
+// the left axis, cost on the right. The total-tokens series is an area; the
+// remaining line series carry distinct strokeDasharray patterns as a
+// color-blind-redundant cue (chart lightness alone is too close across the
+// cold palette). Multiple series toggled via the legend.
 
 import {
   Area,
@@ -19,36 +22,54 @@ import { formatCost, formatDay, formatTokens } from "@/lib/format"
 
 import type { TrendPoint, UsageFilter } from "@/types/generated/bindings"
 
-const SERIES = [
+type SeriesDef = {
+  key: keyof TrendPoint
+  name: string
+  color: string
+  axis: "left" | "right"
+  type: "area" | "line"
+  /** dash pattern for color-blind-redundant encoding on line series. */
+  dash?: string
+}
+
+const SERIES: SeriesDef[] = [
   {
     key: "total_tokens",
     name: "Tokens",
     color: "var(--chart-1)",
-    axis: "left" as const,
+    axis: "left",
+    type: "area",
   },
   {
     key: "input_tokens",
     name: "输入",
     color: "var(--chart-2)",
-    axis: "left" as const,
+    axis: "left",
+    type: "line",
   },
   {
     key: "output_tokens",
     name: "输出",
     color: "var(--chart-3)",
-    axis: "left" as const,
+    axis: "left",
+    type: "line",
+    dash: "5 4",
   },
   {
     key: "cache_read_tokens",
     name: "缓存命中",
     color: "var(--chart-4)",
-    axis: "left" as const,
+    axis: "left",
+    type: "line",
+    dash: "1 3",
   },
   {
     key: "total_cost_usd",
     name: "成本",
     color: "var(--chart-5)",
-    axis: "right" as const,
+    axis: "right",
+    type: "line",
+    dash: "6 3",
   },
 ]
 
@@ -72,6 +93,7 @@ export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
           error={error}
           isEmpty={data.length === 0}
           emptyLabel="无趋势数据"
+          emptyDescription="采集本地日志后，按日聚合的用量将显示在此。"
         >
           <div className="h-72 w-full">
             <ResponsiveContainer width="100%" height="100%">
@@ -102,7 +124,7 @@ export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
                 <Tooltip content={<TrendTooltip />} />
                 <Legend />
                 {SERIES.map((s) =>
-                  s.key === "total_tokens" ? (
+                  s.type === "area" ? (
                     <Area
                       key={s.key}
                       yAxisId={s.axis}
@@ -113,6 +135,7 @@ export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
                       fill={s.color}
                       fillOpacity={0.08}
                       strokeWidth={2}
+                      isAnimationActive={false}
                     />
                   ) : (
                     <Line
@@ -124,6 +147,8 @@ export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
                       stroke={s.color}
                       dot={false}
                       strokeWidth={1.5}
+                      strokeDasharray={s.dash}
+                      isAnimationActive={false}
                     />
                   ),
                 )}

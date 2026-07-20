@@ -53,7 +53,11 @@ export const usageApi = api.injectEndpoints({
     }),
     queryModels: build.query<ModelStatsRow[], UsageFilter>({
       queryFn: (filter) => unwrap(commands.queryModels(filter)),
-      providesTags: ["Usage"],
+      // Filter-scoped cache key (else picking a model to narrow the filter
+      // wouldn't re-fetch — the ModelDistribution list would stay stale).
+      providesTags: (_r, _e, filter) => [
+        { type: "Usage" as const, id: `models-${filterToId(filter)}` },
+      ],
     }),
     queryDistinctSources: build.query<string[], void>({
       queryFn: () => unwrap(commands.queryDistinctSources()),

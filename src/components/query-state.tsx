@@ -1,20 +1,30 @@
 // Unified loading / error / empty state for RTK Query results (ADR-0007).
+// Empty renders <EmptyState> so callers can attach an icon, description and
+// next-step action instead of a bare string.
 
+import type { LucideIcon } from "lucide-react"
 import type { ReactNode } from "react"
+
+import { EmptyState } from "@/components/empty-state"
 import { Skeleton } from "@/components/ui/skeleton"
 
-/** Render a skeleton block while loading, or a message for error/empty. */
 export function QueryState({
   isLoading,
   error,
   isEmpty,
   emptyLabel = "暂无数据",
+  emptyIcon,
+  emptyDescription,
+  emptyAction,
   children,
 }: {
   isLoading: boolean
   error: unknown
   isEmpty: boolean
   emptyLabel?: string
+  emptyIcon?: LucideIcon
+  emptyDescription?: string
+  emptyAction?: { label: string; onClick: () => void; disabled?: boolean }
   children: ReactNode
 }) {
   if (isLoading) {
@@ -28,7 +38,14 @@ export function QueryState({
     )
   }
   if (isEmpty) {
-    return <div className="text-muted-foreground text-sm">{emptyLabel}</div>
+    return (
+      <EmptyState
+        icon={emptyIcon}
+        title={emptyLabel}
+        description={emptyDescription}
+        action={emptyAction}
+      />
+    )
   }
   return <>{children}</>
 }

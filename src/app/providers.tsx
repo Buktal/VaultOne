@@ -1,11 +1,17 @@
-// App providers (ADR-0007): Redux <Provider> + Toaster. No theme provider — the
-// theme hook toggles `.dark` on <html> directly.
+// App providers (ADR-0007): Redux <Provider> + next-themes <ThemeProvider> +
+// base-ui <TooltipProvider> + Toaster. next-themes toggles `.dark` on <html>;
+// attribute="class" matches the `@custom-variant dark` in index.css. The Toaster
+// relies on useTheme() so the ThemeProvider must wrap it, else toasts never
+// follow the active theme. TooltipProvider is mounted once here so every
+// <Tooltip> in the tree shares delay/hover config without re-wrapping.
 
 import { listen } from "@tauri-apps/api/event"
+import { ThemeProvider } from "next-themes"
 import type { ReactNode } from "react"
 import { useEffect } from "react"
 import { Provider } from "react-redux"
 import { Toaster } from "@/components/ui/sonner"
+import { TooltipProvider } from "@/components/ui/tooltip"
 
 import { api } from "./store/api"
 import { store } from "./store/store"
@@ -24,8 +30,17 @@ export function AppProviders({ children }: { children: ReactNode }) {
 
   return (
     <Provider store={store}>
-      {children}
-      <Toaster richColors closeButton />
+      <ThemeProvider
+        attribute="class"
+        defaultTheme="dark"
+        enableSystem
+        disableTransitionOnChange
+      >
+        <TooltipProvider>
+          {children}
+          <Toaster richColors closeButton />
+        </TooltipProvider>
+      </ThemeProvider>
     </Provider>
   )
 }
