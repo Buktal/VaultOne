@@ -24,19 +24,20 @@ VaultOne is a desktop app that turns your local AI assistant session logs into a
 
 ```bash
 yarn install        # install frontend dependencies
-yarn tauri dev      # run the desktop app in development
+yarn dev            # run the desktop app in development
 ```
 
 ## Scripts
 
 | Command | Description |
 | --- | --- |
-| `yarn dev` | Run the web UI only (Vite). |
-| `yarn tauri dev` | Run the full Tauri desktop app in development. |
-| `yarn build` | Type-check and build the web bundle. |
-| `yarn tauri build` | Build a release desktop binary. |
-| `yarn lint` | Lint and check formatting (Biome). |
-| `yarn format` | Auto-format (Biome). |
+| `yarn dev` | Run the full Tauri desktop app in development (starts Vite + Rust). |
+| `yarn web:dev` | Run the web UI only (Vite), for frontend-only iteration. |
+| `yarn check` | All static checks — frontend (Biome + tsc) and Rust (fmt + clippy). Same gates as CI. |
+| `yarn web:fix` | Auto-fix frontend lint and formatting (Biome). |
+| `yarn web:build` | Type-check and build the web bundle. |
+| `yarn test` | Run all tests (currently the Rust suite). |
+| `yarn dist` | Build a release desktop binary. |
 
 ## License
 
