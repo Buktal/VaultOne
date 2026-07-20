@@ -256,6 +256,9 @@ pub fn pull_and_import(
     pull(&repo, &token)?;
     let records = crate::ingest::read_all_artifacts(paths)?;
     let inserted = store.ingest(&records)?;
+    // Per-turn durations (separate grain, uuid-deduped).
+    let turns = crate::ingest::read_all_turn_artifacts(paths)?;
+    store.ingest_turn_durations(&turns)?;
     Ok(inserted.len() as u32)
 }
 
@@ -862,6 +865,9 @@ mod tests {
                 cache_read: 0,
             },
             server_tool_use: ServerToolUse::default(),
+            stop_reason: "end_turn".into(),
+            service_tier: "standard".into(),
+            iterations: 0,
         }
     }
 

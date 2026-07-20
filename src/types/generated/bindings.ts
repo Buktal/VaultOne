@@ -153,7 +153,7 @@ export type ConfigSyncOutcome = {
 	pricing_changed: boolean,
 };
 
-/**  A known device (ADR-0002). `is_self` marks the device running this instance. */
+/**  A known device. `is_self` marks the device running this instance. */
 export type DeviceInfo = {
 	device_id: string,
 	display_name: string,
@@ -166,6 +166,8 @@ export type IngestReport = {
 	source: string,
 	events_collected: number,
 	rows_inserted: number,
+	turn_durations_collected: number,
+	turn_durations_inserted: number,
 	files_scanned: number,
 	lines_skipped: number,
 };
@@ -203,7 +205,7 @@ export type PricingEntry = {
 	is_builtin: boolean,
 };
 
-/**  Run mode (ADR-0011): default Standalone; Synced once a repo is configured. */
+/**  Run mode: default Standalone; Synced once a repo is configured. */
 export type RunMode = "standalone" | "synced";
 
 /**  Outcome of one sync round, surfaced to the UI. */
@@ -214,7 +216,7 @@ export type SyncReport = {
 	pushed: boolean,
 };
 
-/**  Token four-pack (ADR-0003). `u32` across the boundary (ADR-0008). */
+/**  Token four-pack (per-call). `u32` across the boundary. */
 export type TokenCounts = {
 	input: number,
 	output: number,
@@ -234,10 +236,10 @@ export type TrendPoint = {
 };
 
 /**
- *  Filter args shared by stats / trend / logs queries (ADR-0007 query boundary).
+ *  Filter args shared by stats / trend / logs queries.
  * 
- *  All fields optional; empty/None means "no constraint". `device_scope` is the
- *  semantic cache-key axis (ADR-0008): `None` = all devices.
+ *  All fields optional; `None` means "no constraint". `device_scope` is the
+ *  semantic cache-key axis: `None` = all devices.
  */
 export type UsageFilter = {
 	/**  Inclusive lower ISO8601 day (`yyyy-mm-dd`). */
@@ -249,7 +251,7 @@ export type UsageFilter = {
 	device_scope: string | null,
 };
 
-/**  One row of the request-log table (BLUEPRINT 请求日志; ADR-0003 columns). */
+/**  One row of the request-log table. */
 export type UsageLogRow = {
 	uuid: string,
 	timestamp: string,
@@ -257,10 +259,11 @@ export type UsageLogRow = {
 	source: string,
 	device_id: string,
 	tokens: TokenCounts,
+	stop_reason: string,
 	total_cost_usd: number | null,
 };
 
-/**  Aggregate totals over a filtered range (BLUEPRINT 使用统计). */
+/**  Aggregate totals over a filtered range. */
 export type UsageStats = {
 	request_count: number,
 	total_tokens: number,
@@ -271,6 +274,9 @@ export type UsageStats = {
 	/**  Cache-hit ratio in [0,1]. */
 	cache_hit_rate: number | null,
 	total_cost_usd: number | null,
+	/**  Aggregate over TurnDuration rows in range (per-turn grain). */
+	turn_count: number,
+	avg_turn_duration_ms: number | null,
 };
 
 /* Tauri Specta runtime */

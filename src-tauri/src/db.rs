@@ -15,8 +15,8 @@ use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection, O
 
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    LogsQuery, ModelStatsRow, PricingEntry, TokenCounts, TrendPoint, UsageFilter, UsageLogRow,
-    UsageRecord, UsageStats,
+    LogsQuery, ModelStatsRow, PricingEntry, TokenCounts, TrendPoint, TurnDuration, UsageFilter,
+    UsageLogRow, UsageRecord, UsageStats,
 };
 use crate::pricing::{ModelPricing, PricingBook};
 
@@ -178,9 +178,10 @@ impl Store {
                 "INSERT OR IGNORE INTO usage_records
                  (uuid, timestamp, day, model, pricing_model, source, device_id,
                   input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-                  server_tool_use, input_cost_usd, output_cost_usd, cache_read_cost_usd,
+                  server_tool_use, stop_reason, service_tier, iterations,
+                  input_cost_usd, output_cost_usd, cache_read_cost_usd,
                   cache_creation_cost_usd, total_cost_usd)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
                 params![
                     r.uuid,
                     r.timestamp,
@@ -194,6 +195,9 @@ impl Store {
                     r.tokens.cache_creation as i64,
                     r.tokens.cache_read as i64,
                     serde_json::to_string(&r.server_tool_use).unwrap_or_else(|_| "{}".into()),
+                    r.stop_reason,
+                    r.service_tier,
+                    r.iterations as i64,
                     r.cost.input_usd.to_string(),
                     r.cost.output_usd.to_string(),
                     r.cost.cache_read_usd.to_string(),
@@ -215,6 +219,31 @@ impl Store {
         }
 
         tx.commit()?;
+        Ok(inserted)
+    }
+
+    /// Insert per-turn durations, deduping by uuid (INSERT OR IGNORE). Separate
+    /// grain from per-call usage_records. Returns the number of rows inserted.
+    pub fn ingest_turn_durations(&self, tds: &[TurnDuration]) -> AppResult<usize> {
+        if tds.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut inserted = 0usize;
+        for td in tds {
+            inserted += conn.execute(
+                "INSERT OR IGNORE INTO turn_durations
+                 (uuid, timestamp, day, device_id, duration_ms)
+                 VALUES (?1,?2,?3,?4,?5)",
+                params![
+                    td.uuid,
+                    td.timestamp,
+                    td.day,
+                    td.device_id,
+                    td.duration_ms as i64
+                ],
+            )?;
+        }
         Ok(inserted)
     }
 
@@ -364,6 +393,16 @@ impl Store {
             cache_read: s.cache_read_tokens,
         };
         s.cache_hit_rate = tokens.cache_hit_rate();
+        // Per-turn aggregates (separate grain, from turn_durations).
+        let (tclause, tparams) = build_turn_where(filter);
+        let tsql =
+            format!("SELECT COUNT(*), COALESCE(AVG(duration_ms),0) FROM turn_durations {tclause}");
+        let (turn_count, avg_dur): (i64, f64) =
+            conn.query_row(&tsql, params_from_iter(tparams.iter()), |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?;
+        s.turn_count = turn_count as u32;
+        s.avg_turn_duration_ms = avg_dur;
         Ok(s)
     }
 
@@ -452,7 +491,7 @@ impl Store {
         let sql = format!(
             "SELECT uuid, timestamp, model, source, device_id,
                     input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-                    CAST(total_cost_usd AS REAL)
+                    stop_reason, CAST(total_cost_usd AS REAL)
              FROM usage_records {clause}
              ORDER BY timestamp DESC LIMIT {limit} OFFSET {offset}"
         );
@@ -470,7 +509,8 @@ impl Store {
                     cache_creation: r.get::<_, i64>(7)? as u32,
                     cache_read: r.get::<_, i64>(8)? as u32,
                 },
-                total_cost_usd: r.get(9)?,
+                stop_reason: r.get(9)?,
+                total_cost_usd: r.get(10)?,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -600,6 +640,37 @@ fn build_where(filter: &UsageFilter) -> (String, Vec<SqlValue>) {
     (clause, params)
 }
 
+/// Build a WHERE clause + bound params for `turn_durations` (day range + device
+/// scope only — that table has no model/source columns).
+fn build_turn_where(filter: &UsageFilter) -> (String, Vec<SqlValue>) {
+    let mut conds: Vec<String> = Vec::new();
+    let mut params: Vec<SqlValue> = Vec::new();
+    if let Some(d) = &filter.from_day {
+        if !d.is_empty() {
+            conds.push("day >= ?".into());
+            params.push(SqlValue::Text(d.clone()));
+        }
+    }
+    if let Some(d) = &filter.to_day {
+        if !d.is_empty() {
+            conds.push("day <= ?".into());
+            params.push(SqlValue::Text(d.clone()));
+        }
+    }
+    if let Some(d) = &filter.device_scope {
+        if !d.is_empty() {
+            conds.push("device_id = ?".into());
+            params.push(SqlValue::Text(d.clone()));
+        }
+    }
+    let clause = if conds.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conds.join(" AND "))
+    };
+    (clause, params)
+}
+
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
@@ -642,6 +713,9 @@ mod tests {
                 cache_read: 0,
             },
             server_tool_use: ServerToolUse::default(),
+            stop_reason: "end_turn".into(),
+            service_tier: "standard".into(),
+            iterations: 0,
             cost: crate::model::CostBreakdown {
                 input_usd: total,
                 output_usd: rust_decimal::Decimal::ZERO,
@@ -815,5 +889,39 @@ mod tests {
             .unwrap()
             .iter()
             .any(|e| e.model_key == "custom-model"));
+    }
+
+    #[test]
+    fn turn_durations_ingest_and_aggregate() {
+        let s = mem();
+        s.ingest_turn_durations(&[
+            TurnDuration {
+                uuid: "t1".into(),
+                timestamp: "2026-07-13T10:00:00Z".into(),
+                day: "2026-07-13".into(),
+                device_id: "d".into(),
+                duration_ms: 100_000,
+            },
+            TurnDuration {
+                uuid: "t2".into(),
+                timestamp: "2026-07-13T11:00:00Z".into(),
+                day: "2026-07-13".into(),
+                device_id: "d".into(),
+                duration_ms: 200_000,
+            },
+        ])
+        .unwrap();
+        // Same uuid dedupes (INSERT OR IGNORE).
+        s.ingest_turn_durations(&[TurnDuration {
+            uuid: "t1".into(),
+            timestamp: "2026-07-13T10:00:00Z".into(),
+            day: "2026-07-13".into(),
+            device_id: "d".into(),
+            duration_ms: 999_999,
+        }])
+        .unwrap();
+        let stats = s.query_stats(&UsageFilter::default()).unwrap();
+        assert_eq!(stats.turn_count, 2);
+        assert!((stats.avg_turn_duration_ms - 150_000.0).abs() < 1e-9);
     }
 }

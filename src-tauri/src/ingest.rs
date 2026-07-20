@@ -1,11 +1,13 @@
-//! Ingest pipeline (ADR-0009): RawUsage → UsageRecord (cost computed) →
-//! SQLite Local Store + JSONL Artifact append.
+//! Ingest pipeline: RawUsage → UsageRecord (cost computed) and RawTurnDuration
+//! → TurnDuration, each written to the SQLite Local Store + a per-day JSONL
+//! Artifact.
 //!
-//! The provider emits `RawUsage` (no cost, no device). Here we attach the
-//! owning `device_id`, derive the `day` bucket and `pricing_model`, compute cost
-//! via the pure `CostCalculator`, write new rows to SQLite (ledger dedup), and
-//! append the same new rows to the per-day JSONL Artifact. SQLite is the query
-//! source of truth; JSONL is the human-readable backup / sync medium (ADR-0004).
+//! The provider emits raw per-call events + raw per-turn durations (no cost, no
+//! device). Here we attach the owning device_id, derive the day bucket and
+//! pricing_model, compute cost via the pure CostCalculator, write new rows to
+//! SQLite (ledger dedup), and append the same new rows to per-day JSONL
+//! Artifacts. SQLite is the query source of truth; JSONL is the human-readable
+//! backup / sync medium.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -14,9 +16,9 @@ use std::path::Path;
 use crate::config::Paths;
 use crate::db::Store;
 use crate::error::AppResult;
-use crate::model::UsageRecord;
+use crate::model::{TurnDuration, UsageRecord};
 use crate::pricing::{CostCalculator, PricingBook};
-use crate::providers::{CollectResult, RawUsage};
+use crate::providers::{CollectResult, RawTurnDuration, RawUsage};
 
 /// Summary of one ingest run.
 #[derive(Debug, Clone, Default, serde::Serialize, specta::Type)]
@@ -24,12 +26,14 @@ pub struct IngestReport {
     pub source: String,
     pub events_collected: u32,
     pub rows_inserted: u32,
+    pub turn_durations_collected: u32,
+    pub turn_durations_inserted: u32,
     pub files_scanned: u32,
     pub lines_skipped: u32,
 }
 
-/// Turn a raw provider event into a full stored record (cost + device + day).
-/// Pure: given the same book, deterministic. This is the heart of ADR-0009.
+/// Turn a raw per-call event into a full stored record (cost + device + day).
+/// Pure: given the same book, deterministic.
 pub fn recordify(raw: &RawUsage, device_id: &str, book: &PricingBook) -> UsageRecord {
     let pricing_model = crate::pricing::normalize_key(&raw.model);
     let rate = book.resolve(&raw.model);
@@ -44,12 +48,26 @@ pub fn recordify(raw: &RawUsage, device_id: &str, book: &PricingBook) -> UsageRe
         device_id: device_id.to_string(),
         tokens: raw.tokens,
         server_tool_use: raw.server_tool_use,
+        stop_reason: raw.stop_reason.clone(),
+        service_tier: raw.service_tier.clone(),
+        iterations: raw.iterations,
         cost,
     }
 }
 
+/// Turn a raw per-turn duration into a stored TurnDuration (attach device + day).
+pub fn turn_durationify(raw: &RawTurnDuration, device_id: &str) -> TurnDuration {
+    TurnDuration {
+        uuid: raw.uuid.clone(),
+        day: UsageRecord::day_from_timestamp(&raw.timestamp),
+        timestamp: raw.timestamp.clone(),
+        device_id: device_id.to_string(),
+        duration_ms: raw.duration_ms,
+    }
+}
+
 /// Ingest a provider's collect result: compute cost, write new rows to SQLite,
-/// append new rows to the JSONL Artifact. Returns a summary.
+/// append new rows to the JSONL Artifacts. Returns a summary.
 pub fn ingest_collected(
     store: &Store,
     paths: &Paths,
@@ -58,30 +76,46 @@ pub fn ingest_collected(
     result: CollectResult,
 ) -> AppResult<IngestReport> {
     let events_collected = result.events.len() as u32;
+    let turn_durations_collected = result.turn_durations.len() as u32;
     let source = result.source.clone();
 
+    // Per-call usage records: SQLite first (transactional, ledger dedup).
     let records: Vec<UsageRecord> = result
         .events
         .iter()
         .map(|r| recordify(r, device_id, book))
         .collect();
-
-    // SQLite first (transactional, ledger dedup) — source of truth for queries.
     let inserted = store.ingest(&records)?;
-
-    // JSONL append only for newly-inserted rows (no duplicates in the Artifact).
     if !inserted.is_empty() {
         append_jsonl(paths, device_id, &inserted)?;
     }
+
+    // Per-turn durations (separate grain, dedup by uuid).
+    let turns: Vec<TurnDuration> = result
+        .turn_durations
+        .iter()
+        .map(|t| turn_durationify(t, device_id))
+        .collect();
+    let turns_inserted = if turns.is_empty() {
+        0
+    } else {
+        let n = store.ingest_turn_durations(&turns)?;
+        append_turn_jsonl(paths, device_id, &turns)?;
+        n as u32
+    };
 
     Ok(IngestReport {
         source,
         events_collected,
         rows_inserted: inserted.len() as u32,
+        turn_durations_collected,
+        turn_durations_inserted: turns_inserted,
         files_scanned: result.files_scanned,
         lines_skipped: result.lines_skipped,
     })
 }
+
+// ---------------- UsageRecord JSONL Artifact (per-call) ----------------
 
 /// Append records to the per-day JSONL Artifact (`repo/data/<deviceId>/usage-<day>.jsonl`).
 /// Records are grouped by day; each line is one JSON-serialized `UsageRecord`.
@@ -114,8 +148,7 @@ fn write_day(path: &Path, rows: &[&UsageRecord]) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Read all records from a single JSONL Artifact file (used by the sync pull
-/// path, ADR-0005). Skips unparseable lines.
+/// Read all records from a single usage JSONL Artifact file. Skips unparseable lines.
 pub fn read_jsonl_file(path: &Path) -> AppResult<Vec<UsageRecord>> {
     let text = std::fs::read_to_string(path)?;
     let mut out = Vec::new();
@@ -132,7 +165,8 @@ pub fn read_jsonl_file(path: &Path) -> AppResult<Vec<UsageRecord>> {
     Ok(out)
 }
 
-/// Read every JSONL Artifact for a device under `repo/data/<deviceId>/`.
+/// Read every usage JSONL Artifact for a device under `repo/data/<deviceId>/`.
+/// Only `usage-*.jsonl` files (not `turns-*.jsonl`).
 pub fn read_device_artifacts(paths: &Paths, device_id: &str) -> AppResult<Vec<UsageRecord>> {
     let dir = paths.device_data_dir(device_id);
     if !dir.exists() {
@@ -142,14 +176,14 @@ pub fn read_device_artifacts(paths: &Paths, device_id: &str) -> AppResult<Vec<Us
     for entry in std::fs::read_dir(&dir)? {
         let entry = entry?;
         let p = entry.path();
-        if p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+        if is_usage_artifact(&p) {
             out.extend(read_jsonl_file(&p)?);
         }
     }
     Ok(out)
 }
 
-/// Read every device's artifacts (all known devices under `repo/data/`).
+/// Read every device's usage artifacts (all known devices under `repo/data/`).
 pub fn read_all_artifacts(paths: &Paths) -> AppResult<Vec<UsageRecord>> {
     let root = &paths.repo_data;
     if !root.exists() {
@@ -169,11 +203,116 @@ pub fn read_all_artifacts(paths: &Paths) -> AppResult<Vec<UsageRecord>> {
     Ok(out)
 }
 
+// ---------------- TurnDuration JSONL Artifact (per-turn) ----------------
+
+/// Append turn durations to the per-day Artifact (`repo/data/<deviceId>/turns-<day>.jsonl`).
+pub fn append_turn_jsonl(paths: &Paths, device_id: &str, turns: &[TurnDuration]) -> AppResult<()> {
+    use std::collections::BTreeMap;
+    let mut by_day: BTreeMap<String, Vec<&TurnDuration>> = BTreeMap::new();
+    for t in turns {
+        by_day.entry(t.day.clone()).or_default().push(t);
+    }
+    for (day, rows) in by_day {
+        let path = paths
+            .device_data_dir(device_id)
+            .join(format!("turns-{day}.jsonl"));
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        match write_turn_day(&path, &rows) {
+            Ok(()) => {}
+            Err(e) => eprintln!("[vaultone] turn jsonl append failed for {day}: {e}"),
+        }
+    }
+    Ok(())
+}
+
+fn write_turn_day(path: &Path, rows: &[&TurnDuration]) -> std::io::Result<()> {
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    for t in rows {
+        let line = serde_json::to_string(t).map_err(std::io::Error::other)?;
+        writeln!(file, "{line}")?;
+    }
+    Ok(())
+}
+
+/// Read all turn durations from a single turns JSONL Artifact file.
+pub fn read_turn_jsonl_file(path: &Path) -> AppResult<Vec<TurnDuration>> {
+    let text = std::fs::read_to_string(path)?;
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(t) = serde_json::from_str::<TurnDuration>(line) {
+            out.push(t);
+        }
+    }
+    Ok(out)
+}
+
+/// Read every turns JSONL Artifact for a device (only `turns-*.jsonl`).
+pub fn read_device_turn_artifacts(paths: &Paths, device_id: &str) -> AppResult<Vec<TurnDuration>> {
+    let dir = paths.device_data_dir(device_id);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(&dir)? {
+        let entry = entry?;
+        let p = entry.path();
+        if is_turn_artifact(&p) {
+            out.extend(read_turn_jsonl_file(&p)?);
+        }
+    }
+    Ok(out)
+}
+
+/// Read every device's turn-duration artifacts.
+pub fn read_all_turn_artifacts(paths: &Paths) -> AppResult<Vec<TurnDuration>> {
+    let root = &paths.repo_data;
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            if let Some(name) = entry.file_name().to_str() {
+                if crate::config::is_valid_device_id(name) {
+                    out.extend(read_device_turn_artifacts(paths, name)?);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn is_usage_artifact(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+        && path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with("usage-"))
+            .unwrap_or(false)
+}
+
+fn is_turn_artifact(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+        && path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with("turns-"))
+            .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::{ServerToolUse, TokenCounts};
     use crate::pricing::seed_book;
+    use crate::providers::RawTurnDuration;
 
     fn raw(uuid: &str, model: &str) -> RawUsage {
         RawUsage {
@@ -188,6 +327,17 @@ mod tests {
                 cache_read: 0,
             },
             server_tool_use: ServerToolUse::default(),
+            stop_reason: "end_turn".into(),
+            service_tier: "standard".into(),
+            iterations: 0,
+        }
+    }
+
+    fn raw_turn(uuid: &str) -> RawTurnDuration {
+        RawTurnDuration {
+            uuid: uuid.into(),
+            timestamp: "2026-07-13T16:55:00Z".into(),
+            duration_ms: 123_456,
         }
     }
 
@@ -203,6 +353,9 @@ mod tests {
             "bracket stripped for pricing lookup"
         );
         assert_eq!(r.model, "glm-5.2[1m]", "original billed model preserved");
+        // New per-call fields pass through.
+        assert_eq!(r.stop_reason, "end_turn");
+        assert_eq!(r.service_tier, "standard");
         // glm-5.2: input 0.60/1M × 1000 + output 2.20/1M × 500 = 0.0006 + 0.0011.
         assert!(
             (r.cost.total_f64() - 0.0017).abs() < 1e-9,
@@ -241,14 +394,39 @@ mod tests {
         let result = CollectResult {
             source: "claude_code".into(),
             events: vec![raw("dup", "glm-5.2")],
+            turn_durations: vec![raw_turn("td1")],
             files_scanned: 1,
             lines_skipped: 0,
         };
         let rep1 = ingest_collected(&store, &paths, "0123456789ab", &book, result.clone()).unwrap();
         assert_eq!(rep1.rows_inserted, 1);
         assert_eq!(rep1.events_collected, 1);
-        // Same uuid again ⇒ fully deduped by the ledger.
+        assert_eq!(rep1.turn_durations_collected, 1);
+        assert_eq!(rep1.turn_durations_inserted, 1);
+        // Same uuids again ⇒ fully deduped.
         let rep2 = ingest_collected(&store, &paths, "0123456789ab", &book, result).unwrap();
         assert_eq!(rep2.rows_inserted, 0);
+        assert_eq!(rep2.turn_durations_inserted, 0);
+    }
+
+    #[test]
+    fn turn_artifacts_round_trip_separately_from_usage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let book = seed_book();
+        let result = CollectResult {
+            source: "claude_code".into(),
+            events: vec![raw("a", "glm-5.2")],
+            turn_durations: vec![raw_turn("td1"), raw_turn("td2")],
+            files_scanned: 1,
+            lines_skipped: 0,
+        };
+        ingest_collected(&store, &paths, "0123456789ab", &book, result).unwrap();
+        // usage read must NOT pick up turns-*.jsonl, and vice versa.
+        let usage = read_device_artifacts(&paths, "0123456789ab").unwrap();
+        let turns = read_device_turn_artifacts(&paths, "0123456789ab").unwrap();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(turns.len(), 2);
     }
 }
