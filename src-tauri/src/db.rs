@@ -34,6 +34,7 @@ impl Store {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
         conn.execute_batch(SCHEMA)?;
+        migrate_schema(&conn)?;
         let store = Self {
             conn: Mutex::new(conn),
         };
@@ -671,6 +672,39 @@ fn build_turn_where(filter: &UsageFilter) -> (String, Vec<SqlValue>) {
     (clause, params)
 }
 
+/// Upgrade a pre-existing `usage_records` table with columns added after the
+/// initial schema (scorched-rebuild: `stop_reason` / `service_tier` /
+/// `iterations`). `CREATE TABLE IF NOT EXISTS` only creates missing tables —
+/// it does **not** add columns to an existing one, so an older Local Store
+/// must be upgraded in place. SQLite has no `ADD COLUMN IF NOT EXISTS`, so we
+/// probe `table_info` and ALTER each gap. `turn_durations` is a brand-new
+/// table and is created normally by SCHEMA.
+fn migrate_schema(conn: &Connection) -> AppResult<()> {
+    let mut have = std::collections::HashSet::new();
+    {
+        let mut stmt = conn.prepare("PRAGMA table_info(usage_records)")?;
+        let names = stmt.query_map([], |r| r.get::<_, String>(1))?;
+        for n in names {
+            have.insert(n?);
+        }
+    }
+    // (column, DDL) — kept in sync with db_schema.sql.
+    let need: &[(&str, &str)] = &[
+        ("stop_reason", "TEXT NOT NULL DEFAULT ''"),
+        ("service_tier", "TEXT NOT NULL DEFAULT ''"),
+        ("iterations", "INTEGER NOT NULL DEFAULT 0"),
+    ];
+    for &(col, ddl) in need {
+        if !have.contains(col) {
+            conn.execute(
+                &format!("ALTER TABLE usage_records ADD COLUMN {col} {ddl}"),
+                [],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
@@ -732,6 +766,81 @@ mod tests {
         let entries = s.list_pricing().unwrap();
         assert!(!entries.is_empty());
         assert!(entries.iter().any(|e| e.model_key == "glm-5.2"));
+    }
+
+    #[test]
+    fn migrate_upgrades_legacy_usage_records() {
+        // Reproduce a pre-scorched-rebuild Local Store: usage_records without
+        // the per-call stop_reason / service_tier / iterations columns.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE usage_records (
+                uuid TEXT PRIMARY KEY, timestamp TEXT NOT NULL, day TEXT NOT NULL,
+                model TEXT NOT NULL, pricing_model TEXT NOT NULL, source TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+                cache_creation_tokens INTEGER NOT NULL, cache_read_tokens INTEGER NOT NULL,
+                server_tool_use TEXT NOT NULL DEFAULT '{}',
+                input_cost_usd TEXT NOT NULL, output_cost_usd TEXT NOT NULL,
+                cache_read_cost_usd TEXT NOT NULL, cache_creation_cost_usd TEXT NOT NULL,
+                total_cost_usd TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        // Legacy table lacks the new columns.
+        assert!(conn
+            .prepare("SELECT stop_reason FROM usage_records")
+            .is_err());
+
+        migrate_schema(&conn).unwrap();
+
+        // Columns now present; an insert that omits them gets the defaults.
+        conn.execute(
+            "INSERT INTO usage_records (uuid, timestamp, day, model, pricing_model, source,
+                device_id, input_tokens, output_tokens, cache_creation_tokens,
+                cache_read_tokens, server_tool_use, input_cost_usd, output_cost_usd,
+                cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd)
+             VALUES ('u1','2026-07-21T00:00:00Z','2026-07-21','glm-5.2','glm-5.2',
+                'claude_code','dev1',1,2,3,4,'{}','0','0','0','0','0')",
+            [],
+        )
+        .unwrap();
+        let (stop, tier, iters): (String, String, i64) = conn
+            .query_row(
+                "SELECT stop_reason, service_tier, iterations FROM usage_records WHERE uuid='u1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(stop, "");
+        assert_eq!(tier, "");
+        assert_eq!(iters, 0);
+    }
+
+    #[test]
+    fn open_then_ingest_surfaces_stop_reason_end_to_end() {
+        // A current-schema store (open runs SCHEMA + migrate) must ingest the
+        // new per-call fields and surface them in the log query.
+        let s = mem();
+        s.ingest(std::slice::from_ref(&rec(
+            "m1",
+            "2026-07-21",
+            "glm-5.2",
+            "dev1",
+            10,
+            0,
+            0.0,
+        )))
+        .unwrap();
+        let logs = s
+            .query_logs(&LogsQuery {
+                filter: UsageFilter::default(),
+                limit: 10,
+                offset: 0,
+            })
+            .unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].stop_reason, "end_turn");
     }
 
     #[test]
