@@ -26,6 +26,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { formatCost, formatInt, formatTime } from "@/lib/format"
+import { cn } from "@/lib/utils"
 
 import type { UsageFilter, UsageLogRow } from "@/types/generated/bindings"
 
@@ -133,8 +134,8 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
                     <TableCell className="text-right tabular-nums">
                       {formatCost(r.total_cost_usd)}
                     </TableCell>
-                    <TableCell className="text-muted-foreground font-mono text-xs">
-                      {r.stop_reason || "—"}
+                    <TableCell>
+                      <StopReasonCell value={r.stop_reason} />
                     </TableCell>
                     <TableCell className="text-muted-foreground text-xs">
                       {r.source}
@@ -187,4 +188,37 @@ function providerLabel(source: string): string {
     default:
       return source || "—"
   }
+}
+
+/**
+ * stop_reason → semantic tone. Free-form string from the source log, matched
+ * by prefix/contains. Color signals outcome: normal completion / tool call
+ * stay calm (green/blue), while hitting a limit (amber) or a refusal/error
+ * (red) draws the eye. Unknown values fall back to neutral text — no chip.
+ */
+function stopReasonTone(
+  value: string,
+): "success" | "tool" | "warn" | "error" | null {
+  const v = value.toLowerCase()
+  if (!v) return null
+  if (v === "end_turn") return "success"
+  if (v.includes("tool_use")) return "tool"
+  if (
+    v.includes("max_tokens") ||
+    v.includes("exceeded") ||
+    v.includes("context_window")
+  )
+    return "warn"
+  if (v.includes("refusal") || v.includes("error")) return "error"
+  return null
+}
+
+function StopReasonCell({ value }: { value: string }) {
+  if (!value) return <span className="text-muted-foreground">—</span>
+  const tone = stopReasonTone(value)
+  if (!tone)
+    return (
+      <span className="text-muted-foreground font-mono text-xs">{value}</span>
+    )
+  return <span className={cn("sr-chip font-mono", `sr-${tone}`)}>{value}</span>
 }

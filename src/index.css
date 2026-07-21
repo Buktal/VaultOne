@@ -60,10 +60,14 @@
  *     #3A3A3C elevated / #14C393 brand). Flat solid surfaces — no glass,
  *     no backdrop-blur, no glow shadows; surfaces separate by lightness
  *     step + hairline border (iOS dark idiom).
- *   - Chart palette = Okabe-Ito (colorblind-safe, placeholder). Swap this
- *     one group to re-theme every chart without touching components.
+ *   - Chart palette = VaultOne data palette (4 token buckets), hue-paired
+ *     across dark/light so each bucket keeps its hue family (shade tuned
+ *     for background contrast). input=蓝 / output=金 / cache_creation=粉 /
+ *     cache_read=绿(命中). Swap this one group to re-theme every chart.
+ *   - metric-cost = distinct vermilion — cost is a separate money dimension
+ *     (ADR-0011 token-first); intentionally outside the 4-bucket palette.
  *   - Font: Geist (display + body), CJK falls back to system (PingFang/YaHei).
- *   - Light theme retained as fallback (legacy grayscale + Okabe-Ito).
+ *   - Light theme retained as fallback.
  * Default theme = dark.
  */
 :root {
@@ -85,20 +89,20 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
-  /* token-first semantic chart palette (Okabe-Ito, colorblind-safe). ADR-0011. */
-  --chart-input: #0072b2; /* 输入 input_tokens — 深蓝 */
-  --chart-output: #e69f00; /* 输出 output_tokens — 琥珀橙 */
-  --chart-cache-create: #009e73; /* 缓存创建 cache_creation — 青绿 */
-  --chart-cache-read: #56b4e9; /* 缓存命中 cache_read — 天蓝 */
-  --metric-tokens: #0072b2; /* token 总量主色 = input 深蓝 */
-  --metric-cost: #d55e00; /* 成本 USD — 朱红（token-first 下辅助维度）*/
-  /* Legacy --chart-1..5 aliases — used only by usage-trend-chart until task 4
-     rebuilds it on semantic names. Mapped to distinct Okabe-Ito colors so the
-     interim 5-series chart still reads well. Remove after task 4. */
-  --chart-1: #0072b2;
-  --chart-2: #e69f00;
-  --chart-3: #009e73;
-  --chart-4: #56b4e9;
+  /* token-first data palette (ADR-0011). Light shades — brighter for contrast
+     on white; each pairs to its dark counterpart by hue family. 命中=绿. */
+  --chart-input: #80e0e6; /* 输入 input_tokens — 青 */
+  --chart-output: #ffbb4f; /* 输出 output_tokens — 金 */
+  --chart-cache-create: #ff7576; /* 缓存创建 cache_creation — 珊瑚红 */
+  --chart-cache-read: #89b37c; /* 缓存命中 cache_read — 鼠尾草绿 */
+  --metric-tokens: #80e0e6; /* token 总量主色 = input 青 */
+  --metric-cost: #d55e00; /* 成本 USD — 朱红（独立「钱」维度，非四桶）*/
+  /* Legacy --chart-1..5 aliases — mirror the semantic palette above for any
+     consumer still on positional names. */
+  --chart-1: #80e0e6;
+  --chart-2: #ffbb4f;
+  --chart-3: #ff7576;
+  --chart-4: #89b37c;
   --chart-5: #d55e00;
   --radius: 0.45rem;
   --sidebar: oklch(0.985 0 0);
@@ -130,17 +134,18 @@
   --border: rgba(255, 255, 255, 0.08);
   --input: #3a3a3c;
   --ring: #14c393;
-  /* Okabe-Ito chart palette (placeholder — re-theme this group only). */
-  --chart-input: #0072b2;
-  --chart-output: #e69f00;
-  --chart-cache-create: #009e73;
-  --chart-cache-read: #56b4e9;
-  --metric-tokens: #0072b2;
+  /* token-first data palette (ADR-0011). Dark shades — pastel/vivid for pop
+     on #1C1C1E; each pairs to its light counterpart by hue family. 命中=绿. */
+  --chart-input: #28aef3;
+  --chart-output: #fcb859;
+  --chart-cache-create: #f2c8ed;
+  --chart-cache-read: #a9dfd8;
+  --metric-tokens: #28aef3;
   --metric-cost: #d55e00;
-  --chart-1: #0072b2;
-  --chart-2: #e69f00;
-  --chart-3: #009e73;
-  --chart-4: #56b4e9;
+  --chart-1: #28aef3;
+  --chart-2: #fcb859;
+  --chart-3: #f2c8ed;
+  --chart-4: #a9dfd8;
   --chart-5: #d55e00;
   --sidebar: #1c1c1e;
   --sidebar-foreground: #ffffff;
@@ -172,4 +177,36 @@
 .bg-grid {
   background-image: radial-gradient(var(--border) 1px, transparent 1px);
   background-size: 16px 16px;
+}
+
+/*
+ * stop_reason semantic chip — reuses the data-palette vars so it recolors with
+ * the theme. Tinted via color-mix (Chromium 111+ / Safari 16.2+, both within
+ * Tauri's webview floor). Used by the request-log table (ADR-0011).
+ */
+.sr-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 6px;
+  padding: 1px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.sr-success {
+  color: var(--chart-cache-read);
+  background: color-mix(in srgb, var(--chart-cache-read) 16%, transparent);
+}
+.sr-tool {
+  color: var(--chart-input);
+  background: color-mix(in srgb, var(--chart-input) 16%, transparent);
+}
+.sr-warn {
+  color: var(--chart-output);
+  background: color-mix(in srgb, var(--chart-output) 16%, transparent);
+}
+.sr-error {
+  color: var(--destructive);
+  background: color-mix(in srgb, var(--destructive) 16%, transparent);
 }

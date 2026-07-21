@@ -22,6 +22,7 @@ import {
   useReloadPricingMutation,
   useSavePricingToFileMutation,
 } from "@/app/store/api"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -272,8 +273,10 @@ export function PricingView() {
                     <TableCell className="pr-4 text-right tabular-nums">
                       {fmtRate(e.cache_creation_per_million)}
                     </TableCell>
-                    <TableCell className="text-muted-foreground text-xs">
-                      {e.is_builtin ? "内置" : "自定义"}
+                    <TableCell>
+                      <Badge variant={e.is_builtin ? "secondary" : "default"}>
+                        {e.is_builtin ? "内置" : "自定义"}
+                      </Badge>
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">
