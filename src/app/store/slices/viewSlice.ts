@@ -2,7 +2,7 @@
 
 import { createSlice } from "@reduxjs/toolkit"
 
-export type ViewId = "dashboard" | "pricing" | "settings"
+export type ViewId = "dashboard" | "logs" | "pricing" | "settings"
 
 interface ViewState {
   view: ViewId

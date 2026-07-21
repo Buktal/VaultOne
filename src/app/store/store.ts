@@ -5,11 +5,15 @@
 import { configureStore } from "@reduxjs/toolkit"
 
 import { vaultApi } from "./api"
+import filterReducer from "./slices/filterSlice"
+import uiReducer from "./slices/uiSlice"
 import viewReducer from "./slices/viewSlice"
 
 export const store = configureStore({
   reducer: {
     view: viewReducer,
+    filter: filterReducer,
+    ui: uiReducer,
     [vaultApi.reducerPath]: vaultApi.reducer,
   },
   middleware: (getDefault) => getDefault().concat(vaultApi.middleware),

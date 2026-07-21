@@ -50,6 +50,20 @@ export const EMPTY_FILTER: UsageFilter = {
   device_scope: null,
 }
 
+/** Zero-value UsageStats — shared UI fallback for loading/empty. */
+export const ZERO_STATS: UsageStats = {
+  request_count: 0,
+  total_tokens: 0,
+  input_tokens: 0,
+  output_tokens: 0,
+  cache_creation_tokens: 0,
+  cache_read_tokens: 0,
+  cache_hit_rate: 0,
+  total_cost_usd: 0,
+  turn_count: 0,
+  avg_turn_duration_ms: 0,
+}
+
 export const vaultApi = createApi({
   reducerPath: "vaultApi",
   baseQuery: fakeBaseQuery(),

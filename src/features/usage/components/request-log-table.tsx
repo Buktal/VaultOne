@@ -1,9 +1,9 @@
 // Request log table — per-API-call ledger. Columns: Time / Provider / Billed
-// Model / 输入 / 输出 / 缓存创建 / 缓存命中 / Cost / 停止原因 / Source.
-// `stop_reason` (end_turn / tool_use / max_tokens …) is the new per-call field.
-// No latency / TTFT / HTTP-status columns (ADR-0003: no source carries them).
-// Paginated; empty state offers an inline 采集 CTA so the user isn't bounced to
-// the command bar to seed the first rows.
+// Model / 输入 / 输出 / 缓存创建 / 缓存命中 / 总 Token / Cost / 停止原因 /
+// Source / Device. `stop_reason` (end_turn / tool_use / max_tokens …) is the
+// per-call end semantic. No latency / TTFT / HTTP-status columns (ADR-0003).
+// Fixed time-desc (no sort UI); paginated; empty state offers an inline 采集
+// CTA so the user isn't bounced to the command bar to seed the first rows.
 
 import { FileText } from "lucide-react"
 import { useState } from "react"
@@ -27,9 +27,18 @@ import {
 } from "@/components/ui/table"
 import { formatCost, formatInt, formatTime } from "@/lib/format"
 
-import type { UsageFilter } from "@/types/generated/bindings"
+import type { UsageFilter, UsageLogRow } from "@/types/generated/bindings"
 
 const PAGE_SIZE = 50
+
+function tokenTotal(r: UsageLogRow): number {
+  return (
+    r.tokens.input +
+    r.tokens.output +
+    r.tokens.cache_creation +
+    r.tokens.cache_read
+  )
+}
 
 export function RequestLogTable({ filter }: { filter: UsageFilter }) {
   const [offset, setOffset] = useState(0)
@@ -75,57 +84,72 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
             disabled: collecting,
           }}
         >
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>时间</TableHead>
-                <TableHead>供应商</TableHead>
-                <TableHead>计费模型</TableHead>
-                <TableHead className="text-right">输入</TableHead>
-                <TableHead className="text-right">输出</TableHead>
-                <TableHead className="text-right">缓存创建</TableHead>
-                <TableHead className="text-right">缓存命中</TableHead>
-                <TableHead className="text-right">成本</TableHead>
-                <TableHead>停止原因</TableHead>
-                <TableHead>来源</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((r) => (
-                <TableRow
-                  key={r.uuid}
-                  className="transition-colors hover:bg-muted/40"
-                >
-                  <TableCell className="tabular-nums whitespace-nowrap">
-                    {formatTime(r.timestamp)}
-                  </TableCell>
-                  <TableCell>{providerLabel(r.source)}</TableCell>
-                  <TableCell className="font-mono text-xs">{r.model}</TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {formatInt(r.tokens.input)}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {formatInt(r.tokens.output)}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {formatInt(r.tokens.cache_creation)}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {formatInt(r.tokens.cache_read)}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {formatCost(r.total_cost_usd)}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground font-mono text-xs">
-                    {r.stop_reason || "—"}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground text-xs">
-                    {r.source}
-                  </TableCell>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>时间</TableHead>
+                  <TableHead>供应商</TableHead>
+                  <TableHead>计费模型</TableHead>
+                  <TableHead className="text-right">输入</TableHead>
+                  <TableHead className="text-right">输出</TableHead>
+                  <TableHead className="text-right">缓存创建</TableHead>
+                  <TableHead className="text-right">缓存命中</TableHead>
+                  <TableHead className="text-right">总 Token</TableHead>
+                  <TableHead className="text-right">成本</TableHead>
+                  <TableHead>停止原因</TableHead>
+                  <TableHead>来源</TableHead>
+                  <TableHead>设备</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {rows.map((r) => (
+                  <TableRow
+                    key={r.uuid}
+                    className="transition-colors hover:bg-muted/40"
+                  >
+                    <TableCell className="tabular-nums whitespace-nowrap">
+                      {formatTime(r.timestamp)}
+                    </TableCell>
+                    <TableCell>{providerLabel(r.source)}</TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {r.model}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatInt(r.tokens.input)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatInt(r.tokens.output)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatInt(r.tokens.cache_creation)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatInt(r.tokens.cache_read)}
+                    </TableCell>
+                    <TableCell className="text-right font-medium tabular-nums">
+                      {formatInt(tokenTotal(r))}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatCost(r.total_cost_usd)}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground font-mono text-xs">
+                      {r.stop_reason || "—"}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground text-xs">
+                      {r.source}
+                    </TableCell>
+                    <TableCell
+                      className="text-muted-foreground font-mono text-xs"
+                      title={r.device_id || undefined}
+                    >
+                      {r.device_id ? r.device_id.slice(0, 8) : "—"}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
         </QueryState>
 
         <div className="text-muted-foreground mt-3 flex items-center justify-between text-xs">

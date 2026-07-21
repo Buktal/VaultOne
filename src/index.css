@@ -3,12 +3,13 @@
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/inter";
 @import "@fontsource-variable/geist";
+@import "@fontsource-variable/poppins";
 
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
   --font-heading: var(--font-sans);
-  --font-sans: "Geist Variable", sans-serif;
+  --font-sans: "Poppins Variable", "Geist Variable", sans-serif;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -17,6 +18,10 @@
   --color-sidebar-primary: var(--sidebar-primary);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar: var(--sidebar);
+  --color-chart-cache-read: var(--chart-cache-read);
+  --color-chart-cache-create: var(--chart-cache-create);
+  --color-chart-output: var(--chart-output);
+  --color-chart-input: var(--chart-input);
   --color-chart-5: var(--chart-5);
   --color-chart-4: var(--chart-4);
   --color-chart-3: var(--chart-3);
@@ -52,12 +57,16 @@
 }
 
 /*
- * Stitch visual language (ADR-0014). Single style, dual palette:
- *   light = Stitch 浅色 emerald/blue 原稿
- *   dark  = Stitch 深色化（同色系，切换时主色不跳）
- * KPI: emerald = Total Tokens, blue = Total Cost（--metric-*）。
- * Chart 5-color run 沿用 data-blue 冷暖基底（blue/cyan/violet/amber/magenta），
- * 与 Stitch 系列色近似；两主题同值，观感一致。Default theme = light。
+ * Visual language: Pixso dark (ADR-0011 演进).
+ *   - Dark theme = Pixso dark token set (#1C1C1E bg / #2C2C2E card /
+ *     #3A3A3C elevated / #14C393 brand). Flat solid surfaces — no glass,
+ *     no backdrop-blur, no glow shadows; surfaces separate by lightness
+ *     step + hairline border (iOS dark idiom).
+ *   - Chart palette = Okabe-Ito (colorblind-safe, placeholder). Swap this
+ *     one group to re-theme every chart without touching components.
+ *   - Font: Poppins (display + body), CJK falls back to system (PingFang/YaHei).
+ *   - Light theme retained as fallback (legacy grayscale + Okabe-Ito).
+ * Default theme = dark.
  */
 :root {
   --background: oklch(1 0 0);
@@ -78,13 +87,21 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --metric-tokens: oklch(0.69 0.17 162);
-  --metric-cost: oklch(0.56 0.19 264);
+  /* token-first semantic chart palette (Okabe-Ito, colorblind-safe). ADR-0011. */
+  --chart-input: #0072b2; /* 输入 input_tokens — 深蓝 */
+  --chart-output: #e69f00; /* 输出 output_tokens — 琥珀橙 */
+  --chart-cache-create: #009e73; /* 缓存创建 cache_creation — 青绿 */
+  --chart-cache-read: #56b4e9; /* 缓存命中 cache_read — 天蓝 */
+  --metric-tokens: #0072b2; /* token 总量主色 = input 深蓝 */
+  --metric-cost: #d55e00; /* 成本 USD — 朱红（token-first 下辅助维度）*/
+  /* Legacy --chart-1..5 aliases — used only by usage-trend-chart until task 4
+     rebuilds it on semantic names. Mapped to distinct Okabe-Ito colors so the
+     interim 5-series chart still reads well. Remove after task 4. */
+  --chart-1: #0072b2;
+  --chart-2: #e69f00;
+  --chart-3: #009e73;
+  --chart-4: #56b4e9;
+  --chart-5: #d55e00;
   --radius: 0.45rem;
   --sidebar: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
@@ -97,39 +114,44 @@
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --metric-tokens: oklch(0.77 0.16 162);
-  --metric-cost: oklch(0.62 0.19 264);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --background: #1c1c1e;
+  --foreground: #ffffff;
+  --card: #2c2c2e;
+  --card-foreground: #ffffff;
+  --popover: #2c2c2e;
+  --popover-foreground: #ffffff;
+  --primary: #14c393;
+  --primary-foreground: #04130d;
+  --secondary: #3a3a3c;
+  --secondary-foreground: #ffffff;
+  --muted: #3a3a3c;
+  --muted-foreground: rgba(235, 235, 245, 0.6);
+  --accent: #3a3a3c;
+  --accent-foreground: #ffffff;
+  --destructive: #f87171;
+  --border: rgba(255, 255, 255, 0.08);
+  --input: #3a3a3c;
+  --ring: #14c393;
+  /* Okabe-Ito chart palette (placeholder — re-theme this group only). */
+  --chart-input: #0072b2;
+  --chart-output: #e69f00;
+  --chart-cache-create: #009e73;
+  --chart-cache-read: #56b4e9;
+  --metric-tokens: #0072b2;
+  --metric-cost: #d55e00;
+  --chart-1: #0072b2;
+  --chart-2: #e69f00;
+  --chart-3: #009e73;
+  --chart-4: #56b4e9;
+  --chart-5: #d55e00;
+  --sidebar: #1c1c1e;
+  --sidebar-foreground: #ffffff;
+  --sidebar-primary: #14c393;
+  --sidebar-primary-foreground: #04130d;
+  --sidebar-accent: #3a3a3c;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: rgba(255, 255, 255, 0.08);
+  --sidebar-ring: #14c393;
 }
 
 @layer base {
@@ -138,10 +160,6 @@
   }
   body {
     @apply bg-background text-foreground;
-    /* Stitch grid backdrop (ADR-0014): subtle dot grid over the slate base;
-       theme-aware via --border. Cards float on top, grid shows in the gutters. */
-    background-image: radial-gradient(var(--border) 1px, transparent 1px);
-    background-size: 16px 16px;
   }
   html {
     @apply font-sans;
@@ -152,7 +170,7 @@
   }
 }
 
-/* Stitch grid backdrop utility — apply where the grid should show through. */
+/* Dot-grid backdrop utility (opt-in; default surface is flat solid). */
 .bg-grid {
   background-image: radial-gradient(var(--border) 1px, transparent 1px);
   background-size: 16px 16px;

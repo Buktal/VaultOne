@@ -1,15 +1,18 @@
-// Usage trend chart (BLUEPRINT 使用趋势): dual Y-axis ComposedChart — tokens on
-// the left axis, cost on the right. The total-tokens series is an area; the
-// remaining line series carry distinct strokeDasharray patterns as a
-// color-blind-redundant cue (chart lightness alone is too close across the
-// cold palette). Multiple series toggled via the legend.
+// Usage trend chart (ADR-0011, token-first): stacked area of the four token
+// buckets (input / output / cache creation / cache read). The stacked total
+// IS total consumption — the chart shows how each day's tokens compose.
+// Single token axis; cost is demoted to the KPI strip (token-first).
+//
+// NOTE: the spec's efficiency sub-charts (avg turn duration / request·turn by
+// day) need per-day turn aggregates that TrendPoint does not carry today —
+// only the global UsageStats has them. Daily turn trends require a backend
+// change (extend TrendPoint); tracked in backlog.
 
 import {
   Area,
+  AreaChart,
   CartesianGrid,
-  ComposedChart,
   Legend,
-  Line,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -17,75 +20,59 @@ import {
 } from "recharts"
 import { useTrendQuery } from "@/app/store/api"
 import { QueryState } from "@/components/query-state"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { formatCost, formatDay, formatTokens } from "@/lib/format"
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { usePollingInterval } from "@/hooks/use-polling-interval"
+import { formatDay, formatTokens } from "@/lib/format"
 
 import type { TrendPoint, UsageFilter } from "@/types/generated/bindings"
 
-type SeriesDef = {
+type Bucket = {
   key: keyof TrendPoint
   name: string
   color: string
-  axis: "left" | "right"
-  type: "area" | "line"
-  /** dash pattern for color-blind-redundant encoding on line series. */
-  dash?: string
 }
 
-const SERIES: SeriesDef[] = [
+// Stack order bottom → top: input (largest) at the base.
+const BUCKETS: Bucket[] = [
+  { key: "input_tokens", name: "输入", color: "var(--chart-input)" },
+  { key: "output_tokens", name: "输出", color: "var(--chart-output)" },
   {
-    key: "total_tokens",
-    name: "Tokens",
-    color: "var(--chart-1)",
-    axis: "left",
-    type: "area",
-  },
-  {
-    key: "input_tokens",
-    name: "输入",
-    color: "var(--chart-2)",
-    axis: "left",
-    type: "line",
-  },
-  {
-    key: "output_tokens",
-    name: "输出",
-    color: "var(--chart-3)",
-    axis: "left",
-    type: "line",
-    dash: "5 4",
+    key: "cache_creation_tokens",
+    name: "缓存创建",
+    color: "var(--chart-cache-create)",
   },
   {
     key: "cache_read_tokens",
     name: "缓存命中",
-    color: "var(--chart-4)",
-    axis: "left",
-    type: "line",
-    dash: "1 3",
-  },
-  {
-    key: "total_cost_usd",
-    name: "成本",
-    color: "var(--chart-5)",
-    axis: "right",
-    type: "line",
-    dash: "6 3",
+    color: "var(--chart-cache-read)",
   },
 ]
 
 export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
+  const pollingInterval = usePollingInterval()
   const {
     data = [],
     isLoading,
     error,
   } = useTrendQuery(filter, {
-    pollingInterval: 30_000,
+    pollingInterval,
   })
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>使用趋势</CardTitle>
+        <CardAction>
+          <span className="text-muted-foreground text-xs tabular-nums">
+            {data.length > 0 ? `近 ${data.length} 天` : "无数据"}
+          </span>
+        </CardAction>
       </CardHeader>
       <CardContent>
         <QueryState
@@ -97,7 +84,7 @@ export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
         >
           <div className="h-72 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart
+              <AreaChart
                 data={data}
                 margin={{ top: 8, right: 16, bottom: 0, left: 0 }}
               >
@@ -109,50 +96,27 @@ export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
                   stroke="var(--muted-foreground)"
                 />
                 <YAxis
-                  yAxisId="left"
                   tickFormatter={(v) => formatTokens(Number(v))}
-                  fontSize={12}
-                  stroke="var(--muted-foreground)"
-                />
-                <YAxis
-                  yAxisId="right"
-                  orientation="right"
-                  tickFormatter={(v) => formatCost(Number(v))}
                   fontSize={12}
                   stroke="var(--muted-foreground)"
                 />
                 <Tooltip content={<TrendTooltip />} />
                 <Legend />
-                {SERIES.map((s) =>
-                  s.type === "area" ? (
-                    <Area
-                      key={s.key}
-                      yAxisId={s.axis}
-                      type="monotone"
-                      dataKey={s.key}
-                      name={s.name}
-                      stroke={s.color}
-                      fill={s.color}
-                      fillOpacity={0.08}
-                      strokeWidth={2}
-                      isAnimationActive={false}
-                    />
-                  ) : (
-                    <Line
-                      key={s.key}
-                      yAxisId={s.axis}
-                      type="monotone"
-                      dataKey={s.key}
-                      name={s.name}
-                      stroke={s.color}
-                      dot={false}
-                      strokeWidth={1.5}
-                      strokeDasharray={s.dash}
-                      isAnimationActive={false}
-                    />
-                  ),
-                )}
-              </ComposedChart>
+                {BUCKETS.map((b) => (
+                  <Area
+                    key={b.key}
+                    type="monotone"
+                    dataKey={b.key}
+                    name={b.name}
+                    stackId="tokens"
+                    stroke={b.color}
+                    fill={b.color}
+                    fillOpacity={0.75}
+                    strokeWidth={1}
+                    isAnimationActive={false}
+                  />
+                ))}
+              </AreaChart>
             </ResponsiveContainer>
           </div>
         </QueryState>
@@ -161,18 +125,21 @@ export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
   )
 }
 
+type TooltipPayload = {
+  dataKey: string
+  value: number | null
+  name: string
+  color: string
+}
+
 function TrendTooltip(props: {
   active?: boolean
-  payload?: Array<{
-    dataKey: string
-    value: number | null
-    name: string
-    color: string
-  }>
+  payload?: TooltipPayload[]
   label?: string
 }) {
   const { active, payload, label } = props
   if (!active || !payload?.length) return null
+  const total = payload.reduce((sum, p) => sum + Number(p.value ?? 0), 0)
   return (
     <div className="bg-popover rounded-md border p-2 text-xs shadow-sm">
       <div className="mb-1 font-medium">{label ? formatDay(label) : ""}</div>
@@ -188,13 +155,13 @@ function TrendTooltip(props: {
             />
             {p.name}
           </span>
-          <span className="tabular-nums">
-            {p.dataKey === "total_cost_usd"
-              ? formatCost(p.value)
-              : formatTokens(Number(p.value))}
-          </span>
+          <span className="tabular-nums">{formatTokens(Number(p.value))}</span>
         </div>
       ))}
+      <div className="mt-1 flex items-center justify-between gap-4 border-t pt-1 font-medium">
+        <span>合计</span>
+        <span className="tabular-nums">{formatTokens(total)}</span>
+      </div>
     </div>
   )
 }

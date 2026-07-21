@@ -1,9 +1,9 @@
 //! VaultOne Tauri backend library.
 //!
-//! Module tree (ADR-0010 sketch): config / db / providers / ingest / pricing /
+//! Module tree: config / db / providers / ingest / pricing /
 //! commands, behind a tauri-specta typed contract (ADR-0008). First start
 //! bootstraps the local data dir + deviceId and defaults to Standalone
-//! (ADR-0011).
+//! (ADR-0006).
 
 use std::sync::Arc;
 
@@ -93,14 +93,14 @@ pub fn run() {
         return;
     }
 
-    // Boot (ADR-0004 / 0002 / 0011): load config (bootstraps dir + deviceId),
+    // Boot (ADR-0004 / 0002 / 0006): load config (bootstraps dir + deviceId),
     // open the Local Store (seeds pricing), register this device.
     let config = ConfigStore::load().expect("vaultone: failed to load local config");
     let store = Store::open(&config.paths().db).expect("vaultone: failed to open Local Store");
     {
         let cfg = config.get();
         let _ = store.upsert_device(&cfg.device_id, &cfg.display_name, true);
-        // Best-effort zero-cost top-up on boot (ADR-0009): newly-seeded pricing
+        // Best-effort zero-cost top-up on boot (ADR-0007): newly-seeded pricing
         // may price rows that were imported while the model was missing.
         let book = store.load_pricing_book().unwrap_or_else(|e| {
             eprintln!("[vaultone] boot rebill skipped: {e}");

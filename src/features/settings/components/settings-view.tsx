@@ -25,6 +25,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ConflictResolver } from "@/features/settings/components/conflict-resolver"
+import { DeviceList } from "@/features/settings/components/device-list"
 import type { ConfigConflict } from "@/types/generated/bindings"
 
 export function SettingsView() {
@@ -78,7 +79,7 @@ export function SettingsView() {
           </Row>
           <Row label="运行模式">
             <Badge variant={synced ? "default" : "secondary"}>
-              {synced ? "Synced（多设备）" : "Standalone（单机）"}
+              {synced ? "已同步（多设备）" : "单机"}
             </Badge>
           </Row>
           <Row label="Claude 日志目录">
@@ -240,6 +241,8 @@ export function SettingsView() {
           </div>
         </CardContent>
       </Card>
+
+      <DeviceList />
 
       <Card>
         <CardHeader>

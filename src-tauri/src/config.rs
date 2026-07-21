@@ -1,9 +1,9 @@
-//! Local data layout + config (ADR-0002 / 0004 / 0011).
+//! Local data layout + config (ADR-0002 / 0004 / 0006).
 //!
 //! Everything lives under `~/.config/vaultone/` (even on Windows:
 //! `C:\Users\<user>\.config\vaultone\`, CodeBurn-style, ADR-0004). The local
 //! `config.json` (token / deviceId / repo URL / display-name map) never enters
-//! the repo. First start defaults to Standalone (ADR-0011).
+//! the repo. First start defaults to Standalone (ADR-0006).
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -59,7 +59,7 @@ impl Paths {
             .join(format!("usage-{day}.jsonl"))
     }
 
-    /// Cloud pricing config: `repo/config/pricing.json` (ADR-0006).
+    /// Cloud pricing config: `repo/config/pricing.json` (ADR-0007).
     pub fn pricing_json(&self) -> PathBuf {
         self.repo_config.join("pricing.json")
     }
@@ -71,7 +71,7 @@ pub struct ConfigData {
     pub device_id: String,
     /// Friendly name for *this* device (ADR-0002: display name, not a key).
     pub display_name: String,
-    /// Sync repo URL; `None` ⇒ Standalone (ADR-0011).
+    /// Sync repo URL; `None` ⇒ Standalone (ADR-0006).
     pub repo_url: Option<String>,
     /// Fine-grained PAT (ADR-0004); kept only in local config + Rust memory.
     #[serde(default)]
@@ -100,7 +100,7 @@ impl Default for ConfigData {
 }
 
 impl ConfigData {
-    /// Synced iff a repo URL *and* a token are configured (ADR-0011).
+    /// Synced iff a repo URL *and* a token are configured (ADR-0006).
     pub fn mode(&self) -> RunMode {
         match self.repo_url.as_deref().zip(self.github_token.as_deref()) {
             Some((url, token)) if !url.trim().is_empty() && !token.trim().is_empty() => {

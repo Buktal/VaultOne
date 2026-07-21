@@ -1,4 +1,4 @@
--- VaultOne SQLite Local Store schema (ADR-0002 / 0004 / 0005 / 0009).
+-- VaultOne SQLite Local Store schema (ADR-0002 / 0004 / 0005 / 0007).
 -- Idempotent migration: CREATE ... IF NOT EXISTS. Run on every open.
 -- Naming is snake_case end-to-end (Rust ↔ SQLite ↔ JSONL ↔ TS).
 
@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS ledger (
     ingested_at TEXT NOT NULL
 );
 
--- Daily rollups cache (ADR-0009: derived, holds total_cost_usd). Per (day,model,device).
+-- Daily rollups cache (ADR-0007: derived, holds total_cost_usd). Per (day,model,device).
 CREATE TABLE IF NOT EXISTS daily_rollups (
     day                    TEXT NOT NULL,
     model                  TEXT NOT NULL,
@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS daily_rollups (
     PRIMARY KEY (day, model, device_id)
 );
 
--- Pricing table (ADR-0006: LiteLLM seed + user overrides). Decimal as TEXT.
+-- Pricing table (ADR-0007: LiteLLM seed + user overrides). Decimal as TEXT.
 CREATE TABLE IF NOT EXISTS model_pricing (
     model_key                TEXT PRIMARY KEY,        -- normalized id
     display_name             TEXT NOT NULL,

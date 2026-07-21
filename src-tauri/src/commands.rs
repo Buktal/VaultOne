@@ -1,8 +1,8 @@
-//! Tauri command layer (ADR-0007 query boundary / ADR-0008 typed contract).
+//! Tauri command layer (ADR-0008 typed contract — the query boundary).
 //!
 //! Every command is `#[specta::specta]` with typed args/return/error; tauri-specta
 //! generates the matching typed JS function. `tauri::State` args are injected by
-//! the runtime and excluded from the JS signature. JS never sees SQL (ADR-0007).
+//! the runtime and excluded from the JS signature. JS never sees SQL (ADR-0008).
 //!
 //! The state holds `Arc`s so blocking work can be moved onto `spawn_blocking`
 //! without borrowing the request-scoped `State` (which is not `'static`).
@@ -45,7 +45,7 @@ pub struct AppInfo {
 
 // ---------------- App info / config ----------------
 
-/// App status: device, mode (Standalone/Synced), paths, version (ADR-0011).
+/// App status: device, mode (Standalone/Synced), paths, version (ADR-0006).
 #[tauri::command]
 #[specta::specta]
 pub fn get_app_info(state: State<'_, AppState>) -> AppResult<AppInfo> {
@@ -63,7 +63,7 @@ pub fn get_app_info(state: State<'_, AppState>) -> AppResult<AppInfo> {
     })
 }
 
-/// Configure the sync repo + PAT, upgrading Standalone → Synced (ADR-0011).
+/// Configure the sync repo + PAT, upgrading Standalone → Synced (ADR-0006).
 #[tauri::command]
 #[specta::specta]
 pub fn set_sync_repo(
@@ -86,7 +86,7 @@ pub fn set_sync_repo(
     Ok(cfg.mode())
 }
 
-/// Unbind the repo, downgrading to Standalone (ADR-0011). Local data retained.
+/// Unbind the repo, downgrading to Standalone (ADR-0006). Local data retained.
 #[tauri::command]
 #[specta::specta]
 pub fn clear_sync_repo(state: State<'_, AppState>) -> AppResult<RunMode> {
@@ -131,7 +131,7 @@ pub fn set_device_display_name(
 // ---------------- Collect / ingest ----------------
 
 /// Discover + parse Claude Code sessions, compute cost, write Local Store +
-/// JSONL Artifact (ADR-0001 / 0009), then best-effort push the new Artifact in
+/// JSONL Artifact (ADR-0001 / 0004), then best-effort push the new Artifact in
 /// Synced mode (ADR-0005). Heavy disk/git work → offloaded to a thread.
 #[tauri::command]
 #[specta::specta]
@@ -195,7 +195,7 @@ pub async fn sync_config(state: State<'_, AppState>) -> AppResult<ConfigSyncOutc
         let cfg = config.get();
         if !cfg.is_synced() {
             return Err(AppError::Sync(
-                "not in Synced mode (ADR-0011): cloud config sync unavailable".into(),
+                "not in Synced mode (ADR-0006): cloud config sync unavailable".into(),
             ));
         }
         let paths = config.paths();
@@ -220,7 +220,7 @@ pub async fn resolve_config_conflict(
         let cfg = config.get();
         if !cfg.is_synced() {
             return Err(AppError::Sync(
-                "not in Synced mode (ADR-0011): conflict resolve unavailable".into(),
+                "not in Synced mode (ADR-0006): conflict resolve unavailable".into(),
             ));
         }
         let paths = config.paths();
@@ -230,7 +230,7 @@ pub async fn resolve_config_conflict(
     .map_err(|e| AppError::Internal(format!("config resolve task failed: {e}")))?
 }
 
-/// Rebill zero-cost rows whose model now has a price (ADR-0009 top-up).
+/// Rebill zero-cost rows whose model now has a price (ADR-0007 top-up).
 #[tauri::command]
 #[specta::specta]
 pub fn rebill_zero_cost(state: State<'_, AppState>) -> AppResult<u32> {
@@ -297,7 +297,7 @@ pub fn list_devices(state: State<'_, AppState>) -> AppResult<Vec<DeviceInfo>> {
     state.store.list_devices()
 }
 
-// ---------------- Pricing (ADR-0006) ----------------
+// ---------------- Pricing (ADR-0007) ----------------
 
 #[tauri::command]
 #[specta::specta]
@@ -324,7 +324,7 @@ pub fn delete_pricing_entry(state: State<'_, AppState>, model_key: String) -> Ap
     state.store.delete_pricing(&model_key)
 }
 
-/// Re-load pricing from the cloud `pricing.json` into the DB (ADR-0006).
+/// Re-load pricing from the cloud `pricing.json` into the DB (ADR-0007).
 /// In Standalone this is the local `repo/config/pricing.json`; no push.
 #[tauri::command]
 #[specta::specta]
@@ -344,7 +344,7 @@ pub fn reload_pricing_from_file(state: State<'_, AppState>) -> AppResult<u32> {
     Ok(entries.len() as u32)
 }
 
-/// Persist current DB pricing to the cloud `pricing.json` (ADR-0006).
+/// Persist current DB pricing to the cloud `pricing.json` (ADR-0007).
 #[tauri::command]
 #[specta::specta]
 pub fn save_pricing_to_file(state: State<'_, AppState>) -> AppResult<()> {
@@ -358,7 +358,7 @@ pub fn save_pricing_to_file(state: State<'_, AppState>) -> AppResult<()> {
     Ok(())
 }
 
-/// Fetch LiteLLM upstream pricing and merge into the DB (ADR-0006 seed).
+/// Fetch LiteLLM upstream pricing and merge into the DB (ADR-0007 seed).
 /// Network → async + offloaded. Best-effort: returns count merged (0 offline).
 #[tauri::command]
 #[specta::specta]

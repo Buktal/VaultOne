@@ -1,11 +1,11 @@
-//! SQLite Local Store (ADR-0004 / 0005 / 0007 / 0008 / 0009).
+//! SQLite Local Store (ADR-0004 / 0005 / 0007 / 0008).
 //!
 //! Owns the schema, the dedup ledger, daily rollups cache, pricing table and
 //! device registry. Exposes typed read methods (stats / trend / logs / models)
 //! and write methods (ingest, pricing CRUD, rebill) — the JS layer never sees
-//! SQL (ADR-0007 query boundary; ADR-0008 typed commands).
+//! SQL (ADR-0008: typed command boundary).
 //!
-//! Cost columns are `rust_decimal::Decimal` stored as TEXT (ADR-0009); sums over
+//! Cost columns are `rust_decimal::Decimal` stored as TEXT (ADR-0004); sums over
 //! them read back as REAL for display (f64 is display-only — JS never recomputes
 //! cost).
 
@@ -20,7 +20,7 @@ use crate::model::{
 };
 use crate::pricing::{ModelPricing, PricingBook};
 
-/// Schema DDL (ADR-0002 / 0004 / 0009). `IF NOT EXISTS` ⇒ idempotent migration.
+/// Schema DDL (ADR-0002 / 0004 / 0007). `IF NOT EXISTS` ⇒ idempotent migration.
 pub const SCHEMA: &str = include_str!("db_schema.sql");
 
 /// Thread-safe wrapper over a single SQLite connection.
@@ -42,7 +42,7 @@ impl Store {
         Ok(store)
     }
 
-    /// Seed the pricing table from the built-in book if it is empty (ADR-0006).
+    /// Seed the pricing table from the built-in book if it is empty (ADR-0007).
     fn ensure_pricing_seed(&self) -> AppResult<()> {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM model_pricing", [], |r| r.get(0))?;
@@ -248,7 +248,7 @@ impl Store {
         Ok(inserted)
     }
 
-    /// Rebill zero-cost rows whose model now has a price (ADR-0009: freeze +
+    /// Rebill zero-cost rows whose model now has a price (ADR-0007: freeze +
     /// top-up zero-cost only). Returns the number of rows rebilled.
     pub fn rebill_zero_cost(&self, book: &PricingBook) -> AppResult<usize> {
         let mut conn = self.conn.lock().expect("db mutex poisoned");

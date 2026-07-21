@@ -117,75 +117,76 @@ export function PricingView() {
 
   return (
     <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative">
+          <Search className="text-muted-foreground absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="搜索模型…"
+            className="h-8 w-44 pl-7"
+            aria-label="搜索模型"
+          />
+        </div>
+        <div className="flex items-center gap-1">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="outline"
+                  size="icon-sm"
+                  disabled={fetching}
+                  onClick={onFetchLitellm}
+                  aria-label="拉取 LiteLLM"
+                />
+              }
+            >
+              <CloudDownload />
+            </TooltipTrigger>
+            <TooltipContent>拉取 LiteLLM</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="outline"
+                  size="icon-sm"
+                  disabled={reloading}
+                  onClick={onReloadFile}
+                  aria-label="读取 pricing.json"
+                />
+              }
+            >
+              <FileUp />
+            </TooltipTrigger>
+            <TooltipContent>读取 pricing.json</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="outline"
+                  size="icon-sm"
+                  disabled={savingFile}
+                  onClick={onSaveFile}
+                  aria-label="写入 pricing.json"
+                />
+              }
+            >
+              <FileDown />
+            </TooltipTrigger>
+            <TooltipContent>写入 pricing.json</TooltipContent>
+          </Tooltip>
+        </div>
+        <div className="ml-auto" />
+        <Button size="sm" onClick={openNew}>
+          <Plus />
+          新增
+        </Button>
+      </div>
       <Card>
-        <CardHeader className="flex-row items-center justify-between gap-3">
+        <CardHeader>
           <CardTitle>成本定价（每百万 Token / USD）</CardTitle>
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="relative">
-              <Search className="text-muted-foreground absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
-              <Input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="搜索模型…"
-                className="h-8 w-44 pl-7"
-                aria-label="搜索模型"
-              />
-            </div>
-            <div className="flex items-center gap-1">
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      variant="outline"
-                      size="icon-sm"
-                      disabled={fetching}
-                      onClick={onFetchLitellm}
-                      aria-label="拉取 LiteLLM"
-                    />
-                  }
-                >
-                  <CloudDownload />
-                </TooltipTrigger>
-                <TooltipContent>拉取 LiteLLM</TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      variant="outline"
-                      size="icon-sm"
-                      disabled={reloading}
-                      onClick={onReloadFile}
-                      aria-label="读取 pricing.json"
-                    />
-                  }
-                >
-                  <FileUp />
-                </TooltipTrigger>
-                <TooltipContent>读取 pricing.json</TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      variant="outline"
-                      size="icon-sm"
-                      disabled={savingFile}
-                      onClick={onSaveFile}
-                      aria-label="写入 pricing.json"
-                    />
-                  }
-                >
-                  <FileDown />
-                </TooltipTrigger>
-                <TooltipContent>写入 pricing.json</TooltipContent>
-              </Tooltip>
-            </div>
-            <Button size="sm" onClick={openNew}>
-              <Plus />
-              新增
-            </Button>
-          </div>
         </CardHeader>
         <CardContent>
           <Table>

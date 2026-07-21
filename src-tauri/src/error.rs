@@ -15,16 +15,16 @@ pub enum AppError {
     /// The local data dir / config could not be created or read (ADR-0004).
     #[error("config error: {0}")]
     Config(String),
-    /// SQLite Local Store error (ADR-0004 / 0009).
+    /// SQLite Local Store error (ADR-0004).
     #[error("db error: {0}")]
     Db(String),
     /// Provider failed to discover/parse Source logs (ADR-0001).
     #[error("provider error: {0}")]
     Provider(String),
-    /// Pricing lookup / cost calc error (ADR-0009).
+    /// Pricing lookup / cost calc error (ADR-0007).
     #[error("pricing error: {0}")]
     Pricing(String),
-    /// Sync (git2 / network) error — only raised in Synced mode (ADR-0010).
+    /// Sync (git2 / network) error — only raised in Synced mode (ADR-0005).
     #[error("sync error: {0}")]
     Sync(String),
     /// Catch-all for anything not covered above.

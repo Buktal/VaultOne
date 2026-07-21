@@ -5,11 +5,11 @@ import { invoke as __TAURI_INVOKE } from "@tauri-apps/api/core";
 
 /** Commands */
 export const commands = {
-	/**  App status: device, mode (Standalone/Synced), paths, version (ADR-0011). */
+	/**  App status: device, mode (Standalone/Synced), paths, version (ADR-0006). */
 	getAppInfo: () => typedError<AppInfo, AppError>(__TAURI_INVOKE("get_app_info")),
-	/**  Configure the sync repo + PAT, upgrading Standalone → Synced (ADR-0011). */
+	/**  Configure the sync repo + PAT, upgrading Standalone → Synced (ADR-0006). */
 	setSyncRepo: (repoUrl: string, githubToken: string) => typedError<RunMode, AppError>(__TAURI_INVOKE("set_sync_repo", { repoUrl, githubToken })),
-	/**  Unbind the repo, downgrading to Standalone (ADR-0011). Local data retained. */
+	/**  Unbind the repo, downgrading to Standalone (ADR-0006). Local data retained. */
 	clearSyncRepo: () => typedError<RunMode, AppError>(__TAURI_INVOKE("clear_sync_repo")),
 	/**  Rename *this* device (display name only — not a uniqueness key, ADR-0002). */
 	setDisplayName: (displayName: string) => typedError<null, AppError>(__TAURI_INVOKE("set_display_name", { displayName })),
@@ -17,7 +17,7 @@ export const commands = {
 	setDeviceDisplayName: (deviceId: string, displayName: string) => typedError<null, AppError>(__TAURI_INVOKE("set_device_display_name", { deviceId, displayName })),
 	/**
 	 *  Discover + parse Claude Code sessions, compute cost, write Local Store +
-	 *  JSONL Artifact (ADR-0001 / 0009), then best-effort push the new Artifact in
+	 *  JSONL Artifact (ADR-0001 / 0004), then best-effort push the new Artifact in
 	 *  Synced mode (ADR-0005). Heavy disk/git work → offloaded to a thread.
 	 */
 	collectNow: () => typedError<IngestReport, AppError>(__TAURI_INVOKE("collect_now")),
@@ -39,7 +39,7 @@ export const commands = {
 	 *  reported as conflicting.
 	 */
 	resolveConfigConflict: (choices: ConfigConflictResolution[]) => typedError<ConfigSyncOutcome, AppError>(__TAURI_INVOKE("resolve_config_conflict", { choices })),
-	/**  Rebill zero-cost rows whose model now has a price (ADR-0009 top-up). */
+	/**  Rebill zero-cost rows whose model now has a price (ADR-0007 top-up). */
 	rebillZeroCost: () => typedError<number, AppError>(__TAURI_INVOKE("rebill_zero_cost")),
 	queryUsageStats: (filter: UsageFilter) => typedError<UsageStats, AppError>(__TAURI_INVOKE("query_usage_stats", { filter })),
 	queryUsageTrend: (filter: UsageFilter) => typedError<TrendPoint[], AppError>(__TAURI_INVOKE("query_usage_trend", { filter })),
@@ -54,14 +54,14 @@ export const commands = {
 	savePricingEntry: (entry: PricingEntry, isBuiltin: boolean | null) => typedError<null, AppError>(__TAURI_INVOKE("save_pricing_entry", { entry, isBuiltin })),
 	deletePricingEntry: (modelKey: string) => typedError<null, AppError>(__TAURI_INVOKE("delete_pricing_entry", { modelKey })),
 	/**
-	 *  Re-load pricing from the cloud `pricing.json` into the DB (ADR-0006).
+	 *  Re-load pricing from the cloud `pricing.json` into the DB (ADR-0007).
 	 *  In Standalone this is the local `repo/config/pricing.json`; no push.
 	 */
 	reloadPricingFromFile: () => typedError<number, AppError>(__TAURI_INVOKE("reload_pricing_from_file")),
-	/**  Persist current DB pricing to the cloud `pricing.json` (ADR-0006). */
+	/**  Persist current DB pricing to the cloud `pricing.json` (ADR-0007). */
 	savePricingToFile: () => typedError<null, AppError>(__TAURI_INVOKE("save_pricing_to_file")),
 	/**
-	 *  Fetch LiteLLM upstream pricing and merge into the DB (ADR-0006 seed).
+	 *  Fetch LiteLLM upstream pricing and merge into the DB (ADR-0007 seed).
 	 *  Network → async + offloaded. Best-effort: returns count merged (0 offline).
 	 */
 	fetchLitellmPricing: () => typedError<number, AppError>(__TAURI_INVOKE("fetch_litellm_pricing")),
@@ -78,13 +78,13 @@ export const commands = {
 export type AppError = 
 /**  The local data dir / config could not be created or read (ADR-0004). */
 { type: "Config"; data: string } | 
-/**  SQLite Local Store error (ADR-0004 / 0009). */
+/**  SQLite Local Store error (ADR-0004). */
 { type: "Db"; data: string } | 
 /**  Provider failed to discover/parse Source logs (ADR-0001). */
 { type: "Provider"; data: string } | 
-/**  Pricing lookup / cost calc error (ADR-0009). */
+/**  Pricing lookup / cost calc error (ADR-0007). */
 { type: "Pricing"; data: string } | 
-/**  Sync (git2 / network) error — only raised in Synced mode (ADR-0010). */
+/**  Sync (git2 / network) error — only raised in Synced mode (ADR-0005). */
 { type: "Sync"; data: string } | 
 /**  Catch-all for anything not covered above. */
 { type: "Internal"; data: string };
@@ -123,7 +123,7 @@ export type ConfigConflictResolution = {
 };
 
 /**
- *  A cloud-config file under `repo/config/` (ADR-0006). Crosses the boundary as
+ *  A cloud-config file under `repo/config/` (ADR-0007). Crosses the boundary as
  *  a snake_case tag (`"pricing"` …) so the UI can switch on it without path math.
  */
 export type ConfigFile = "app" | "user" | "pricing";

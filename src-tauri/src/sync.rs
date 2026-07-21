@@ -1,6 +1,6 @@
-//! GitHub-repo sync over libgit2 (ADR-0010).
+//! GitHub-repo sync over libgit2 (ADR-0005).
 //!
-//! Synced-mode only (ADR-0011): the high-level entry (`ensure_repo`) refuses to
+//! Synced-mode only (ADR-0006): the high-level entry (`ensure_repo`) refuses to
 //! run unless a repo URL *and* a PAT are configured, so Standalone mode never
 //! touches a remote. Auth is an in-process git2 credential callback — the
 //! fine-grained PAT (ADR-0004) lives only in Rust memory; it never appears in
@@ -24,7 +24,7 @@ use crate::config::ConfigData;
 use crate::error::{AppError, AppResult};
 
 // ---------------------------------------------------------------------------
-// Credential callback (ADR-0010: in-process PAT)
+// Credential callback (ADR-0005: in-process PAT)
 // ---------------------------------------------------------------------------
 
 /// Build a GitHub PAT credential. GitHub accepts the fine-grained PAT as the
@@ -196,7 +196,7 @@ pub fn push(repo: &Repository, token: &str) -> AppResult<()> {
 }
 
 // ---------------------------------------------------------------------------
-// High-level entry (Standalone guard, ADR-0011)
+// High-level entry (Standalone guard, ADR-0006)
 // ---------------------------------------------------------------------------
 
 /// Return the configured repo URL + PAT, or an error in Standalone mode.
@@ -205,7 +205,7 @@ pub fn push(repo: &Repository, token: &str) -> AppResult<()> {
 pub fn require_synced(cfg: &ConfigData) -> AppResult<(String, String)> {
     if !cfg.is_synced() {
         return Err(AppError::Sync(
-            "not in Synced mode (ADR-0011): no repo URL / PAT configured".into(),
+            "not in Synced mode (ADR-0006): no repo URL / PAT configured".into(),
         ));
     }
     // `is_synced` guarantees both are present and non-blank.
@@ -307,7 +307,7 @@ pub fn sync_now(
 // Conflict resolution rewrites the worktree so the SAFE pull can advance, then
 // restores local-wins files afterward (ADR-0005 "pick a version").
 
-/// A cloud-config file under `repo/config/` (ADR-0006). Crosses the boundary as
+/// A cloud-config file under `repo/config/` (ADR-0007). Crosses the boundary as
 /// a snake_case tag (`"pricing"` …) so the UI can switch on it without path math.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
@@ -474,7 +474,7 @@ fn pricing_fingerprint(paths: &crate::config::Paths) -> String {
     std::fs::read_to_string(paths.pricing_json()).unwrap_or_default()
 }
 
-/// Reload the (just-pulled) cloud `pricing.json` into the Store (ADR-0006).
+/// Reload the (just-pulled) cloud `pricing.json` into the Store (ADR-0007).
 fn reload_pricing_into_store(
     store: &crate::db::Store,
     paths: &crate::config::Paths,

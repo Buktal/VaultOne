@@ -40,7 +40,7 @@ export function ConflictResolver({
   }
 
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3">
+    <div className="border-destructive/40 bg-destructive/5 flex flex-col gap-2 rounded-md border p-3">
       <p className="text-muted-foreground text-xs">
         本地与远端都改了下列云配置文件，请逐个选择保留版本（ADR-0005：不自动覆盖）。
       </p>
