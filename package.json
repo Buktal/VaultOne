@@ -8,7 +8,7 @@
     "check": "yarn web:check && yarn rust:check",
     "test": "yarn rust:test",
     "fix": "yarn web:fix && yarn rust:fix",
-    "ci": "yarn check && yarn test && yarn web:build",
+    "ci": "yarn run check && yarn test && yarn web:build",
     "dist": "yarn tauri:build",
     "web:dev": "vite",
     "web:check": "biome check && tsc --noEmit",
