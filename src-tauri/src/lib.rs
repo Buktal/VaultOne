@@ -8,7 +8,9 @@
 use std::sync::Arc;
 
 use specta_typescript::Typescript;
-use tauri::Manager;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{Emitter, Manager};
 use tauri_specta::Builder;
 
 mod commands;
@@ -52,6 +54,10 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::reload_pricing_from_file,
         commands::save_pricing_to_file,
         commands::fetch_litellm_pricing,
+        commands::get_preferences,
+        commands::set_close_behavior,
+        commands::set_collect_interval,
+        commands::confirm_close,
     ])
 }
 
@@ -120,6 +126,25 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(state)
         .invoke_handler(builder.invoke_handler())
+        .on_window_event(|window, event| {
+            // Close→tray routing (ADR-0012). Only the main window exists.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let state = window.app_handle().state::<AppState>();
+                match state.config.get().close_behavior {
+                    crate::config::CloseBehavior::Quit => {
+                        // Let it close — triggers the exit flush (RunEvent).
+                    }
+                    crate::config::CloseBehavior::Minimize => {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                    crate::config::CloseBehavior::Ask => {
+                        api.prevent_close();
+                        let _ = window.app_handle().emit("close-requested", ());
+                    }
+                }
+            }
+        })
         .setup(|app| {
             let state: tauri::State<AppState> = app.state::<AppState>();
 
@@ -138,17 +163,56 @@ pub fn run() {
                 }
             });
 
-            // Periodic push (~10 min, ADR-0005): crash / power-loss backstop.
+            // System tray (ADR-0012): left-click shows the window; the menu is
+            // Quit only — collect / sync live inside the window, not the tray.
+            let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&quit_item])?;
+            let _tray = TrayIconBuilder::with_id("main")
+                .tooltip("VaultOne")
+                .icon(app.default_window_icon().cloned().unwrap())
+                .menu(&menu)
+                .on_menu_event(|app, event| {
+                    if event.id.as_ref() == "quit" {
+                        app.exit(0);
+                    }
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+
+            // Background scheduler (ADR-0012): periodic collect in both modes,
+            // chained push when Synced. Replaces the old push-only loop. The
+            // first tick is collect-only so it does not race the startup pull's
+            // git-worktree ops; later ticks collect + push. Interval is re-read
+            // every tick so Settings changes apply without a restart.
+            let store = state.store.clone();
             let config = state.config.clone();
-            std::thread::spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_secs(600));
-                let cfg = config.get();
-                if !cfg.is_synced() {
-                    continue;
-                }
-                let paths = config.paths();
-                if let Err(e) = crate::sync::commit_and_push(&paths, &cfg) {
-                    eprintln!("[vaultone] periodic push failed: {e}");
+            let app_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                let mut first = true;
+                loop {
+                    let interval = config.get().collect_interval_secs.clamp(60, 3600);
+                    if let Err(e) = commands::collect_into(&store, &config) {
+                        eprintln!("[vaultone] scheduled collect failed: {e}");
+                    }
+                    let _ = app_handle.emit("usage_changed", ());
+                    if !first {
+                        commands::push_if_synced(&config);
+                    }
+                    first = false;
+                    std::thread::sleep(std::time::Duration::from_secs(interval));
                 }
             });
 

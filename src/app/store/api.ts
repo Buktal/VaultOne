@@ -1,4 +1,5 @@
 import { createApi, fakeBaseQuery } from "@reduxjs/toolkit/query/react"
+import { invoke } from "@tauri-apps/api/core"
 import type {
   AppError,
   AppInfo,
@@ -17,6 +18,7 @@ import type {
   UsageStats,
 } from "@/types/generated/bindings"
 import { commands } from "@/types/generated/bindings"
+import type { CloseBehavior, Preferences } from "@/types/preferences"
 
 /**
  * RTK Query data layer over the typed Tauri command contract.
@@ -216,6 +218,25 @@ export const vaultApi = createApi({
       }),
       invalidatesTags: ["Devices"],
     }),
+
+    // ---- preferences (ADR-0012: tray + background) ----
+    // Raw `invoke` until bindings regenerate; same envelope as generated cmds.
+    preferences: b.query<Preferences, void>({
+      queryFn: async () => ({ data: await run(invoke("get_preferences")) }),
+      providesTags: ["App"],
+    }),
+    setCloseBehavior: b.mutation<Preferences, CloseBehavior>({
+      queryFn: async (closeBehavior) => ({
+        data: await run(invoke("set_close_behavior", { closeBehavior })),
+      }),
+      invalidatesTags: ["App"],
+    }),
+    setCollectInterval: b.mutation<Preferences, number>({
+      queryFn: async (seconds) => ({
+        data: await run(invoke("set_collect_interval", { seconds })),
+      }),
+      invalidatesTags: ["App"],
+    }),
   }),
 })
 
@@ -244,6 +265,20 @@ export const {
   useClearSyncRepoMutation,
   useSetDisplayNameMutation,
   useSetDeviceDisplayNameMutation,
+  usePreferencesQuery,
+  useSetCloseBehaviorMutation,
+  useSetCollectIntervalMutation,
 } = vaultApi
 
 export type VaultApi = typeof vaultApi
+
+/**
+ * Resolve the one-time close dialog (ADR-0012). Not an RTK Query endpoint —
+ * it is a one-shot action (hide window / exit app). `remember` pins `choice`.
+ */
+export async function confirmClose(
+  choice: CloseBehavior,
+  remember: boolean,
+): Promise<void> {
+  await run(invoke("confirm_close", { choice, remember }))
+}
