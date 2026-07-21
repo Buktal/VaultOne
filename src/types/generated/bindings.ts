@@ -240,12 +240,19 @@ export type TrendPoint = {
  * 
  *  All fields optional; `None` means "no constraint". `device_scope` is the
  *  semantic cache-key axis: `None` = all devices.
+ * 
+ *  Range bounds are ISO8601 **timestamps**, not `day` strings. The `day` column
+ *  is a UTC whole-day bucket (ADR-0004 cross-device determinism), so a local
+ *  "today" in a non-UTC zone (e.g. UTC+8) straddles two UTC days; filtering on
+ *  `day` would drop early-morning rows. The frontend converts its local-day
+ *  range to UTC timestamps, and we filter on `timestamp` (ADR-0004 amendment:
+ *  `day` stays the UTC bucket for grouping/trend only).
  */
 export type UsageFilter = {
-	/**  Inclusive lower ISO8601 day (`yyyy-mm-dd`). */
-	from_day: string | null,
-	/**  Inclusive upper ISO8601 day. */
-	to_day: string | null,
+	/**  Inclusive lower ISO8601 UTC timestamp, e.g. `2026-07-21T16:00:00Z`. */
+	from_ts: string | null,
+	/**  Inclusive upper ISO8601 UTC timestamp. */
+	to_ts: string | null,
 	model: string | null,
 	source: string | null,
 	device_scope: string | null,

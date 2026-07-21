@@ -146,7 +146,13 @@ impl Provider for ClaudeCodeProvider {
     }
 
     fn parse(&self, files: &[PathBuf]) -> AppResult<CollectResult> {
-        let mut events = Vec::new();
+        // Dedup key = Anthropic message id. Claude Code writes each content
+        // block of one assistant response (thinking / text / each tool_use) as
+        // a separate event that repeats the full message.usage; without dedup
+        // one API call becomes N records and tokens/cost inflate N× (observed
+        // ~3.6× on CC-Switch/GLM transit logs). One message id ⇒ one record.
+        let mut events_by_mid: std::collections::HashMap<String, RawUsage> =
+            std::collections::HashMap::new();
         let mut turn_durations = Vec::new();
         let mut skipped = 0u32;
         for file in files {
@@ -163,15 +169,28 @@ impl Provider for ClaudeCodeProvider {
                     continue;
                 }
                 match serde_json::from_str::<SessionEvent>(line) {
-                    Ok(ev) => match ev.classify() {
-                        Parsed::Usage(u) => events.push(u),
-                        Parsed::TurnDuration(td) => turn_durations.push(td),
-                        Parsed::Skip => {}
-                    },
+                    Ok(ev) => {
+                        let mid = ev.message.as_ref().and_then(|m| m.id.clone());
+                        match ev.classify() {
+                            Parsed::Usage(u) => {
+                                // Fall back to the event uuid when the source
+                                // omits a message id (older logs), preserving
+                                // per-event uniqueness.
+                                let key = mid.unwrap_or_else(|| u.uuid.clone());
+                                events_by_mid.entry(key).or_insert(u);
+                            }
+                            Parsed::TurnDuration(td) => turn_durations.push(td),
+                            Parsed::Skip => {}
+                        }
+                    }
                     Err(_) => skipped += 1,
                 }
             }
         }
+        // Deterministic order (timestamp, then uuid) so repeated parses of the
+        // same sources yield identical artifact lines.
+        let mut events: Vec<RawUsage> = events_by_mid.into_values().collect();
+        events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
         Ok(CollectResult {
             source: self.name().to_string(),
             events,
@@ -202,6 +221,10 @@ struct SessionEvent {
 
 #[derive(serde::Deserialize)]
 struct SessionMessage {
+    /// Anthropic message id (e.g. `msg_…`). Shared by every content-block event
+    /// of one assistant response — the per-call dedup key (one API call ⇒ one
+    /// message id).
+    id: Option<String>,
     model: Option<String>,
     usage: Option<SessionUsage>,
     stop_reason: Option<String>,
@@ -385,6 +408,31 @@ mod tests {
         let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.events.len(), 0);
+    }
+
+    #[test]
+    fn dedups_assistant_events_by_message_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("s.jsonl");
+        // One assistant call (msg_A) split into a thinking + a tool_use event,
+        // both repeating the full usage; a second call (msg_B) is one event.
+        // Distinct message ids must NOT merge.
+        let a1 = r#"{"type":"assistant","timestamp":"2026-07-21T15:56:07.000Z","uuid":"u1","message":{"id":"msg_A","model":"glm-5.2","stop_reason":"tool_use","usage":{"input_tokens":100,"output_tokens":10,"cache_read_input_tokens":1000}}}"#;
+        let a2 = r#"{"type":"assistant","timestamp":"2026-07-21T15:56:08.000Z","uuid":"u2","message":{"id":"msg_A","model":"glm-5.2","stop_reason":"tool_use","usage":{"input_tokens":100,"output_tokens":10,"cache_read_input_tokens":1000}}}"#;
+        let b1 = r#"{"type":"assistant","timestamp":"2026-07-21T16:00:00.000Z","uuid":"u3","message":{"id":"msg_B","model":"glm-5.2","stop_reason":"end_turn","usage":{"input_tokens":200,"output_tokens":20,"cache_read_input_tokens":2000}}}"#;
+        write_lines(&file, &[a1, a2, b1]);
+
+        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(
+            result.events.len(),
+            2,
+            "msg_A's two content-block events collapse; msg_B stays separate"
+        );
+        // Deterministic order by timestamp.
+        assert_eq!(result.events[0].tokens.input, 100);
+        assert_eq!(result.events[0].tokens.cache_read, 1000);
+        assert_eq!(result.events[1].tokens.input, 200);
     }
 
     #[test]

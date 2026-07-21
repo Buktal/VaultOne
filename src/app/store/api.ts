@@ -38,13 +38,13 @@ async function run<T>(p: Promise<Envelope<T>>): Promise<T> {
 
 /** Stable cache id for a filter (so each filter scope caches independently). */
 export function filterId(f: UsageFilter): string {
-  return [f.from_day, f.to_day, f.model, f.source, f.device_scope].join("|")
+  return [f.from_ts, f.to_ts, f.model, f.source, f.device_scope].join("|")
 }
 
 /** Default filter = the active dashboard scope. */
 export const EMPTY_FILTER: UsageFilter = {
-  from_day: null,
-  to_day: null,
+  from_ts: null,
+  to_ts: null,
   model: null,
   source: null,
   device_scope: null,

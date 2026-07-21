@@ -4,6 +4,7 @@
 // the API expects.
 
 import { createSlice, type PayloadAction } from "@reduxjs/toolkit"
+import dayjs from "dayjs"
 
 import type { UsageFilter } from "@/types/generated/bindings"
 
@@ -26,8 +27,12 @@ export const EMPTY_FILTER: FilterState = {
 /** Convert internal FilterState (empty = no constraint) → API UsageFilter (null). */
 export function toFilter(s: FilterState): UsageFilter {
   return {
-    from_day: s.from_day || null,
-    to_day: s.to_day || null,
+    // Local-day range → inclusive UTC timestamp bounds. The backend filters on
+    // `timestamp` (UTC), not the UTC `day` bucket: a local "today" in UTC+8
+    // straddles two UTC days, so we must widen to timestamps or the early-
+    // morning rows (whose UTC day is still yesterday) vanish from "today".
+    from_ts: s.from_day ? dayjs(s.from_day).startOf("day").toISOString() : null,
+    to_ts: s.to_day ? dayjs(s.to_day).endOf("day").toISOString() : null,
     model: s.model || null,
     source: s.source || null,
     device_scope: s.device_scope || null,

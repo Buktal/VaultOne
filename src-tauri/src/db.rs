@@ -598,21 +598,23 @@ fn recompute_rollup(
     Ok(())
 }
 
-/// Build a `WHERE` clause + bound params for a `UsageFilter` (day range, model,
-/// source, device scope). Returns `("WHERE ...", vec![...])` or `("", [])`.
+/// Build a `WHERE` clause + bound params for a `UsageFilter` (timestamp range,
+/// model, source, device scope). The range filters on `timestamp` (UTC), not
+/// `day` — see `UsageFilter` for why. Returns `("WHERE ...", vec![...])` or
+/// `("", [])`.
 fn build_where(filter: &UsageFilter) -> (String, Vec<SqlValue>) {
     let mut conds: Vec<String> = Vec::new();
     let mut params: Vec<SqlValue> = Vec::new();
-    if let Some(d) = &filter.from_day {
-        if !d.is_empty() {
-            conds.push("day >= ?".into());
-            params.push(SqlValue::Text(d.clone()));
+    if let Some(ts) = &filter.from_ts {
+        if !ts.is_empty() {
+            conds.push("timestamp >= ?".into());
+            params.push(SqlValue::Text(ts.clone()));
         }
     }
-    if let Some(d) = &filter.to_day {
-        if !d.is_empty() {
-            conds.push("day <= ?".into());
-            params.push(SqlValue::Text(d.clone()));
+    if let Some(ts) = &filter.to_ts {
+        if !ts.is_empty() {
+            conds.push("timestamp <= ?".into());
+            params.push(SqlValue::Text(ts.clone()));
         }
     }
     if let Some(m) = &filter.model {
@@ -641,21 +643,22 @@ fn build_where(filter: &UsageFilter) -> (String, Vec<SqlValue>) {
     (clause, params)
 }
 
-/// Build a WHERE clause + bound params for `turn_durations` (day range + device
-/// scope only — that table has no model/source columns).
+/// Build a WHERE clause + bound params for `turn_durations` (timestamp range +
+/// device scope only — that table has no model/source columns). Range filters on
+/// `timestamp` (UTC), not `day` — see `UsageFilter`.
 fn build_turn_where(filter: &UsageFilter) -> (String, Vec<SqlValue>) {
     let mut conds: Vec<String> = Vec::new();
     let mut params: Vec<SqlValue> = Vec::new();
-    if let Some(d) = &filter.from_day {
-        if !d.is_empty() {
-            conds.push("day >= ?".into());
-            params.push(SqlValue::Text(d.clone()));
+    if let Some(ts) = &filter.from_ts {
+        if !ts.is_empty() {
+            conds.push("timestamp >= ?".into());
+            params.push(SqlValue::Text(ts.clone()));
         }
     }
-    if let Some(d) = &filter.to_day {
-        if !d.is_empty() {
-            conds.push("day <= ?".into());
-            params.push(SqlValue::Text(d.clone()));
+    if let Some(ts) = &filter.to_ts {
+        if !ts.is_empty() {
+            conds.push("timestamp <= ?".into());
+            params.push(SqlValue::Text(ts.clone()));
         }
     }
     if let Some(d) = &filter.device_scope {
@@ -873,18 +876,21 @@ mod tests {
     }
 
     #[test]
-    fn filters_by_day_range_and_model() {
+    fn filters_by_timestamp_range_and_model() {
         let s = mem();
         s.ingest(&[
             rec("a", "2026-07-13", "glm-5.2", "d", 10, 0, 1.0),
             rec("b", "2026-07-14", "gpt-4o", "d", 20, 0, 2.0),
         ])
         .unwrap();
-        let by_day = UsageFilter {
-            from_day: Some("2026-07-14".into()),
+        // `b` lives at 2026-07-14T10:00Z; a from_ts at 2026-07-14T00:00Z
+        // includes it and excludes `a` (2026-07-13T10:00Z). Range filters on
+        // timestamp, never on the UTC `day` bucket (see UsageFilter).
+        let from_ts = UsageFilter {
+            from_ts: Some("2026-07-14T00:00:00.000Z".into()),
             ..Default::default()
         };
-        assert_eq!(s.query_stats(&by_day).unwrap().request_count, 1);
+        assert_eq!(s.query_stats(&from_ts).unwrap().request_count, 1);
         let by_model = UsageFilter {
             model: Some("glm-5.2".into()),
             ..Default::default()

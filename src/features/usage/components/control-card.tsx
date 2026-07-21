@@ -197,7 +197,9 @@ function ModelChip() {
         className="bg-muted hover:bg-muted/70 h-8 w-28 rounded-md border-transparent"
         aria-label="模型"
       >
-        <SelectValue placeholder="全部" />
+        <SelectValue>
+          {(value: string) => (value === ALL ? "全部" : value)}
+        </SelectValue>
       </SelectTrigger>
       <SelectContent>
         <SelectItem value={ALL}>全部</SelectItem>
@@ -226,7 +228,12 @@ function RefreshChip() {
         aria-label="自动刷新"
       >
         <RefreshCw className="text-muted-foreground size-3.5" />
-        <SelectValue />
+        <SelectValue>
+          {(value: string) =>
+            REFRESH_OPTIONS.find((o) => String(o.value) === value)?.label ??
+            "关闭"
+          }
+        </SelectValue>
       </SelectTrigger>
       <SelectContent>
         {REFRESH_OPTIONS.map((o) => (

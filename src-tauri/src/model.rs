@@ -242,12 +242,19 @@ pub struct TrendPoint {
 ///
 /// All fields optional; `None` means "no constraint". `device_scope` is the
 /// semantic cache-key axis: `None` = all devices.
+///
+/// Range bounds are ISO8601 **timestamps**, not `day` strings. The `day` column
+/// is a UTC whole-day bucket (ADR-0004 cross-device determinism), so a local
+/// "today" in a non-UTC zone (e.g. UTC+8) straddles two UTC days; filtering on
+/// `day` would drop early-morning rows. The frontend converts its local-day
+/// range to UTC timestamps, and we filter on `timestamp` (ADR-0004 amendment:
+/// `day` stays the UTC bucket for grouping/trend only).
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct UsageFilter {
-    /// Inclusive lower ISO8601 day (`yyyy-mm-dd`).
-    pub from_day: Option<String>,
-    /// Inclusive upper ISO8601 day.
-    pub to_day: Option<String>,
+    /// Inclusive lower ISO8601 UTC timestamp, e.g. `2026-07-21T16:00:00Z`.
+    pub from_ts: Option<String>,
+    /// Inclusive upper ISO8601 UTC timestamp.
+    pub to_ts: Option<String>,
     pub model: Option<String>,
     pub source: Option<String>,
     pub device_scope: Option<String>,
