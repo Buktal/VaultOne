@@ -1,22 +1,18 @@
-// Redux store assembly (ADR-0007). Imports feature api modules for side-effect
-// injection into the single base api before the store is created.
+// Redux store assembly (ADR-0007). Single consolidated RTK Query API
+// (`vaultApi`) holds every Tauri command endpoint — no feature-injection
+// side-effect imports.
 
 import { configureStore } from "@reduxjs/toolkit"
 
-import { api } from "./api"
+import { vaultApi } from "./api"
 import viewReducer from "./slices/viewSlice"
-
-// Side-effect: register usage / pricing / settings endpoints on the base api.
-import "@/features/usage/api"
-import "@/features/pricing/api"
-import "@/features/settings/api"
 
 export const store = configureStore({
   reducer: {
     view: viewReducer,
-    [api.reducerPath]: api.reducer,
+    [vaultApi.reducerPath]: vaultApi.reducer,
   },
-  middleware: (getDefault) => getDefault().concat(api.middleware),
+  middleware: (getDefault) => getDefault().concat(vaultApi.middleware),
 })
 
 export type RootState = ReturnType<typeof store.getState>

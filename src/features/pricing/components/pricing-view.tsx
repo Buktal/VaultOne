@@ -15,7 +15,13 @@ import {
 } from "lucide-react"
 import { useMemo, useState } from "react"
 import { toast } from "sonner"
-
+import {
+  useDeletePricingMutation,
+  useFetchLitellmMutation,
+  usePricingQuery,
+  useReloadPricingMutation,
+  useSavePricingToFileMutation,
+} from "@/app/store/api"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -32,13 +38,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import {
-  useDeletePricingEntryMutation,
-  useFetchLitellmPricingMutation,
-  useListPricingQuery,
-  useReloadPricingFromFileMutation,
-  useSavePricingToFileMutation,
-} from "@/features/pricing/api"
 
 import type { PricingEntry } from "@/types/generated/bindings"
 import { EntryEditorDialog, emptyEntry } from "./entry-editor-dialog"
@@ -46,12 +45,10 @@ import { EntryEditorDialog, emptyEntry } from "./entry-editor-dialog"
 type SortKey = keyof PricingEntry
 
 export function PricingView() {
-  const { data: entries = [], isLoading } = useListPricingQuery()
-  const [remove] = useDeletePricingEntryMutation()
-  const [fetchLitellm, { isLoading: fetching }] =
-    useFetchLitellmPricingMutation()
-  const [reloadFile, { isLoading: reloading }] =
-    useReloadPricingFromFileMutation()
+  const { data: entries = [], isLoading } = usePricingQuery()
+  const [remove] = useDeletePricingMutation()
+  const [fetchLitellm, { isLoading: fetching }] = useFetchLitellmMutation()
+  const [reloadFile, { isLoading: reloading }] = useReloadPricingMutation()
   const [saveFile, { isLoading: savingFile }] = useSavePricingToFileMutation()
 
   const [search, setSearch] = useState("")

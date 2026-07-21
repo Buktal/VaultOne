@@ -1,16 +1,24 @@
-// Dashboard view (BLUEPRINT 数据看板; ADR-0006). Owns the filter state and
-// composes the cockpit layout: quick filters + summary chips + advanced sheet,
-// then the hero metrics (tokens / cost), token-breakdown card, trend chart,
-// model distribution and request log. Reads refresh locally from SQLite (30s
-// polling fallback, ADR-0005).
+// Dashboard view — cost-first LLM Usage Cockpit.
+//
+// Layout (top → bottom): quick filters + advanced-filter entry → active-filter
+// chips → Cost Hero (full-width anchor) → secondary KPI strip → usage trend
+// (full-width) → model distribution + token composition (2-up) → request log
+// (full-width). Cost leads because it's VaultOne's first metric (ADR-0009);
+// tokens / cache-hit / avg-turn / request·turn serve as supporting KPIs.
+//
+// Reads the Local Store with a 30s polling fallback (ADR-0005 event-driven
+// refresh also invalidates via providers).
 
+import { SlidersHorizontal } from "lucide-react"
 import { useMemo, useState } from "react"
 
+import { Button } from "@/components/ui/button"
 import type { UsageFilter } from "@/types/generated/bindings"
 
+import { CostHero } from "./cost-hero"
 import { FilterSheet } from "./filter-sheet"
 import { FilterSummary } from "./filter-summary"
-import { HeroMetric } from "./hero-metric"
+import { KpiStrip } from "./kpi-strip"
 import { ModelDistribution } from "./model-distribution"
 import { QuickFilters } from "./quick-filters"
 import { RequestLogTable } from "./request-log-table"
@@ -46,39 +54,43 @@ function toFilter(s: FilterState): UsageFilter {
 
 export function DashboardView() {
   const [filter, setFilter] = useState<FilterState>(EMPTY_FILTER)
-  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [sheetOpen, setSheetOpen] = useState(false)
   const usageFilter = useMemo(() => toFilter(filter), [filter])
+
+  const clearKey = (key: keyof FilterState) =>
+    setFilter((f) => ({ ...f, [key]: "" }))
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-3">
-        <QuickFilters
-          filter={filter}
-          onChange={setFilter}
-          onOpenAdvanced={() => setAdvancedOpen(true)}
-        />
-        <FilterSummary
-          filter={filter}
-          onClear={(k) => setFilter({ ...filter, [k]: "" })}
-        />
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <QuickFilters filter={filter} onChange={setFilter} />
+        <Button variant="outline" size="sm" onClick={() => setSheetOpen(true)}>
+          <SlidersHorizontal />
+          高级筛选
+        </Button>
       </div>
+
+      <FilterSummary filter={filter} onClear={clearKey} />
+
+      <CostHero filter={usageFilter} />
+
+      <KpiStrip filter={usageFilter} />
+
+      <UsageTrendChart filter={usageFilter} />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <HeroMetric filter={usageFilter} metric="tokens" />
-        <HeroMetric filter={usageFilter} metric="cost" />
+        <ModelDistribution
+          filter={usageFilter}
+          onPickModel={(m) => setFilter((f) => ({ ...f, model: m }))}
+        />
+        <TokenBreakdownBar filter={usageFilter} />
       </div>
 
-      <TokenBreakdownBar filter={usageFilter} />
-      <UsageTrendChart filter={usageFilter} />
-      <ModelDistribution
-        filter={usageFilter}
-        onPickModel={(m) => setFilter((prev) => ({ ...prev, model: m }))}
-      />
       <RequestLogTable filter={usageFilter} />
 
       <FilterSheet
-        open={advancedOpen}
-        onOpenChange={setAdvancedOpen}
+        open={sheetOpen}
+        onOpenChange={setSheetOpen}
         filter={filter}
         onChange={setFilter}
       />

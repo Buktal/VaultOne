@@ -2,6 +2,7 @@
 // custom from/to dates. Slides in from the right; the inlined QuickFilters hold
 // the high-frequency presets + model + source.
 
+import { useDevicesQuery } from "@/app/store/api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -20,7 +21,6 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
-import { useListDevicesQuery } from "@/features/settings/api"
 
 import type { FilterState } from "./dashboard-view"
 
@@ -37,7 +37,7 @@ export function FilterSheet({
   filter: FilterState
   onChange: (next: FilterState) => void
 }) {
-  const { data: devices = [] } = useListDevicesQuery()
+  const { data: devices = [] } = useDevicesQuery()
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>

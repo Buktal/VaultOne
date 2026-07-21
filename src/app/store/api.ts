@@ -1,20 +1,235 @@
-// Base RTK Query api (ADR-0007 / 0008). Endpoints live in feature files and are
-// injected with `injectEndpoints`; each endpoint's `queryFn` calls the typed
-// tauri-specta command directly (no stringly-typed `invoke`). The base query is
-// a no-op because the real data fetch is the typed command, not an HTTP call.
-//
-// Injection is triggered by importing the feature api modules in `store.ts`
-// (keeps this file free of feature imports → no import cycle; ADR-0008 intent).
+import { createApi, fakeBaseQuery } from "@reduxjs/toolkit/query/react"
+import type {
+  AppError,
+  AppInfo,
+  ConfigConflictResolution,
+  ConfigSyncOutcome,
+  DeviceInfo,
+  IngestReport,
+  LogsQuery,
+  ModelStatsRow,
+  PricingEntry,
+  RunMode,
+  SyncReport,
+  TrendPoint,
+  UsageFilter,
+  UsageLogRow,
+  UsageStats,
+} from "@/types/generated/bindings"
+import { commands } from "@/types/generated/bindings"
 
-import { createApi } from "@reduxjs/toolkit/query/react"
+/**
+ * RTK Query data layer over the typed Tauri command contract.
+ *
+ * Every command returns a `{ status: "ok" | "error" }` envelope (tauri-specta).
+ * `run` unwraps it: ok ⇒ data, error ⇒ throw (RTK Query surfaces it as the
+ * query's `error`). The UI never sees SQL or invoke() directly.
+ */
 
-const NO_OP_BASE_QUERY = () => ({ data: null })
+type Envelope<T> =
+  | { status: "ok"; data: T }
+  | { status: "error"; error: AppError }
 
-export const baseSplitApi = createApi({
-  baseQuery: NO_OP_BASE_QUERY,
-  tagTypes: ["Usage", "Pricing", "Device", "App", "Sync"],
-  endpoints: () => ({}),
+async function run<T>(p: Promise<Envelope<T>>): Promise<T> {
+  const r = await p
+  if (r.status === "ok") return r.data
+  throw new Error(`${r.error.type}: ${r.error.data}`)
+}
+
+/** Stable cache id for a filter (so each filter scope caches independently). */
+export function filterId(f: UsageFilter): string {
+  return [f.from_day, f.to_day, f.model, f.source, f.device_scope].join("|")
+}
+
+/** Default filter = the active dashboard scope. */
+export const EMPTY_FILTER: UsageFilter = {
+  from_day: null,
+  to_day: null,
+  model: null,
+  source: null,
+  device_scope: null,
+}
+
+export const vaultApi = createApi({
+  reducerPath: "vaultApi",
+  baseQuery: fakeBaseQuery(),
+  tagTypes: ["Usage", "Logs", "Models", "Devices", "Pricing", "App"],
+  endpoints: (b) => ({
+    // ---- reads ----
+    appInfo: b.query<AppInfo, void>({
+      queryFn: async () => ({ data: await run(commands.getAppInfo()) }),
+      providesTags: ["App"],
+    }),
+    stats: b.query<UsageStats, UsageFilter>({
+      queryFn: async (filter) => ({
+        data: await run(commands.queryUsageStats(filter)),
+      }),
+      providesTags: (_r, _e, filter) => [
+        { type: "Usage", id: filterId(filter) },
+      ],
+    }),
+    trend: b.query<TrendPoint[], UsageFilter>({
+      queryFn: async (filter) => ({
+        data: await run(commands.queryUsageTrend(filter)),
+      }),
+      providesTags: (_r, _e, filter) => [
+        { type: "Usage", id: filterId(filter) },
+      ],
+    }),
+    logs: b.query<UsageLogRow[], LogsQuery>({
+      queryFn: async (q) => ({ data: await run(commands.queryUsageLogs(q)) }),
+      providesTags: (_r, _e, q) => [{ type: "Logs", id: filterId(q.filter) }],
+    }),
+    count: b.query<number, UsageFilter>({
+      queryFn: async (filter) => ({
+        data: await run(commands.countUsageLogs(filter)),
+      }),
+      providesTags: (_r, _e, filter) => [
+        { type: "Logs", id: filterId(filter) },
+      ],
+    }),
+    models: b.query<ModelStatsRow[], UsageFilter>({
+      queryFn: async (filter) => ({
+        data: await run(commands.queryModels(filter)),
+      }),
+      providesTags: (_r, _e, filter) => [
+        { type: "Models", id: filterId(filter) },
+      ],
+    }),
+    distinctSources: b.query<string[], void>({
+      queryFn: async () => ({
+        data: await run(commands.queryDistinctSources()),
+      }),
+      providesTags: ["Usage"],
+    }),
+    distinctModels: b.query<string[], void>({
+      queryFn: async () => ({
+        data: await run(commands.queryDistinctModels()),
+      }),
+      providesTags: ["Usage"],
+    }),
+    devices: b.query<DeviceInfo[], void>({
+      queryFn: async () => ({ data: await run(commands.listDevices()) }),
+      providesTags: ["Devices"],
+    }),
+    pricing: b.query<PricingEntry[], void>({
+      queryFn: async () => ({ data: await run(commands.listPricing()) }),
+      providesTags: ["Pricing"],
+    }),
+
+    // ---- mutations ----
+    collect: b.mutation<IngestReport, void>({
+      queryFn: async () => ({ data: await run(commands.collectNow()) }),
+      invalidatesTags: ["Usage", "Logs", "Models", "Devices"],
+    }),
+    sync: b.mutation<SyncReport, void>({
+      queryFn: async () => ({ data: await run(commands.syncNow()) }),
+      invalidatesTags: ["Usage", "Logs", "Models", "Devices", "Pricing"],
+    }),
+    syncConfig: b.mutation<ConfigSyncOutcome, void>({
+      queryFn: async () => ({ data: await run(commands.syncConfig()) }),
+      invalidatesTags: ["Pricing", "App"],
+    }),
+    resolveConfigConflict: b.mutation<
+      ConfigSyncOutcome,
+      ConfigConflictResolution[]
+    >({
+      queryFn: async (choices) => ({
+        data: await run(commands.resolveConfigConflict(choices)),
+      }),
+      invalidatesTags: ["Pricing", "App"],
+    }),
+    rebill: b.mutation<number, void>({
+      queryFn: async () => ({ data: await run(commands.rebillZeroCost()) }),
+      invalidatesTags: ["Usage", "Logs", "Models"],
+    }),
+
+    // ---- pricing writes ----
+    savePricing: b.mutation<
+      null,
+      { entry: PricingEntry; isBuiltin: boolean | null }
+    >({
+      queryFn: async ({ entry, isBuiltin }) => ({
+        data: await run(commands.savePricingEntry(entry, isBuiltin)),
+      }),
+      invalidatesTags: ["Pricing"],
+    }),
+    deletePricing: b.mutation<null, string>({
+      queryFn: async (modelKey) => ({
+        data: await run(commands.deletePricingEntry(modelKey)),
+      }),
+      invalidatesTags: ["Pricing"],
+    }),
+    reloadPricing: b.mutation<number, void>({
+      queryFn: async () => ({
+        data: await run(commands.reloadPricingFromFile()),
+      }),
+      invalidatesTags: ["Pricing"],
+    }),
+    savePricingToFile: b.mutation<null, void>({
+      queryFn: async () => ({ data: await run(commands.savePricingToFile()) }),
+    }),
+    fetchLitellm: b.mutation<number, void>({
+      queryFn: async () => ({
+        data: await run(commands.fetchLitellmPricing()),
+      }),
+      invalidatesTags: ["Pricing"],
+    }),
+
+    // ---- device / repo config ----
+    setSyncRepo: b.mutation<RunMode, { repoUrl: string; githubToken: string }>({
+      queryFn: async ({ repoUrl, githubToken }) => ({
+        data: await run(commands.setSyncRepo(repoUrl, githubToken)),
+      }),
+      invalidatesTags: ["App"],
+    }),
+    clearSyncRepo: b.mutation<RunMode, void>({
+      queryFn: async () => ({ data: await run(commands.clearSyncRepo()) }),
+      invalidatesTags: ["App"],
+    }),
+    setDisplayName: b.mutation<null, string>({
+      queryFn: async (displayName) => ({
+        data: await run(commands.setDisplayName(displayName)),
+      }),
+      invalidatesTags: ["App", "Devices"],
+    }),
+    setDeviceDisplayName: b.mutation<
+      null,
+      { deviceId: string; displayName: string }
+    >({
+      queryFn: async ({ deviceId, displayName }) => ({
+        data: await run(commands.setDeviceDisplayName(deviceId, displayName)),
+      }),
+      invalidatesTags: ["Devices"],
+    }),
+  }),
 })
 
-// The fully-injected api (feature modules augment this at import time).
-export const api = baseSplitApi
+export const {
+  useAppInfoQuery,
+  useStatsQuery,
+  useTrendQuery,
+  useLogsQuery,
+  useCountQuery,
+  useModelsQuery,
+  useDistinctSourcesQuery,
+  useDistinctModelsQuery,
+  useDevicesQuery,
+  usePricingQuery,
+  useCollectMutation,
+  useSyncMutation,
+  useSyncConfigMutation,
+  useResolveConfigConflictMutation,
+  useRebillMutation,
+  useSavePricingMutation,
+  useDeletePricingMutation,
+  useReloadPricingMutation,
+  useSavePricingToFileMutation,
+  useFetchLitellmMutation,
+  useSetSyncRepoMutation,
+  useClearSyncRepoMutation,
+  useSetDisplayNameMutation,
+  useSetDeviceDisplayNameMutation,
+} = vaultApi
+
+export type VaultApi = typeof vaultApi

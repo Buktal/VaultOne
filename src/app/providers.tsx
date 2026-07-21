@@ -13,15 +13,16 @@ import { Provider } from "react-redux"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 
-import { api } from "./store/api"
+import { vaultApi } from "./store/api"
 import { store } from "./store/store"
 
 export function AppProviders({ children }: { children: ReactNode }) {
   // ADR-0005 event-driven refresh: Rust emits `usage_changed` after writing the
-  // Local Store (collect / sync); invalidate the Usage cache so views re-query.
+  // Local Store (collect / sync); invalidate the derived caches so views
+  // re-query. The consolidated `vaultApi` owns every endpoint.
   useEffect(() => {
     const off = listen("usage_changed", () => {
-      store.dispatch(api.util.invalidateTags(["Usage"]))
+      store.dispatch(vaultApi.util.invalidateTags(["Usage", "Logs", "Models"]))
     })
     return () => {
       off.then((unlisten) => unlisten())
@@ -32,7 +33,7 @@ export function AppProviders({ children }: { children: ReactNode }) {
     <Provider store={store}>
       <ThemeProvider
         attribute="class"
-        defaultTheme="dark"
+        defaultTheme="light"
         enableSystem
         disableTransitionOnChange
       >

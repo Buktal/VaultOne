@@ -13,7 +13,7 @@
 import { listen } from "@tauri-apps/api/event"
 import { useEffect, useSyncExternalStore } from "react"
 
-import { useGetAppInfoQuery } from "@/features/settings/api"
+import { useAppInfoQuery } from "@/app/store/api"
 
 export interface FreshnessState {
   /** epoch ms of last successful collect (or null if never). */
@@ -83,7 +83,7 @@ function subscribe(cb: () => void) {
  * immediate hint even when the ingest produced no new rows.
  */
 export function useFreshness() {
-  const { data: info } = useGetAppInfoQuery(undefined, { pollingInterval: 0 })
+  const { data: info } = useAppInfoQuery(undefined, { pollingInterval: 0 })
   const deviceId = info?.device_id ?? null
 
   useEffect(() => {

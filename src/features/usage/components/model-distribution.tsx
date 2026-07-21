@@ -4,9 +4,8 @@
 // filter-scoped, so the list itself refreshes too).
 
 import { useState } from "react"
-
+import { useModelsQuery } from "@/app/store/api"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { useQueryModelsQuery } from "@/features/usage/api"
 import { formatCost, formatTokens } from "@/lib/format"
 
 import type { ModelStatsRow, UsageFilter } from "@/types/generated/bindings"
@@ -20,7 +19,7 @@ export function ModelDistribution({
   filter: UsageFilter
   onPickModel: (model: string) => void
 }) {
-  const { data: rows = [] } = useQueryModelsQuery(filter, {
+  const { data: rows = [] } = useModelsQuery(filter, {
     pollingInterval: 30_000,
   })
   const [metric, setMetric] = useState<"cost" | "tokens">("cost")

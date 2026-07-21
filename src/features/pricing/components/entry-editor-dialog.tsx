@@ -5,7 +5,7 @@
 
 import { useEffect, useState } from "react"
 import { toast } from "sonner"
-
+import { useSavePricingMutation } from "@/app/store/api"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -17,7 +17,6 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { useSavePricingEntryMutation } from "@/features/pricing/api"
 
 import type { PricingEntry } from "@/types/generated/bindings"
 
@@ -45,7 +44,7 @@ export function EntryEditorDialog({
   onSaved: () => void
 }) {
   const [draft, setDraft] = useState<PricingEntry>(entry ?? emptyEntry())
-  const [save, { isLoading: saving }] = useSavePricingEntryMutation()
+  const [save, { isLoading: saving }] = useSavePricingMutation()
 
   useEffect(() => {
     if (open) setDraft(entry ?? emptyEntry())
@@ -59,7 +58,7 @@ export function EntryEditorDialog({
       toast.error("请填写模型标识 (model_key)")
       return
     }
-    const res = await save({ entry: draft, is_builtin: draft.is_builtin })
+    const res = await save({ entry: draft, isBuiltin: draft.is_builtin })
     if ("error" in res) toast.error("保存失败")
     else {
       toast.success(`已保存 ${draft.model_key}`)
