@@ -13,6 +13,7 @@ import { Provider } from "react-redux"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 
+import { CloseRequestedDialog } from "./close-requested-dialog"
 import { vaultApi } from "./store/api"
 import { store } from "./store/store"
 
@@ -39,6 +40,7 @@ export function AppProviders({ children }: { children: ReactNode }) {
       >
         <TooltipProvider>
           {children}
+          <CloseRequestedDialog />
           <Toaster richColors closeButton />
         </TooltipProvider>
       </ThemeProvider>

@@ -26,6 +26,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ConflictResolver } from "@/features/settings/components/conflict-resolver"
 import { DeviceList } from "@/features/settings/components/device-list"
+import { GeneralCard } from "@/features/settings/components/general-card"
 import type { ConfigConflict } from "@/types/generated/bindings"
 
 export function SettingsView() {
@@ -64,6 +65,8 @@ export function SettingsView() {
 
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-4">
+      <GeneralCard />
+
       <Card>
         <CardHeader>
           <CardTitle>设备身份</CardTitle>

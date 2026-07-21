@@ -65,6 +65,29 @@ impl Paths {
     }
 }
 
+/// Window-close behavior preference (ADR-0012). Crosses the Rust→JS boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseBehavior {
+    /// Show the minimize/quit dialog each time (default).
+    Ask,
+    /// Always minimize to tray — keeps the background scheduler alive.
+    Minimize,
+    /// Always quit.
+    Quit,
+}
+
+impl Default for CloseBehavior {
+    fn default() -> Self {
+        Self::Ask
+    }
+}
+
+/// Default background-collect interval in seconds (ADR-0012: 10 min).
+fn default_collect_interval_secs() -> u64 {
+    600
+}
+
 /// The local `config.json` content (ADR-0004). Never uploaded to the repo.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ConfigData {
@@ -82,6 +105,13 @@ pub struct ConfigData {
     /// Optional: GitHub handle resolved from the token (for display only).
     #[serde(default)]
     pub github_user: Option<String>,
+    /// Window-close behavior (ADR-0012). `Ask` ⇒ show the minimize/quit dialog.
+    #[serde(default)]
+    pub close_behavior: CloseBehavior,
+    /// Background collect interval in seconds (ADR-0012). Clamped to [60, 3600]
+    /// at use; serialized verbatim so the UI shows what the user typed.
+    #[serde(default = "default_collect_interval_secs")]
+    pub collect_interval_secs: u64,
 }
 
 impl Default for ConfigData {
@@ -95,6 +125,8 @@ impl Default for ConfigData {
             github_token: None,
             device_names: BTreeMap::new(),
             github_user: None,
+            close_behavior: CloseBehavior::Ask,
+            collect_interval_secs: default_collect_interval_secs(),
         }
     }
 }

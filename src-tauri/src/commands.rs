@@ -9,9 +9,9 @@
 
 use std::sync::Arc;
 
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 
-use crate::config::ConfigStore;
+use crate::config::{CloseBehavior, ConfigStore};
 use crate::db::Store;
 use crate::error::{AppError, AppResult};
 use crate::ingest::{self, IngestReport};
@@ -130,9 +130,34 @@ pub fn set_device_display_name(
 
 // ---------------- Collect / ingest ----------------
 
-/// Discover + parse Claude Code sessions, compute cost, write Local Store +
-/// JSONL Artifact (ADR-0001 / 0004), then best-effort push the new Artifact in
-/// Synced mode (ADR-0005). Heavy disk/git work → offloaded to a thread.
+/// Parse Source → Local Store (+ JSONL Artifact). No network (ADR-0012).
+/// Shared by the manual `collect_now` command and the background scheduler so
+/// both follow the exact same ingest path.
+pub fn collect_into(store: &Store, config: &ConfigStore) -> AppResult<IngestReport> {
+    let provider = ClaudeCodeProvider::new()?;
+    let result = provider.collect()?;
+    let cfg = config.get();
+    store.upsert_device(&cfg.device_id, &cfg.display_name, true)?;
+    let book = store.load_pricing_book()?;
+    let paths = config.paths();
+    ingest::ingest_collected(&store, &paths, &cfg.device_id, &book, result)
+}
+
+/// Best-effort push of the current Artifact to the sync repo (Synced only,
+/// ADR-0012). Errors are logged, never propagated — push is a backstop.
+pub fn push_if_synced(config: &ConfigStore) {
+    let cfg = config.get();
+    if !cfg.is_synced() {
+        return;
+    }
+    let paths = config.paths();
+    if let Err(e) = crate::sync::commit_and_push(&paths, &cfg) {
+        eprintln!("[vaultone] push failed: {e}");
+    }
+}
+
+/// Manual「立即采集」: collect now, best-effort push if Synced, refresh the UI.
+/// Heavy disk/git work → offloaded to a thread.
 #[tauri::command]
 #[specta::specta]
 pub async fn collect_now(
@@ -142,20 +167,9 @@ pub async fn collect_now(
     let store = state.store.clone();
     let config = state.config.clone();
     tauri::async_runtime::spawn_blocking(move || -> AppResult<IngestReport> {
-        let provider = ClaudeCodeProvider::new()?;
-        let result = provider.collect()?;
-        let cfg = config.get();
-        store.upsert_device(&cfg.device_id, &cfg.display_name, true)?;
-        let book = store.load_pricing_book()?;
-        let paths = config.paths();
-        let report = ingest::ingest_collected(&store, &paths, &cfg.device_id, &book, result)?;
-        // Best-effort push of the newly-appended JSONL Artifact (ADR-0005, Synced).
-        if cfg.is_synced() {
-            if let Err(e) = crate::sync::commit_and_push(&paths, &cfg) {
-                eprintln!("[vaultone] post-collect push failed: {e}");
-            }
-        }
-        // Notify the UI that usage data changed (ADR-0005 event-driven refresh).
+        let report = collect_into(&store, &config)?;
+        push_if_synced(&config);
+        // Notify the UI that usage data changed (event-driven refresh).
         let _ = app_handle.emit("usage_changed", ());
         Ok(report)
     })
@@ -375,4 +389,79 @@ pub async fn fetch_litellm_pricing(state: State<'_, AppState>) -> AppResult<u32>
     })
     .await
     .map_err(|e| AppError::Pricing(format!("litellm task failed: {e}")))?
+}
+
+// ---------------- Preferences (ADR-0012: tray + background) ----------------
+
+/// User-tunable preferences surfaced in the Settings「通用」card (ADR-0012).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct Preferences {
+    pub close_behavior: CloseBehavior,
+    pub collect_interval_secs: u64,
+}
+
+fn to_preferences(cfg: &crate::config::ConfigData) -> Preferences {
+    Preferences {
+        close_behavior: cfg.close_behavior,
+        collect_interval_secs: cfg.collect_interval_secs,
+    }
+}
+
+/// Read the current preferences for the Settings card.
+#[tauri::command]
+#[specta::specta]
+pub fn get_preferences(state: State<'_, AppState>) -> AppResult<Preferences> {
+    Ok(to_preferences(&state.config.get()))
+}
+
+/// Persist the window-close behavior (ADR-0012).
+#[tauri::command]
+#[specta::specta]
+pub fn set_close_behavior(
+    state: State<'_, AppState>,
+    close_behavior: CloseBehavior,
+) -> AppResult<Preferences> {
+    let cfg = state
+        .config
+        .update(|c| c.close_behavior = close_behavior)?;
+    Ok(to_preferences(&cfg))
+}
+
+/// Persist the background-collect interval (seconds, clamped to [60, 3600]).
+#[tauri::command]
+#[specta::specta]
+pub fn set_collect_interval(
+    state: State<'_, AppState>,
+    seconds: u64,
+) -> AppResult<Preferences> {
+    let clamped = seconds.clamp(60, 3600);
+    let cfg = state
+        .config
+        .update(|c| c.collect_interval_secs = clamped)?;
+    Ok(to_preferences(&cfg))
+}
+
+/// Resolve the one-time close dialog (ADR-0012). `remember` pins `choice` as
+/// the persisted behavior; the chosen action is then executed immediately.
+/// `Minimize`/`Ask` hide the window (scheduler keeps running); `Quit` exits.
+#[tauri::command]
+#[specta::specta]
+pub fn confirm_close(
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+    choice: CloseBehavior,
+    remember: bool,
+) -> AppResult<()> {
+    if remember {
+        let _ = state.config.update(|c| c.close_behavior = choice);
+    }
+    match choice {
+        CloseBehavior::Quit => app_handle.exit(0),
+        CloseBehavior::Minimize | CloseBehavior::Ask => {
+            if let Some(window) = app_handle.get_webview_window("main") {
+                let _ = window.hide();
+            }
+        }
+    }
+    Ok(())
 }
