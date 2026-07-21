@@ -1,13 +1,15 @@
-// App shell (ADR-0007): sidebar nav + command bar + scrollable content. View
+// App shell (ADR-0007): sidebar nav + header bar + scrollable content. View
 // switching via viewSlice (no react-router); the active view is rendered by
-// App. The command bar carries the global collect / sync / theme actions.
+// App. The header carries the global collect / sync / theme actions.
+// Visual language: Stitch (ADR-0014) — gradient logo, grid backdrop shows
+// through the content area.
 
 import { Gauge, Settings, Tags } from "lucide-react"
+import { useAppInfoQuery } from "@/app/store/api"
 import { useAppDispatch, useAppSelector } from "@/app/store/hooks"
 import { setView, type ViewId } from "@/app/store/slices/viewSlice"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
-import { useGetAppInfoQuery } from "@/features/settings/api"
 
 import { CommandBar } from "./command-bar"
 
@@ -32,7 +34,7 @@ function NavItem({
       type="button"
       onClick={onClick}
       aria-current={active ? "page" : undefined}
-      className={`group relative flex w-full items-center gap-2.5 rounded-md px-3 py-1.5 text-sm transition-colors ${
+      className={`group relative flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors ${
         active
           ? "bg-sidebar-accent text-sidebar-accent-foreground"
           : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
@@ -53,14 +55,14 @@ function NavItem({
 export function Shell({ children }: { children: React.ReactNode }) {
   const dispatch = useAppDispatch()
   const view = useAppSelector((s) => s.view.view)
-  const { data: info } = useGetAppInfoQuery(undefined, { pollingInterval: 0 })
+  const { data: info } = useAppInfoQuery(undefined, { pollingInterval: 0 })
   const synced = info?.mode === "synced"
 
   return (
-    <div className="bg-background text-foreground flex h-screen w-screen overflow-hidden">
+    <div className="text-foreground flex h-screen w-screen overflow-hidden">
       <aside className="bg-sidebar flex w-56 shrink-0 flex-col">
         <div className="flex items-center gap-2.5 px-4 py-4">
-          <div className="bg-primary text-primary-foreground flex size-8 items-center justify-center rounded-md font-bold">
+          <div className="flex size-8 items-center justify-center rounded-lg bg-gradient-to-br from-cyan-500 to-blue-600 font-bold text-white">
             V
           </div>
           <div className="flex flex-col leading-tight">

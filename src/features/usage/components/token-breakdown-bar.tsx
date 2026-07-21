@@ -3,8 +3,8 @@
 // legend with absolute + share, and a footer line for request count and cache
 // hit rate. Replaces the flat 8-card stat grid with one information-dense card.
 
+import { useStatsQuery } from "@/app/store/api"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { useQueryUsageStatsQuery } from "@/features/usage/api"
 import { formatInt, formatPct, formatTokens } from "@/lib/format"
 
 import type { UsageFilter, UsageStats } from "@/types/generated/bindings"
@@ -18,6 +18,8 @@ const ZERO: UsageStats = {
   cache_read_tokens: 0,
   cache_hit_rate: 0,
   total_cost_usd: 0,
+  turn_count: 0,
+  avg_turn_duration_ms: 0,
 }
 
 const SEGMENTS = [
@@ -28,7 +30,7 @@ const SEGMENTS = [
 ] as const
 
 export function TokenBreakdownBar({ filter }: { filter: UsageFilter }) {
-  const { data: stats } = useQueryUsageStatsQuery(filter, {
+  const { data: stats } = useStatsQuery(filter, {
     pollingInterval: 30_000,
   })
   const s = stats ?? ZERO

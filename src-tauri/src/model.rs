@@ -1,15 +1,16 @@
-//! Core domain model: the per-request Usage Record and the DTOs that cross the
-//! Rust→JS boundary (ADR-0003 / 0004 / 0008 / 0009).
+//! Core domain model for the rebuilt VaultOne.
 //!
-//! Naming is snake_case end-to-end (Rust ↔ SQLite ↔ JSONL ↔ TS) — one uniform
-//! convention, no rename transforms that could drift across the specta/serde
-//! boundary (ADR-0012: reliability first).
+//! Two grains (re-derivation 2026-07-21):
+//!   - [`UsageRecord`]: one model API call (per-call). The unit a provider
+//!     emits, the Local Store stores, and one JSONL line serializes.
+//!   - [`TurnDuration`]: one turn's wall-clock (per-turn), sourced from the
+//!     `system/turn_duration` event. Separate from per-call records because a
+//!     turn spans multiple API calls.
 //!
-//! Boundary type rules (ADR-0008): no BigInt-style ints (usize/i64/...). Token
-//! counts are `u32` (max ~4.29e9, far above any context size); timestamps cross
-//! as ISO8601 strings; cost crosses as `f64` (display-only on the JS side — the
-//! JS layer never recomputes cost, ADR-0009), while internally cost is kept as
-//! `rust_decimal::Decimal` for precision and stored as TEXT in SQLite.
+//! Boundary type rules: no pointer-sized ints cross the Rust→JS boundary.
+//! Token counts are `u32`; timestamps cross as ISO8601 strings; cost crosses as
+//! `f64` (display-only on the JS side — JS never recomputes cost), while cost
+//! is kept internally as `rust_decimal::Decimal` and stored as TEXT in SQLite.
 
 use std::str::FromStr;
 
@@ -17,7 +18,7 @@ use rust_decimal::Decimal;
 
 // ---- Token / tool sub-structures (shared by internal record + DTOs) ----
 
-/// Token four-pack (ADR-0003). `u32` across the boundary (ADR-0008).
+/// Token four-pack (per-call). `u32` across the boundary.
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type,
 )]
@@ -29,7 +30,7 @@ pub struct TokenCounts {
 }
 
 impl TokenCounts {
-    /// Sum of all four buckets — "真实消耗 Tokens" in the dashboard (BLUEPRINT).
+    /// Sum of all four buckets — "真实消耗 Tokens" in the dashboard.
     pub fn total(self) -> u32 {
         self.input
             .saturating_add(self.output)
@@ -49,7 +50,7 @@ impl TokenCounts {
     }
 }
 
-/// Server-side tool usage reported by some providers (BLUEPRINT bonus column).
+/// Server-side tool usage reported by Claude Code's usage block.
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type,
 )]
@@ -71,7 +72,7 @@ pub fn de_decimal<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Decimal, D::
     Decimal::from_str(&s).map_err(serde::de::Error::custom)
 }
 
-/// Cost split by token bucket, in USD (ADR-0009: computed at ingest, stored).
+/// Cost split by token bucket, in USD. Computed at ingest, then frozen.
 ///
 /// Internal-only (Decimal precision); DTOs below expose `f64` to the frontend.
 #[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -114,14 +115,17 @@ impl CostBreakdown {
     }
 }
 
-// ---- Internal Usage Record (provider output → SQLite + JSONL) ----
+// ---- Per-call Usage Record (provider output → SQLite + JSONL) ----
 
-/// One model API call (ADR-0003: per-request granularity). This is the unit a
-/// provider emits, the Local Store stores, and one JSONL line serializes.
+/// One model API call (per-call granularity). This is the unit a provider
+/// emits, the Local Store stores, and one JSONL line serializes.
 ///
-/// `uuid` is the dedup key (ADR-0005 ledger). `pricing_model` records the model
-/// key used to look up the price, so zero-cost rows can be rebilled precisely
-/// (ADR-0009: freeze + top-up zero-cost only).
+/// `uuid` is the dedup key. `pricing_model` records the normalized model key
+/// used to look up the price, so zero-cost rows can be rebilled precisely
+/// (freeze + top-up zero-cost only).
+///
+/// `turn_duration` is intentionally NOT here — a turn spans multiple calls, so
+/// it lives in the separate per-turn [`TurnDuration`].
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct UsageRecord {
     pub uuid: String,
@@ -131,14 +135,22 @@ pub struct UsageRecord {
     pub day: String,
     /// Billed / mapped model, e.g. `glm-5.2`.
     pub model: String,
-    /// Normalized model key used for pricing lookup (ADR-0009 rebill key).
+    /// Normalized model key used for pricing lookup (rebill key).
     pub pricing_model: String,
-    /// Provider tag, e.g. `claude_code` (ADR-0001).
+    /// Provider tag, e.g. `claude_code`.
     pub source: String,
-    /// Owning device's 12-hex id (ADR-0002).
+    /// Owning device's 12-hex id.
     pub device_id: String,
     pub tokens: TokenCounts,
     pub server_tool_use: ServerToolUse,
+    /// How the assistant turn terminated: `tool_use` / `end_turn` / ...
+    /// Semantic termination reason (NOT an HTTP status). Per-call.
+    pub stop_reason: String,
+    /// Service tier label, e.g. `standard`. Per-call.
+    pub service_tier: String,
+    /// Reasoning/thinking iteration count (source array length). 0 when the
+    /// model/version records no iterations.
+    pub iterations: u32,
     pub cost: CostBreakdown,
 }
 
@@ -154,9 +166,28 @@ impl UsageRecord {
     }
 }
 
+// ---- Per-turn TurnDuration (separate grain from per-call records) ----
+
+/// One turn's wall-clock duration. Sourced from the `system/turn_duration`
+/// event's `durationMs`. Kept separate from per-call [`UsageRecord`] because a
+/// turn spans multiple API calls — the duration is a turn-level fact, not a
+/// per-call one.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TurnDuration {
+    /// Dedup key (the source `system/turn_duration` event's uuid).
+    pub uuid: String,
+    pub timestamp: String,
+    /// Derived `yyyy-mm-dd` (UTC).
+    pub day: String,
+    /// Owning device's 12-hex id.
+    pub device_id: String,
+    /// Turn wall-clock in milliseconds.
+    pub duration_ms: u32,
+}
+
 // ---- DTOs crossing the boundary (specta-typed, f64 cost) ----
 
-/// One row of the request-log table (BLUEPRINT 请求日志; ADR-0003 columns).
+/// One row of the request-log table.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct UsageLogRow {
     pub uuid: String,
@@ -165,10 +196,11 @@ pub struct UsageLogRow {
     pub source: String,
     pub device_id: String,
     pub tokens: TokenCounts,
+    pub stop_reason: String,
     pub total_cost_usd: f64,
 }
 
-/// Aggregate totals over a filtered range (BLUEPRINT 使用统计).
+/// Aggregate totals over a filtered range.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct UsageStats {
     pub request_count: u32,
@@ -180,6 +212,9 @@ pub struct UsageStats {
     /// Cache-hit ratio in [0,1].
     pub cache_hit_rate: f64,
     pub total_cost_usd: f64,
+    /// Aggregate over TurnDuration rows in range (per-turn grain).
+    pub turn_count: u32,
+    pub avg_turn_duration_ms: f64,
 }
 
 /// Per-model aggregate row (for breakdown tables / model filter).
@@ -203,10 +238,10 @@ pub struct TrendPoint {
     pub total_cost_usd: f64,
 }
 
-/// Filter args shared by stats / trend / logs queries (ADR-0007 query boundary).
+/// Filter args shared by stats / trend / logs queries.
 ///
-/// All fields optional; empty/None means "no constraint". `device_scope` is the
-/// semantic cache-key axis (ADR-0008): `None` = all devices.
+/// All fields optional; `None` means "no constraint". `device_scope` is the
+/// semantic cache-key axis: `None` = all devices.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct UsageFilter {
     /// Inclusive lower ISO8601 day (`yyyy-mm-dd`).
@@ -226,7 +261,7 @@ pub struct LogsQuery {
     pub offset: u32,
 }
 
-// ---- Pricing (ADR-0006 / 0009) ----
+// ---- Pricing ----
 
 /// A pricing entry: USD per 1M tokens for each bucket.
 ///
@@ -247,7 +282,7 @@ pub struct PricingEntry {
 
 // ---- Device & mode ----
 
-/// A known device (ADR-0002). `is_self` marks the device running this instance.
+/// A known device. `is_self` marks the device running this instance.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct DeviceInfo {
     pub device_id: String,
@@ -256,7 +291,7 @@ pub struct DeviceInfo {
     pub first_seen: String,
 }
 
-/// Run mode (ADR-0011): default Standalone; Synced once a repo is configured.
+/// Run mode: default Standalone; Synced once a repo is configured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum RunMode {
@@ -326,5 +361,41 @@ mod tests {
             Decimal::from_str("0.5").unwrap(),
         );
         assert_eq!(cb.total_usd, Decimal::from_str("4.0").unwrap());
+    }
+
+    #[test]
+    fn usage_record_carries_new_per_call_fields() {
+        let r = UsageRecord {
+            uuid: "u1".into(),
+            timestamp: "2026-07-21T10:00:00Z".into(),
+            day: "2026-07-21".into(),
+            model: "glm-5.2".into(),
+            pricing_model: "glm-5.2".into(),
+            source: "claude_code".into(),
+            device_id: "abc123def456".into(),
+            tokens: TokenCounts::default(),
+            server_tool_use: ServerToolUse::default(),
+            stop_reason: "tool_use".into(),
+            service_tier: "standard".into(),
+            iterations: 3,
+            cost: CostBreakdown::default(),
+        };
+        assert_eq!(r.stop_reason, "tool_use");
+        assert_eq!(r.service_tier, "standard");
+        assert_eq!(r.iterations, 3);
+    }
+
+    #[test]
+    fn turn_duration_roundtrips() {
+        let td = TurnDuration {
+            uuid: "t1".into(),
+            timestamp: "2026-07-21T10:00:00Z".into(),
+            day: "2026-07-21".into(),
+            device_id: "abc123def456".into(),
+            duration_ms: 209_499,
+        };
+        let json = serde_json::to_string(&td).unwrap();
+        let back: TurnDuration = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, td);
     }
 }

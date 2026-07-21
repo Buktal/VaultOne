@@ -4,7 +4,15 @@
 import { Calculator, CloudUpload, RefreshCw, Unplug } from "lucide-react"
 import { useState } from "react"
 import { toast } from "sonner"
-
+import {
+  useAppInfoQuery,
+  useClearSyncRepoMutation,
+  useRebillMutation,
+  useSetDisplayNameMutation,
+  useSetSyncRepoMutation,
+  useSyncConfigMutation,
+  useSyncMutation,
+} from "@/app/store/api"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -16,25 +24,16 @@ import {
 } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import {
-  useClearSyncRepoMutation,
-  useGetAppInfoQuery,
-  useSetDisplayNameMutation,
-  useSetSyncRepoMutation,
-  useSyncConfigMutation,
-  useSyncNowMutation,
-} from "@/features/settings/api"
 import { ConflictResolver } from "@/features/settings/components/conflict-resolver"
-import { useRebillZeroCostMutation } from "@/features/usage/api"
 import type { ConfigConflict } from "@/types/generated/bindings"
 
 export function SettingsView() {
-  const { data: info } = useGetAppInfoQuery()
+  const { data: info } = useAppInfoQuery()
   const [setRepo, { isLoading: binding }] = useSetSyncRepoMutation()
   const [clearRepo, { isLoading: clearing }] = useClearSyncRepoMutation()
   const [setName, { isLoading: naming }] = useSetDisplayNameMutation()
-  const [rebill, { isLoading: rebilling }] = useRebillZeroCostMutation()
-  const [syncNow, { isLoading: syncing }] = useSyncNowMutation()
+  const [rebill, { isLoading: rebilling }] = useRebillMutation()
+  const [syncNow, { isLoading: syncing }] = useSyncMutation()
   const [syncConfig, { isLoading: syncingConfig }] = useSyncConfigMutation()
 
   const [displayName, setDisplayName] = useState("")
@@ -162,8 +161,8 @@ export function SettingsView() {
               disabled={binding || synced || !repoUrl.trim() || !token.trim()}
               onClick={async () => {
                 const r = await setRepo({
-                  repo_url: repoUrl.trim(),
-                  github_token: token.trim(),
+                  repoUrl: repoUrl.trim(),
+                  githubToken: token.trim(),
                 })
                 if ("error" in r) toast.error("配置失败")
                 else {

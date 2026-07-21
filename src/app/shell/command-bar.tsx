@@ -1,16 +1,19 @@
-// Command bar — the cockpit's always-on top strip. Left: active view title.
-// Center: DataFreshness. Right: [采集 · dashboard only][同步 · synced only]
-// [theme toggle]. The collect/sync actions live here (not buried in FilterBar
-// or Settings) because they are the second-most-frequent action after reading.
+// Header bar (ADR-0014 D2/D6). Left: active view title. Right action:
+// [采集 · dashboard only（旁挂数据新鲜度小字）][同步 · synced only][主题].
+// Stitch 稿的 Export/Bell/Logout 已弃——VaultOne 无账号/通知/导出报告。
+// 数据新鲜度从原命令栏中央挪到采集按钮旁，与采集动作同区（ADR-0013 动机保留）。
 
 import { Activity, RefreshCw } from "lucide-react"
 import { toast } from "sonner"
+import {
+  useAppInfoQuery,
+  useCollectMutation,
+  useSyncMutation,
+} from "@/app/store/api"
 import { useAppSelector } from "@/app/store/hooks"
 import type { ViewId } from "@/app/store/slices/viewSlice"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { Button } from "@/components/ui/button"
-import { useGetAppInfoQuery, useSyncNowMutation } from "@/features/settings/api"
-import { useCollectNowMutation } from "@/features/usage/api"
 import { useFreshness } from "@/hooks/use-freshness"
 
 import { DataFreshness } from "./data-freshness"
@@ -23,10 +26,10 @@ const VIEW_TITLES: Record<ViewId, string> = {
 
 export function CommandBar() {
   const view = useAppSelector((s) => s.view.view)
-  const { data: info } = useGetAppInfoQuery(undefined, { pollingInterval: 0 })
+  const { data: info } = useAppInfoQuery(undefined, { pollingInterval: 0 })
   const { markCollected, markSynced } = useFreshness()
-  const [collect, { isLoading: collecting }] = useCollectNowMutation()
-  const [syncNow, { isLoading: syncing }] = useSyncNowMutation()
+  const [collect, { isLoading: collecting }] = useCollectMutation()
+  const [syncNow, { isLoading: syncing }] = useSyncMutation()
   const synced = info?.mode === "synced"
 
   async function onCollect() {
@@ -56,17 +59,18 @@ export function CommandBar() {
   }
 
   return (
-    <header className="bg-background/80 sticky top-0 z-30 flex h-12 shrink-0 items-center gap-3 border-b px-4 backdrop-blur">
-      <h1 className="text-sm font-semibold">{VIEW_TITLES[view]}</h1>
-      <div className="flex flex-1 items-center">
-        <DataFreshness />
-      </div>
-      <div className="flex items-center gap-1.5">
+    <header className="bg-background/80 sticky top-0 z-30 flex h-14 shrink-0 items-center gap-3 border-b px-4 backdrop-blur">
+      <h1 className="text-base font-semibold">{VIEW_TITLES[view]}</h1>
+      <div className="flex-1" />
+      <div className="flex items-center gap-2">
         {view === "dashboard" ? (
-          <Button size="sm" disabled={collecting} onClick={onCollect}>
-            <Activity />
-            {collecting ? "采集中…" : "采集"}
-          </Button>
+          <>
+            <Button size="sm" disabled={collecting} onClick={onCollect}>
+              <Activity />
+              {collecting ? "采集中…" : "采集"}
+            </Button>
+            <DataFreshness />
+          </>
         ) : null}
         {synced ? (
           <Button

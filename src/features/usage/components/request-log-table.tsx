@@ -1,13 +1,19 @@
-// Request log table (BLUEPRINT 请求日志; ADR-0003 columns): Time / Provider /
-// Billed Model / 输入 / 输出 / 缓存创建 / 缓存命中 / Cost / Source.
-// No latency / TTFT / status columns (ADR-0003: cut — no source). Paginated.
-// Rows highlight on hover; the empty state offers an inline 采集 CTA so the
-// user isn't bounced to the command bar to seed the first rows.
+// Request log table — per-API-call ledger. Columns: Time / Provider / Billed
+// Model / 输入 / 输出 / 缓存创建 / 缓存命中 / Cost / 停止原因 / Source.
+// `stop_reason` (end_turn / tool_use / max_tokens …) is the new per-call field.
+// No latency / TTFT / HTTP-status columns (ADR-0003: no source carries them).
+// Paginated; empty state offers an inline 采集 CTA so the user isn't bounced to
+// the command bar to seed the first rows.
 
 import { FileText } from "lucide-react"
 import { useState } from "react"
 import { toast } from "sonner"
 
+import {
+  useCollectMutation,
+  useCountQuery,
+  useLogsQuery,
+} from "@/app/store/api"
 import { QueryState } from "@/components/query-state"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -19,11 +25,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import {
-  useCollectNowMutation,
-  useCountUsageLogsQuery,
-  useQueryUsageLogsQuery,
-} from "@/features/usage/api"
 import { formatCost, formatInt, formatTime } from "@/lib/format"
 
 import type { UsageFilter } from "@/types/generated/bindings"
@@ -36,13 +37,13 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
     data: rows = [],
     isLoading,
     error,
-  } = useQueryUsageLogsQuery({
+  } = useLogsQuery({
     filter,
     limit: PAGE_SIZE,
     offset,
   })
-  const { data: total = 0 } = useCountUsageLogsQuery(filter)
-  const [collect, { isLoading: collecting }] = useCollectNowMutation()
+  const { data: total = 0 } = useCountQuery(filter)
+  const [collect, { isLoading: collecting }] = useCollectMutation()
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const page = Math.floor(offset / PAGE_SIZE) + 1
@@ -85,6 +86,7 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
                 <TableHead className="text-right">缓存创建</TableHead>
                 <TableHead className="text-right">缓存命中</TableHead>
                 <TableHead className="text-right">成本</TableHead>
+                <TableHead>停止原因</TableHead>
                 <TableHead>来源</TableHead>
               </TableRow>
             </TableHeader>
@@ -113,6 +115,9 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
                     {formatCost(r.total_cost_usd)}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground font-mono text-xs">
+                    {r.stop_reason || "—"}
                   </TableCell>
                   <TableCell className="text-muted-foreground text-xs">
                     {r.source}

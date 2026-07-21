@@ -4,9 +4,8 @@
 
 import { useState } from "react"
 import { toast } from "sonner"
-
+import { useResolveConfigConflictMutation } from "@/app/store/api"
 import { Button } from "@/components/ui/button"
-import { useResolveConfigConflictMutation } from "@/features/settings/api"
 import type {
   ConfigConflict,
   ConfigSyncChoice,

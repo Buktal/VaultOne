@@ -16,7 +16,10 @@ CREATE TABLE IF NOT EXISTS usage_records (
     cache_creation_tokens  INTEGER NOT NULL,
     cache_read_tokens      INTEGER NOT NULL,
     server_tool_use        TEXT NOT NULL DEFAULT '{}', -- JSON {web_search,web_fetch}
-    input_cost_usd         TEXT NOT NULL,            -- Decimal as TEXT (ADR-0009)
+    stop_reason            TEXT NOT NULL DEFAULT '',   -- tool_use / end_turn / … (semantic, not HTTP)
+    service_tier           TEXT NOT NULL DEFAULT '',   -- e.g. standard
+    iterations             INTEGER NOT NULL DEFAULT 0, -- reasoning iteration count
+    input_cost_usd         TEXT NOT NULL,            -- Decimal as TEXT
     output_cost_usd        TEXT NOT NULL,
     cache_read_cost_usd    TEXT NOT NULL,
     cache_creation_cost_usd TEXT NOT NULL,
@@ -27,6 +30,18 @@ CREATE INDEX IF NOT EXISTS idx_usage_model   ON usage_records(model);
 CREATE INDEX IF NOT EXISTS idx_usage_device  ON usage_records(device_id);
 CREATE INDEX IF NOT EXISTS idx_usage_source  ON usage_records(source);
 CREATE INDEX IF NOT EXISTS idx_usage_ts      ON usage_records(timestamp);
+
+-- Per-turn durations (per-turn grain, separate from per-call usage_records).
+-- Sourced from system/turn_duration events. uuid = dedup key.
+CREATE TABLE IF NOT EXISTS turn_durations (
+    uuid         TEXT PRIMARY KEY,
+    timestamp    TEXT NOT NULL,            -- ISO8601 UTC
+    day          TEXT NOT NULL,            -- yyyy-mm-dd (UTC) bucket
+    device_id    TEXT NOT NULL,            -- 12-hex owner
+    duration_ms  INTEGER NOT NULL          -- turn wall-clock in ms
+);
+CREATE INDEX IF NOT EXISTS idx_turndur_day    ON turn_durations(day);
+CREATE INDEX IF NOT EXISTS idx_turndur_device ON turn_durations(device_id);
 
 -- Dedup ledger (ADR-0005): canonical "have we imported this uuid" set + provenance.
 CREATE TABLE IF NOT EXISTS ledger (

@@ -1,12 +1,11 @@
 // Quick filters (BLUEPRINT 检索控制, inlined): time-range presets (segmented) +
-// model / source selects + a button that opens the advanced FilterSheet. These
-// are the high-frequency selectors; low-frequency (device scope, custom dates)
-// live in the sheet so they don't crowd the cockpit.
+// model / source selects. 高频筛选行内化（ADR-0014 全按 Stitch 稿，无高级抽屉）。
 
 import dayjs from "dayjs"
-import { SlidersHorizontal } from "lucide-react"
-
-import { Button } from "@/components/ui/button"
+import {
+  useDistinctModelsQuery,
+  useDistinctSourcesQuery,
+} from "@/app/store/api"
 import {
   Select,
   SelectContent,
@@ -14,10 +13,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import {
-  useQueryDistinctModelsQuery,
-  useQueryDistinctSourcesQuery,
-} from "@/features/usage/api"
 
 import type { FilterState } from "./dashboard-view"
 
@@ -62,14 +57,12 @@ function applyPreset(p: Preset): Pick<FilterState, "from_day" | "to_day"> {
 export function QuickFilters({
   filter,
   onChange,
-  onOpenAdvanced,
 }: {
   filter: FilterState
   onChange: (next: FilterState) => void
-  onOpenAdvanced: () => void
 }) {
-  const { data: sources = [] } = useQueryDistinctSourcesQuery()
-  const { data: models = [] } = useQueryDistinctModelsQuery()
+  const { data: sources = [] } = useDistinctSourcesQuery()
+  const { data: models = [] } = useDistinctModelsQuery()
   const preset = derivePreset(filter)
 
   return (
@@ -128,15 +121,6 @@ export function QuickFilters({
           ))}
         </SelectContent>
       </Select>
-
-      <Button
-        variant="outline"
-        size="icon-sm"
-        onClick={onOpenAdvanced}
-        aria-label="高级筛选"
-      >
-        <SlidersHorizontal />
-      </Button>
     </div>
   )
 }

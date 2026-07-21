@@ -15,9 +15,9 @@ import {
   XAxis,
   YAxis,
 } from "recharts"
+import { useTrendQuery } from "@/app/store/api"
 import { QueryState } from "@/components/query-state"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { useQueryUsageTrendQuery } from "@/features/usage/api"
 import { formatCost, formatDay, formatTokens } from "@/lib/format"
 
 import type { TrendPoint, UsageFilter } from "@/types/generated/bindings"
@@ -78,7 +78,7 @@ export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
     data = [],
     isLoading,
     error,
-  } = useQueryUsageTrendQuery(filter, {
+  } = useTrendQuery(filter, {
     pollingInterval: 30_000,
   })
 
