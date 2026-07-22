@@ -10,16 +10,20 @@
 // window ops on mount, so the full-geometry read below happens before anything
 // shrinks (no child/parent effect race).
 
-import { useEffect, useRef } from "react"
 import {
   getCurrentWindow,
   LogicalPosition,
   type PhysicalPosition,
   type PhysicalSize,
 } from "@tauri-apps/api/window"
+import { useEffect, useRef } from "react"
 
 import { useAppSelector } from "@/app/store/hooks"
-import { CARD_SIZE, ENTRY_DOCK_Y, rightEdgeLogical } from "./lightweight-geometry"
+import {
+  CARD_SIZE,
+  ENTRY_DOCK_Y,
+  rightEdgeLogical,
+} from "./lightweight-geometry"
 
 type SavedGeometry =
   | { maximized: true }

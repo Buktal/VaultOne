@@ -9,13 +9,12 @@
 // `usage_changed`, and this query's providesTags key (filterId) matches the
 // dashboard's "today" — so no polling here.
 
+import dayjs from "dayjs"
 import { Maximize2 } from "lucide-react"
 import { useMemo } from "react"
-import dayjs from "dayjs"
-
+import { useLightweightTuck } from "@/app/shell/use-lightweight-tuck"
 import { useStatsQuery, ZERO_STATS } from "@/app/store/api"
 import { useAppDispatch } from "@/app/store/hooks"
-import { useLightweightTuck } from "@/app/shell/use-lightweight-tuck"
 import { toFilter } from "@/app/store/slices/filterSlice"
 import { setMode } from "@/app/store/slices/viewSlice"
 import { Button } from "@/components/ui/button"
@@ -38,7 +37,11 @@ const SEGMENTS: Array<{ key: BucketKey; label: string; color: string }> = [
     label: "缓存创建",
     color: "var(--chart-cache-create)",
   },
-  { key: "cache_read_tokens", label: "缓存命中", color: "var(--chart-cache-read)" },
+  {
+    key: "cache_read_tokens",
+    label: "缓存命中",
+    color: "var(--chart-cache-read)",
+  },
 ]
 
 export function LightweightCard() {
@@ -69,9 +72,12 @@ export function LightweightCard() {
   // hover expands it back to the card.
   if (tucked) {
     return (
-      <div
-        className="bg-background flex h-screen w-screen items-center justify-center"
+      <button
+        type="button"
+        className="bg-background flex h-screen w-screen cursor-default items-center justify-center border-0 p-0"
         onMouseEnter={expand}
+        onClick={expand}
+        aria-label="展开今日用量速览"
       >
         <img
           src="/vaultone-cream.svg"
@@ -83,13 +89,15 @@ export function LightweightCard() {
           alt=""
           className="block dark:hidden size-9"
         />
-      </div>
+      </button>
     )
   }
 
   return (
     <div
       className="bg-background text-foreground flex h-screen w-screen flex-col overflow-hidden"
+      role="dialog"
+      aria-label="今日用量速览"
       onMouseEnter={cancelTuck}
       onMouseLeave={scheduleTuck}
     >

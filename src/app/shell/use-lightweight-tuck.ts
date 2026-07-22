@@ -19,15 +19,19 @@
 // Multi-monitor edge choice and "forgot which edge" discoverability still need
 // design — tune after interactive testing.
 
+import {
+  currentMonitor,
+  getCurrentWindow,
+  LogicalPosition,
+} from "@tauri-apps/api/window"
 import { useCallback, useEffect, useRef, useState } from "react"
-import { getCurrentWindow, LogicalPosition } from "@tauri-apps/api/window"
 
 import {
   CARD_SIZE,
   EDGE_THRESHOLD,
   ENTRY_DOCK_Y,
-  TUCKED_SIZE,
   rightEdgeLogical,
+  TUCKED_SIZE,
 } from "./lightweight-geometry"
 
 const appWindow = getCurrentWindow()
@@ -83,7 +87,7 @@ export function useLightweightTuck() {
     const unlisten = appWindow.onMoved(({ payload }) => {
       if (programmatic.current || settling.current) return
       void (async () => {
-        const mon = await appWindow.currentMonitor()
+        const mon = await currentMonitor()
         const f = mon?.scaleFactor || 1
         lastY.current = payload.y / f
         const edge = await rightEdgeLogical()

@@ -15,8 +15,8 @@ import { TooltipProvider } from "@/components/ui/tooltip"
 
 import { CloseRequestedDialog } from "./close-requested-dialog"
 import { vaultApi } from "./store/api"
-import { store } from "./store/store"
 import { setMode } from "./store/slices/viewSlice"
+import { store } from "./store/store"
 
 export function AppProviders({ children }: { children: ReactNode }) {
   // ADR-0005 event-driven refresh: Rust emits `usage_changed` after writing the
