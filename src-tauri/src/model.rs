@@ -39,9 +39,10 @@ impl TokenCounts {
     }
 
     /// Cache-hit rate as a ratio in [0,1] for display (0 when nothing cacheable).
-    /// Denominator = fresh input + cache reads (the "could have been cached" pool).
+    /// Denominator = fresh input + cache creation + cache reads — the full
+    /// "could have been cached" pool. Matches CC-Switch's cache_hit_rate.
     pub fn cache_hit_rate(self) -> f64 {
-        let denom = self.input as f64 + self.cache_read as f64;
+        let denom = self.input as f64 + self.cache_creation as f64 + self.cache_read as f64;
         if denom <= 0.0 {
             0.0
         } else {
@@ -359,7 +360,7 @@ mod tests {
             cache_creation: 10,
             cache_read: 90,
         };
-        assert!((t.cache_hit_rate() - 90.0 / 190.0).abs() < 1e-9);
+        assert!((t.cache_hit_rate() - 90.0 / 200.0).abs() < 1e-9);
         // Nothing cacheable ⇒ 0.
         let z = TokenCounts {
             input: 0,
