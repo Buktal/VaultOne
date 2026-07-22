@@ -39,7 +39,7 @@ export function RecentRequests() {
   const { data: total = 0 } = useCountQuery(usageFilter, { pollingInterval })
 
   return (
-    <Card>
+    <Card interactive>
       <CardHeader className="flex-row items-center justify-between">
         <CardTitle>近期请求</CardTitle>
         <button

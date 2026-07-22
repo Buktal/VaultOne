@@ -42,7 +42,7 @@ export function KpiStrip({ filter }: { filter: UsageFilter }) {
   ]
 
   return (
-    <Card size="sm">
+    <Card size="sm" interactive>
       <CardHeader>
         <CardTitle>概览</CardTitle>
       </CardHeader>

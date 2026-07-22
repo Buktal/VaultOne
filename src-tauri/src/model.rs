@@ -226,7 +226,9 @@ pub struct ModelStatsRow {
     pub total_cost_usd: f64,
 }
 
-/// One point on the trend chart (per day).
+/// One point on the trend chart. `day` carries the bucket key: a `YYYY-MM-DD`
+/// UTC day (`TrendBucket::Day`) or a `YYYY-MM-DDTHH` local hour
+/// (`TrendBucket::Hour`). The field keeps the `day` name for wire stability.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct TrendPoint {
     pub day: String,
@@ -236,6 +238,15 @@ pub struct TrendPoint {
     pub cache_creation_tokens: u32,
     pub cache_read_tokens: u32,
     pub total_cost_usd: f64,
+}
+
+/// Trend aggregation granularity. `Day` groups on the UTC `day` column
+/// (ADR-0004, cross-device deterministic); `Hour` groups on local-time hour,
+/// used for the single-day zoom where per-day resolution collapses to one bar.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, specta::Type)]
+pub enum TrendBucket {
+    Day,
+    Hour,
 }
 
 /// Filter args shared by stats / trend / logs queries.

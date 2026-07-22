@@ -1,7 +1,7 @@
 // App shell (ADR-0011 / ADR-0013): collapsible sidebar nav + scrollable content.
 // View switching via viewSlice (no react-router); the active view is rendered
 // by App. 顶栏 (CommandBar) 已移除 — 筛选/采集收敛进各 view 的 ControlCard /
-// ControlBar，主题切换移入 ControlCard 标题行 (ADR-0013 v2)，视图标题由导航
+// ControlBar，主题切换移入左下角设备卡片 (ADR-0013 v3，统一入口)，视图标题由导航
 // 选中态表达。Sidebar collapse persists to localStorage. 左栏视觉对齐原型 v10
 // (递减三色 mark / 绿字灰底选中 / 设备 pill)，main 区去掉 max-w 让看板与日志
 // 在宽屏铺满贴边 (窄内容如 settings 各自内部 max-w 居中)。
@@ -18,6 +18,7 @@ import { useEffect, useState } from "react"
 import { useAppInfoQuery } from "@/app/store/api"
 import { useAppDispatch, useAppSelector } from "@/app/store/hooks"
 import { setView, type ViewId } from "@/app/store/slices/viewSlice"
+import { ThemeToggle } from "@/components/theme-toggle"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import {
@@ -84,7 +85,7 @@ function NavItem({
         "flex items-center rounded-lg text-sm transition-colors",
         collapsed ? "size-9 justify-center" : "w-full gap-2.5 px-3 py-2",
         active
-          ? "bg-muted text-primary"
+          ? "bg-accent-tint font-medium text-accent-brand-strong shadow-[inset_2px_0_0_var(--accent-brand)]"
           : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
       )}
     >
@@ -158,7 +159,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           )}
           <nav
             className={cn(
-              "flex flex-col gap-0.5",
+              "flex flex-col gap-1.5",
               collapsed ? "items-center p-2" : "p-2",
             )}
           >
@@ -176,7 +177,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <div className="mt-auto p-3">
             <Separator className="mb-3" />
             {collapsed ? (
-              <div className="flex justify-center">
+              <div className="flex flex-col items-center gap-2">
+                <ThemeToggle />
                 <span
                   className={cn(
                     "size-2 rounded-full",
@@ -219,6 +221,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
                     </span>
                   ) : null}
                 </div>
+                <div className="mt-2 flex items-center justify-between border-border/60 border-t pt-2">
+                  <span className="text-muted-foreground text-[11px]">
+                    主题
+                  </span>
+                  <ThemeToggle />
+                </div>
               </div>
             )}
           </div>
@@ -226,7 +234,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
         <main className="flex min-w-0 flex-1 flex-col">
           <div className="flex-1 overflow-auto">
-            <div className="w-full pr-4">{children}</div>
+            <div className="w-full pt-4 pr-4">{children}</div>
           </div>
         </main>
       </div>

@@ -8,6 +8,7 @@
 // only the global UsageStats has them. Daily turn trends require a backend
 // change (extend TrendPoint); tracked in backlog.
 
+import dayjs from "dayjs"
 import {
   Area,
   AreaChart,
@@ -30,7 +31,11 @@ import {
 import { usePollingInterval } from "@/hooks/use-polling-interval"
 import { formatDay, formatTokens } from "@/lib/format"
 
-import type { TrendPoint, UsageFilter } from "@/types/generated/bindings"
+import type {
+  TrendBucket,
+  TrendPoint,
+  UsageFilter,
+} from "@/types/generated/bindings"
 
 type Bucket = {
   key: keyof TrendPoint
@@ -54,23 +59,38 @@ const BUCKETS: Bucket[] = [
   },
 ]
 
+/** Hour bucket key `YYYY-MM-DDTHH` → `HH:00` for the axis / tooltip. */
+function formatHour(key: string): string {
+  return `${key.slice(11, 13)}:00`
+}
+
 export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
   const pollingInterval = usePollingInterval()
+  // A single local-day range collapses per-day resolution to one bar, so zoom
+  // to hourly; anything wider stays per-day. A UTC+8 "today" maps to a 24h UTC
+  // window that still falls on one local day, so isSame("day") catches it.
+  const hourly =
+    !!filter.from_ts &&
+    !!filter.to_ts &&
+    dayjs(filter.from_ts).isSame(filter.to_ts, "day")
+  const bucket: TrendBucket = hourly ? "Hour" : "Day"
   const {
     data = [],
     isLoading,
     error,
-  } = useTrendQuery(filter, {
-    pollingInterval,
-  })
+  } = useTrendQuery({ filter, bucket }, { pollingInterval })
 
   return (
-    <Card>
+    <Card interactive>
       <CardHeader>
         <CardTitle>使用趋势</CardTitle>
         <CardAction>
           <span className="text-muted-foreground text-xs tabular-nums">
-            {data.length > 0 ? `近 ${data.length} 天` : "无数据"}
+            {data.length > 0
+              ? hourly
+                ? `近 ${data.length} 小时`
+                : `近 ${data.length} 天`
+              : "无数据"}
           </span>
         </CardAction>
       </CardHeader>
@@ -91,7 +111,9 @@ export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                 <XAxis
                   dataKey="day"
-                  tickFormatter={formatDay}
+                  tickFormatter={(v) =>
+                    hourly ? formatHour(String(v)) : formatDay(String(v))
+                  }
                   fontSize={12}
                   stroke="var(--muted-foreground)"
                 />
@@ -100,7 +122,7 @@ export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
                   fontSize={12}
                   stroke="var(--muted-foreground)"
                 />
-                <Tooltip content={<TrendTooltip />} />
+                <Tooltip content={<TrendTooltip hourly={hourly} />} />
                 <Legend />
                 {BUCKETS.map((b) => (
                   <Area
@@ -136,13 +158,16 @@ function TrendTooltip(props: {
   active?: boolean
   payload?: TooltipPayload[]
   label?: string
+  hourly?: boolean
 }) {
-  const { active, payload, label } = props
+  const { active, payload, label, hourly } = props
   if (!active || !payload?.length) return null
   const total = payload.reduce((sum, p) => sum + Number(p.value ?? 0), 0)
   return (
     <div className="bg-popover rounded-md border p-2 text-xs shadow-sm">
-      <div className="mb-1 font-medium">{label ? formatDay(label) : ""}</div>
+      <div className="mb-1 font-medium">
+        {label ? (hourly ? formatHour(label) : formatDay(label)) : ""}
+      </div>
       {payload.map((p) => (
         <div
           key={p.dataKey}

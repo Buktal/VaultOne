@@ -293,7 +293,7 @@ function Section({
           </p>
         ) : null}
       </div>
-      <Card>
+      <Card interactive>
         <CardContent className="flex flex-col gap-3">{children}</CardContent>
       </Card>
     </section>

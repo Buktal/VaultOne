@@ -11,6 +11,7 @@ import type {
   PricingEntry,
   RunMode,
   SyncReport,
+  TrendBucket,
   TrendPoint,
   UsageFilter,
   UsageLogRow,
@@ -83,11 +84,11 @@ export const vaultApi = createApi({
         { type: "Usage", id: filterId(filter) },
       ],
     }),
-    trend: b.query<TrendPoint[], UsageFilter>({
-      queryFn: async (filter) => ({
-        data: await run(commands.queryUsageTrend(filter)),
+    trend: b.query<TrendPoint[], { filter: UsageFilter; bucket: TrendBucket }>({
+      queryFn: async ({ filter, bucket }) => ({
+        data: await run(commands.queryUsageTrend(filter, bucket)),
       }),
-      providesTags: (_r, _e, filter) => [
+      providesTags: (_r, _e, { filter }) => [
         { type: "Usage", id: filterId(filter) },
       ],
     }),

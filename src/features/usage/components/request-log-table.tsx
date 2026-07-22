@@ -105,10 +105,7 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
               </TableHeader>
               <TableBody>
                 {rows.map((r) => (
-                  <TableRow
-                    key={r.uuid}
-                    className="transition-colors hover:bg-muted/40"
-                  >
+                  <TableRow key={r.uuid}>
                     <TableCell className="tabular-nums whitespace-nowrap">
                       {formatTime(r.timestamp)}
                     </TableCell>

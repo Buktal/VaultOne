@@ -16,8 +16,8 @@ use crate::db::Store;
 use crate::error::{AppError, AppResult};
 use crate::ingest::{self, IngestReport};
 use crate::model::{
-    DeviceInfo, LogsQuery, ModelStatsRow, PricingEntry, RunMode, TrendPoint, UsageFilter,
-    UsageLogRow, UsageStats,
+    DeviceInfo, LogsQuery, ModelStatsRow, PricingEntry, RunMode, TrendBucket, TrendPoint,
+    UsageFilter, UsageLogRow, UsageStats,
 };
 use crate::pricing;
 use crate::providers::{ClaudeCodeProvider, Provider};
@@ -272,8 +272,9 @@ pub fn query_usage_stats(state: State<'_, AppState>, filter: UsageFilter) -> App
 pub fn query_usage_trend(
     state: State<'_, AppState>,
     filter: UsageFilter,
+    bucket: TrendBucket,
 ) -> AppResult<Vec<TrendPoint>> {
-    state.store.query_trend(&filter)
+    state.store.query_trend(&filter, bucket)
 }
 
 #[tauri::command]

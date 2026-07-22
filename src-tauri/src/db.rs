@@ -15,8 +15,8 @@ use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection, O
 
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    LogsQuery, ModelStatsRow, PricingEntry, TokenCounts, TrendPoint, TurnDuration, UsageFilter,
-    UsageLogRow, UsageRecord, UsageStats,
+    LogsQuery, ModelStatsRow, PricingEntry, TokenCounts, TrendBucket, TrendPoint, TurnDuration,
+    UsageFilter, UsageLogRow, UsageRecord, UsageStats,
 };
 use crate::pricing::{ModelPricing, PricingBook};
 use crate::providers::{FileCursor, ScanProgress, ScanProgressDelta};
@@ -480,19 +480,34 @@ impl Store {
             .map_err(AppError::from)
     }
 
-    /// Daily trend points over a filter (BLUEPRINT 使用趋势).
-    pub fn query_trend(&self, filter: &UsageFilter) -> AppResult<Vec<TrendPoint>> {
+    /// Trend points over a filter (BLUEPRINT 使用趋势). `bucket` picks the
+    /// granularity: `Day` groups on the UTC `day` column (ADR-0004,
+    /// cross-device deterministic); `Hour` groups on local-time hour for the
+    /// single-day zoom where per-day resolution collapses to one bar. The
+    /// TrendPoint `day` field carries the resolved bucket key.
+    pub fn query_trend(
+        &self,
+        filter: &UsageFilter,
+        bucket: TrendBucket,
+    ) -> AppResult<Vec<TrendPoint>> {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let (clause, params_vec) = build_where(filter);
+        // Hour buckets read the clock in the device's local zone so a UTC+8
+        // "today" trends in hours the user recognizes; the day bucket stays on
+        // the stored UTC `day` for cross-device determinism (ADR-0004).
+        let grouping: &str = match bucket {
+            TrendBucket::Day => "day",
+            TrendBucket::Hour => "strftime('%Y-%m-%dT%H', timestamp, 'localtime')",
+        };
         let sql = format!(
-            "SELECT day,
+            "SELECT {grouping} AS bucket,
                 COALESCE(SUM(input_tokens),0),
                 COALESCE(SUM(output_tokens),0),
                 COALESCE(SUM(cache_creation_tokens),0),
                 COALESCE(SUM(cache_read_tokens),0),
                 COALESCE(SUM(CAST(total_cost_usd AS REAL)),0)
              FROM usage_records {clause}
-             GROUP BY day ORDER BY day"
+             GROUP BY bucket ORDER BY bucket"
         );
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(params_vec.iter()), |r| {
@@ -917,7 +932,9 @@ mod tests {
         assert_eq!(stats.total_tokens, 750);
         assert!((stats.total_cost_usd - 6.0).abs() < 1e-9);
 
-        let trend = s.query_trend(&UsageFilter::default()).unwrap();
+        let trend = s
+            .query_trend(&UsageFilter::default(), TrendBucket::Day)
+            .unwrap();
         assert_eq!(trend.len(), 2);
         assert_eq!(trend[0].day, "2026-07-13");
         assert_eq!(trend[0].total_tokens, 450);

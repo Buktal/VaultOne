@@ -45,6 +45,10 @@
   --color-card: var(--card);
   --color-foreground: var(--foreground);
   --color-background: var(--background);
+  --color-accent-brand: var(--accent-brand);
+  --color-accent-brand-strong: var(--accent-brand-strong);
+  --color-accent-tint: var(--accent-tint);
+  --color-row-hover: var(--row-hover);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -71,7 +75,7 @@
  * Default theme = dark.
  */
 :root {
-  --background: oklch(1 0 0);
+  --background: oklch(0.965 0 0); /* off-white; pure #fff was too glaring */
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.145 0 0);
@@ -79,11 +83,11 @@
   --popover-foreground: oklch(0.145 0 0);
   --primary: oklch(0.205 0 0);
   --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
+  --secondary: oklch(0.94 0 0);
   --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
+  --muted: oklch(0.94 0 0);
   --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
+  --accent: oklch(0.94 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
   --border: oklch(0.922 0 0);
@@ -109,10 +113,30 @@
   --sidebar-foreground: oklch(0.145 0 0);
   --sidebar-primary: oklch(0.205 0 0);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent: oklch(0.94 0 0);
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+  /*
+   * Brand accent for selection / emphasis (ADR-0013 v3). The light theme's
+   * --primary is intentionally near-black for a neutral surface, so selection
+   * has no color signal and bg-muted (L 0.97 on 1.0) is invisible on white.
+   * Selection instead draws on the VaultOne green — without re-routing
+   * --primary, which would cascade into every primary button / ring / delta.
+   * --accent-tint = selection fill, --accent-brand = left rail + icon,
+   * --accent-brand-strong = label text (AA on the tint). Restores the
+   * "绿字灰底选中" intent from the shell prototype. --row-hover replaces
+   * the ~invisible bg-muted/40 table-row hover.
+   */
+  --accent-brand: #0fae84;
+  --accent-brand-strong: #04785c;
+  --accent-tint: color-mix(in srgb, #0fae84 11%, transparent);
+  --row-hover: #ededed;
+  /* Scrollbar — thin, no arrows (Windows WebView2). Flat semi-transparent
+     thumb over a transparent track, darkens on hover. Pairs with the webkit
+     rules in @layer base. */
+  --scrollbar-thumb: rgba(0, 0, 0, 0.18);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.3);
 }
 
 .dark {
@@ -155,11 +179,47 @@
   --sidebar-accent-foreground: #ffffff;
   --sidebar-border: rgba(255, 255, 255, 0.08);
   --sidebar-ring: #14c393;
+  /* Brand accent (dark): same green family, brighter text on the tinted rail. */
+  --accent-brand: #14c393;
+  --accent-brand-strong: #2ee8b8;
+  --accent-tint: color-mix(in srgb, #14c393 14%, transparent);
+  --row-hover: rgba(255, 255, 255, 0.06);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.16);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.28);
 }
 
 @layer base {
   * {
     @apply border-border outline-ring/50;
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+  /*
+   * Chromium / WebView2 (Tauri Windows): strip the native arrow buttons and
+   * render a flat, rounded, semi-transparent thumb — matches the Pixso-dark
+   * flat idiom. The 2px transparent border + background-clip inset the thumb
+   * inside the track (macOS-overlay feel) so it never kisses the edge.
+   */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    background: var(--scrollbar-thumb);
+    background-clip: content-box;
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-thumb-hover);
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-button,
+  ::-webkit-scrollbar-corner {
+    display: none;
   }
   body {
     @apply bg-background text-foreground;

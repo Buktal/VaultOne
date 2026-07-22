@@ -21,7 +21,6 @@ import {
   type RefreshInterval,
   setRefreshInterval,
 } from "@/app/store/slices/uiSlice"
-import { ThemeToggle } from "@/components/theme-toggle"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -128,7 +127,7 @@ function DateRangeChip() {
         render={
           <button
             type="button"
-            className="bg-muted hover:bg-muted/70 flex h-8 items-center gap-1.5 rounded-md px-3 text-sm"
+            className="border-border bg-card hover:bg-muted/60 flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm"
           >
             <CalendarRange className="text-muted-foreground size-3.5" />
             {label}
@@ -145,8 +144,8 @@ function DateRangeChip() {
               className={cn(
                 "focus-visible:ring-ring/40 rounded-[5px] px-2.5 py-1 text-xs font-medium transition-colors outline-none focus-visible:ring-2",
                 preset === p.value
-                  ? "bg-background text-foreground"
-                  : "text-muted-foreground hover:text-foreground",
+                  ? "bg-accent-tint text-accent-brand-strong"
+                  : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
               )}
             >
               {p.label}
@@ -194,7 +193,7 @@ function ModelChip() {
       }
     >
       <SelectTrigger
-        className="bg-muted hover:bg-muted/70 h-8 w-28 rounded-md border-transparent"
+        className="border-border bg-card hover:bg-muted/60 h-8 w-28 rounded-md"
         aria-label="模型"
       >
         <SelectValue>
@@ -224,7 +223,7 @@ function RefreshChip() {
       }
     >
       <SelectTrigger
-        className="bg-muted hover:bg-muted/70 h-8 w-28 rounded-md border-transparent"
+        className="border-border bg-card hover:bg-muted/60 h-8 w-28 rounded-md"
         aria-label="自动刷新"
       >
         <RefreshCw className="text-muted-foreground size-3.5" />
@@ -257,26 +256,23 @@ export function ControlCard() {
     localStorage.setItem(CONTROL_COLLAPSE_KEY, collapsed ? "1" : "0")
   }, [collapsed])
   return (
-    <Card size="sm">
+    <Card size="sm" interactive>
       <CardHeader>
         <CardTitle>控制</CardTitle>
         <CardAction>
-          <div className="flex items-center gap-0.5">
-            <ThemeToggle />
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={collapsed ? "展开控制" : "收起控制"}
-              onClick={() => setCollapsed((c) => !c)}
-            >
-              <ChevronDown
-                className={cn(
-                  "size-4 transition-transform",
-                  collapsed && "-rotate-90",
-                )}
-              />
-            </Button>
-          </div>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={collapsed ? "展开控制" : "收起控制"}
+            onClick={() => setCollapsed((c) => !c)}
+          >
+            <ChevronDown
+              className={cn(
+                "size-4 transition-transform",
+                collapsed && "-rotate-90",
+              )}
+            />
+          </Button>
         </CardAction>
       </CardHeader>
       {collapsed ? null : (
@@ -313,7 +309,6 @@ export function ControlBar() {
       <ModelChip />
       <RefreshChip />
       <div className="flex-1" />
-      <ThemeToggle />
       <DataFreshness />
       <Button size="sm" disabled={collecting} onClick={onCollect}>
         <Activity />

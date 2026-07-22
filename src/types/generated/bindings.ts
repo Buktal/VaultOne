@@ -41,7 +41,7 @@ export const commands = {
 	/**  Rebill zero-cost rows whose model now has a price (ADR-0007 top-up). */
 	rebillZeroCost: () => typedError<number, AppError>(__TAURI_INVOKE("rebill_zero_cost")),
 	queryUsageStats: (filter: UsageFilter) => typedError<UsageStats, AppError>(__TAURI_INVOKE("query_usage_stats", { filter })),
-	queryUsageTrend: (filter: UsageFilter) => typedError<TrendPoint[], AppError>(__TAURI_INVOKE("query_usage_trend", { filter })),
+	queryUsageTrend: (filter: UsageFilter, bucket: TrendBucket) => typedError<TrendPoint[], AppError>(__TAURI_INVOKE("query_usage_trend", { filter, bucket })),
 	queryUsageLogs: (query: LogsQuery) => typedError<UsageLogRow[], AppError>(__TAURI_INVOKE("query_usage_logs", { query })),
 	countUsageLogs: (filter: UsageFilter) => typedError<number, AppError>(__TAURI_INVOKE("count_usage_logs", { filter })),
 	queryModels: (filter: UsageFilter) => typedError<ModelStatsRow[], AppError>(__TAURI_INVOKE("query_models", { filter })),
@@ -250,7 +250,18 @@ export type TokenCounts = {
 	cache_read: number,
 };
 
-/**  One point on the trend chart (per day). */
+/**
+ *  Trend aggregation granularity. `Day` groups on the UTC `day` column
+ *  (ADR-0004, cross-device deterministic); `Hour` groups on local-time hour,
+ *  used for the single-day zoom where per-day resolution collapses to one bar.
+ */
+export type TrendBucket = "Day" | "Hour";
+
+/**
+ *  One point on the trend chart. `day` carries the bucket key: a `YYYY-MM-DD`
+ *  UTC day (`TrendBucket::Day`) or a `YYYY-MM-DDTHH` local hour
+ *  (`TrendBucket::Hour`). The field keeps the `day` name for wire stability.
+ */
 export type TrendPoint = {
 	day: string,
 	total_tokens: number,

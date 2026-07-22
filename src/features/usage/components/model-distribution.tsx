@@ -46,7 +46,7 @@ export function ModelDistribution({
   ]
 
   return (
-    <Card>
+    <Card interactive>
       <CardHeader className="flex-row items-center justify-between">
         <CardTitle>模型分布</CardTitle>
         <div className="bg-muted/60 inline-flex items-center gap-0.5 rounded-md p-0.5">

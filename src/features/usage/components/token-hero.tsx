@@ -30,7 +30,10 @@ const SEGMENTS = [
 export function TokenHero({ filter }: { filter: UsageFilter }) {
   const pollingInterval = usePollingInterval()
   const { data: stats } = useStatsQuery(filter, { pollingInterval })
-  const { data: trend = [] } = useTrendQuery(filter, { pollingInterval })
+  const { data: trend = [] } = useTrendQuery(
+    { filter, bucket: "Day" },
+    { pollingInterval },
+  )
   const s = stats ?? ZERO_STATS
   const total = s.total_tokens || 1
 
@@ -46,7 +49,7 @@ export function TokenHero({ filter }: { filter: UsageFilter }) {
   const dailyAvg = days > 0 ? s.total_tokens / days : 0
 
   return (
-    <Card>
+    <Card interactive>
       <CardContent className="flex flex-col gap-4">
         <div className="flex flex-col gap-1.5">
           <span className="text-muted-foreground text-xs">总消耗</span>

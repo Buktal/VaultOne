@@ -45,6 +45,10 @@ import { EntryEditorDialog, emptyEntry } from "./entry-editor-dialog"
 
 type SortKey = keyof PricingEntry
 
+/** Client-side page size — the full list is already loaded; rendering all of
+ * it at once jank-scrolls once it grows past a few hundred entries. */
+const PAGE_SIZE = 50
+
 export function PricingView() {
   const { data: entries = [], isLoading } = usePricingQuery()
   const [remove] = useDeletePricingMutation()
@@ -57,6 +61,7 @@ export function PricingView() {
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
   const [editing, setEditing] = useState<PricingEntry | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [offset, setOffset] = useState(0)
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -81,7 +86,13 @@ export function PricingView() {
     return list
   }, [entries, search, sortKey, sortDir])
 
+  const total = filtered.length
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const page = Math.min(Math.floor(offset / PAGE_SIZE) + 1, totalPages)
+  const paged = filtered.slice(offset, offset + PAGE_SIZE)
+
   function onSort(k: SortKey) {
+    setOffset(0)
     if (sortKey === k) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
     else {
       setSortKey(k)
@@ -123,7 +134,10 @@ export function PricingView() {
           <Search className="text-muted-foreground absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
           <Input
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => {
+              setSearch(e.target.value)
+              setOffset(0)
+            }}
             placeholder="搜索模型…"
             className="h-8 w-44 pl-7"
             aria-label="搜索模型"
@@ -252,11 +266,8 @@ export function PricingView() {
                   </TableCell>
                 </TableRow>
               ) : (
-                filtered.map((e) => (
-                  <TableRow
-                    key={e.model_key}
-                    className="transition-colors hover:bg-muted/40"
-                  >
+                paged.map((e) => (
+                  <TableRow key={e.model_key}>
                     <TableCell className="font-mono text-xs">
                       {e.model_key}
                     </TableCell>
@@ -317,6 +328,30 @@ export function PricingView() {
               )}
             </TableBody>
           </Table>
+
+          <div className="text-muted-foreground mt-3 flex items-center justify-between text-xs">
+            <span>
+              第 {page} / {totalPages} 页 · 共 {total} 条
+            </span>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={offset === 0}
+                onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+              >
+                上一页
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={offset + PAGE_SIZE >= total}
+                onClick={() => setOffset(offset + PAGE_SIZE)}
+              >
+                下一页
+              </Button>
+            </div>
+          </div>
         </CardContent>
       </Card>
 
