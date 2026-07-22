@@ -189,6 +189,13 @@ pub fn run() {
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.show();
                             let _ = window.set_focus();
+                            // ADR-0015: tray left-click always surfaces the FULL
+                            // dashboard (ADR-0012), so if the window is tucked
+                            // into the lightweight glance card, tell the frontend
+                            // to morph back. No-op when already full; the window
+                            // geometry is restored by useWindowMode on the mode
+                            // change.
+                            let _ = app.emit("tray-show-main", ());
                         }
                     }
                 })

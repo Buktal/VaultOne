@@ -5,12 +5,15 @@
 // minimize-to-tray / quit / ask flow as a system close.
 
 import { getCurrentWindow } from "@tauri-apps/api/window"
-import { Copy, Minus, Square, X } from "lucide-react"
+import { Copy, Minus, PictureInPicture2, Square, X } from "lucide-react"
 import { type ReactNode, useEffect, useState } from "react"
+import { useAppDispatch } from "@/app/store/hooks"
+import { setMode } from "@/app/store/slices/viewSlice"
 import { cn } from "@/lib/utils"
 
 export function TitleBar() {
   const appWindow = getCurrentWindow()
+  const dispatch = useAppDispatch()
   const [maximized, setMaximized] = useState(false)
 
   useEffect(() => {
@@ -28,6 +31,16 @@ export function TitleBar() {
       data-tauri-drag-region
       className="flex h-9 shrink-0 select-none items-center justify-end gap-1 pe-2"
     >
+      {/* Lightweight mode entry (ADR-0015): alongside the window controls but
+          decoupled from Close — entering the glance card is not closing the
+          window. Sits at the left of the cluster (me-1 sets it apart). */}
+      <CtrlButton
+        onClick={() => dispatch(setMode("lightweight"))}
+        label="轻量模式"
+        className="me-1"
+      >
+        <PictureInPicture2 className="size-3.5" />
+      </CtrlButton>
       <CtrlButton onClick={() => appWindow.minimize()} label="最小化">
         <Minus className="size-3.5" />
       </CtrlButton>

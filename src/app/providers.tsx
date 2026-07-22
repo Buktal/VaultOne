@@ -16,6 +16,7 @@ import { TooltipProvider } from "@/components/ui/tooltip"
 import { CloseRequestedDialog } from "./close-requested-dialog"
 import { vaultApi } from "./store/api"
 import { store } from "./store/store"
+import { setMode } from "./store/slices/viewSlice"
 
 export function AppProviders({ children }: { children: ReactNode }) {
   // ADR-0005 event-driven refresh: Rust emits `usage_changed` after writing the
@@ -24,6 +25,18 @@ export function AppProviders({ children }: { children: ReactNode }) {
   useEffect(() => {
     const off = listen("usage_changed", () => {
       store.dispatch(vaultApi.util.invalidateTags(["Usage", "Logs", "Models"]))
+    })
+    return () => {
+      off.then((unlisten) => unlisten())
+    }
+  }, [])
+
+  // ADR-0015: tray left-click means "show the full dashboard" (ADR-0012). If the
+  // window is in lightweight mode, morph back — setMode("full") is a no-op when
+  // already full, and useWindowMode restores the window geometry on the change.
+  useEffect(() => {
+    const off = listen("tray-show-main", () => {
+      store.dispatch(setMode("full"))
     })
     return () => {
       off.then((unlisten) => unlisten())
