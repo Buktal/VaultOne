@@ -1,5 +1,10 @@
 // Settings view (ADR-0011): device identity, run mode, repo binding
 // (Standalone ↔ Synced), manual collect / rebill.
+//
+// Redesigned into 6 sectioned cards (通用 / 本机 / 同步 / 云配置 / 设备 / 维护),
+// each fronted by an eyebrow label. Cloud-config sync was split out of the
+// sync card into its own section (ADR-0005 / #6) so it no longer shares a
+// border-t with the usage-sync controls. Behaviour unchanged — layout only.
 
 import { Calculator, CloudUpload, RefreshCw, Unplug } from "lucide-react"
 import { useState } from "react"
@@ -15,13 +20,7 @@ import {
 } from "@/app/store/api"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ConflictResolver } from "@/features/settings/components/conflict-resolver"
@@ -64,43 +63,45 @@ export function SettingsView() {
   }
 
   return (
-    <div className="mx-auto flex max-w-2xl flex-col gap-4">
-      <GeneralCard />
+    <div className="mx-auto flex max-w-3xl flex-col gap-6">
+      {/* 通用 · GENERAL — tray / ADR-0012 */}
+      <Section
+        eyebrow="通用 · GENERAL"
+        description="后台采集与窗口行为（ADR-0012）。应用常驻托盘，关窗默认最小化、后台继续定时采集。"
+      >
+        <GeneralCard />
+      </Section>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>设备身份</CardTitle>
-          <CardDescription>
-            设备 ID 是多设备同步的唯一键（ADR-0002）；显示名仅用于展示。
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          <Row label="设备 ID">
-            <code className="bg-muted rounded px-2 py-1 font-mono text-xs">
-              {info?.device_id ?? "—"}
-            </code>
-          </Row>
-          <Row label="运行模式">
-            <Badge variant={synced ? "default" : "secondary"}>
-              {synced ? "已同步（多设备）" : "单机"}
-            </Badge>
-          </Row>
-          <Row label="Claude 日志目录">
-            <span className="text-muted-foreground truncate font-mono text-xs">
-              {info?.claude_projects_dir ?? "—"}
-            </span>
-          </Row>
-          <div className="mt-2 flex items-end gap-2">
-            <div className="flex flex-1 flex-col gap-1.5">
-              <Label className="text-muted-foreground text-xs">
-                设备显示名
-              </Label>
-              <Input
-                placeholder={info?.display_name ?? "Device"}
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
-              />
-            </div>
+      {/* 本机 · THIS DEVICE */}
+      <Section
+        eyebrow="本机 · THIS DEVICE"
+        description="设备 ID 是多设备同步的唯一键（ADR-0002）；显示名仅用于展示。"
+      >
+        <Row label="设备 ID">
+          <code className="bg-muted rounded px-2 py-1 font-mono text-xs">
+            {info?.device_id ?? "—"}
+          </code>
+        </Row>
+        <Row label="运行模式">
+          <Badge variant={synced ? "default" : "secondary"}>
+            {synced ? "已同步（多设备）" : "单机"}
+          </Badge>
+        </Row>
+        <Row label="Claude 日志目录">
+          <span className="text-muted-foreground truncate font-mono text-xs">
+            {info?.claude_projects_dir ?? "—"}
+          </span>
+        </Row>
+        <div className="bg-border h-px" />
+        <div className="flex flex-col gap-2">
+          <Label className="text-muted-foreground text-xs">设备显示名</Label>
+          <div className="flex items-center gap-2">
+            <Input
+              className="flex-1"
+              placeholder={info?.display_name ?? "Device"}
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+            />
             <Button
               size="sm"
               disabled={naming || !displayName.trim()}
@@ -116,145 +117,142 @@ export function SettingsView() {
               保存
             </Button>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </Section>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>多设备同步（GitHub 仓库）</CardTitle>
-          <CardDescription>
-            配置仓库 + fine-grained PAT 升级为 Synced（ADR-0011）。PAT
-            仅存本地，绝不进入仓库。
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          <Row label="当前仓库">
-            <span className="text-muted-foreground font-mono text-xs">
-              {info?.repo_url ?? "（未配置）"}
-            </span>
-          </Row>
-          <Row label="Token">
-            <span className="text-muted-foreground font-mono text-xs">
-              {info?.masked_token ?? "（未配置）"}
-            </span>
-          </Row>
-          <div className="flex flex-col gap-2">
-            <Label className="text-muted-foreground text-xs">
-              仓库 URL（HTTPS）
-            </Label>
-            <Input
-              placeholder="https://github.com/<owner>/<repo>.git"
-              value={repoUrl}
-              onChange={(e) => setRepoUrl(e.target.value)}
-              disabled={synced}
-            />
-            <Label className="text-muted-foreground text-xs">
-              Fine-grained PAT（Contents 读写）
-            </Label>
-            <Input
-              type="password"
-              placeholder="github_pat_…"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              disabled={synced}
-            />
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              size="sm"
-              disabled={binding || synced || !repoUrl.trim() || !token.trim()}
-              onClick={async () => {
-                const r = await setRepo({
-                  repoUrl: repoUrl.trim(),
-                  githubToken: token.trim(),
-                })
-                if ("error" in r) toast.error("配置失败")
-                else {
-                  toast.success("已升级为 Synced 模式")
-                  setRepoUrl("")
-                  setToken("")
-                }
-              }}
-            >
-              <CloudUpload className="size-4" />
-              绑定并升级
-            </Button>
+      {/* 同步 · SYNC */}
+      <Section
+        eyebrow="同步 · SYNC"
+        description="配置仓库 + fine-grained PAT 升级为 Synced（ADR-0011）。PAT 仅存本地，绝不进入仓库。"
+      >
+        <Row label="当前仓库">
+          <span className="text-muted-foreground font-mono text-xs">
+            {info?.repo_url ?? "（未配置）"}
+          </span>
+        </Row>
+        <Row label="Token">
+          <span className="text-muted-foreground font-mono text-xs">
+            {info?.masked_token ?? "（未配置）"}
+          </span>
+        </Row>
+        <div className="bg-border h-px" />
+        <div className="flex flex-col gap-2">
+          <Label className="text-muted-foreground text-xs">
+            仓库 URL（HTTPS）
+          </Label>
+          <Input
+            placeholder="https://github.com/<owner>/<repo>.git"
+            value={repoUrl}
+            onChange={(e) => setRepoUrl(e.target.value)}
+            disabled={synced}
+          />
+          <Label className="text-muted-foreground text-xs">
+            Fine-grained PAT（Contents 读写）
+          </Label>
+          <Input
+            type="password"
+            placeholder="github_pat_…"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            disabled={synced}
+          />
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            size="sm"
+            disabled={binding || synced || !repoUrl.trim() || !token.trim()}
+            onClick={async () => {
+              const r = await setRepo({
+                repoUrl: repoUrl.trim(),
+                githubToken: token.trim(),
+              })
+              if ("error" in r) toast.error("配置失败")
+              else {
+                toast.success("已升级为 Synced 模式")
+                setRepoUrl("")
+                setToken("")
+              }
+            }}
+          >
+            <CloudUpload className="size-4" />
+            绑定并升级
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={clearing || !synced}
+            onClick={async () => {
+              const r = await clearRepo()
+              if ("error" in r) toast.error("解绑失败")
+              else toast.success("已切回 Standalone（本地数据保留）")
+            }}
+          >
+            <Unplug className="size-4" />
+            解绑（降级单机）
+          </Button>
+          {synced && (
             <Button
               variant="outline"
               size="sm"
-              disabled={clearing || !synced}
+              disabled={syncing}
               onClick={async () => {
-                const r = await clearRepo()
-                if ("error" in r) toast.error("解绑失败")
-                else toast.success("已切回 Standalone（本地数据保留）")
+                const r = await syncNow()
+                if ("error" in r) toast.error("同步失败")
+                else
+                  toast.success(
+                    `已同步（导入 ${r.data?.imported ?? 0} 行${r.data?.pushed ? "，已推送" : ""}）`,
+                  )
               }}
             >
-              <Unplug className="size-4" />
-              解绑（降级单机）
+              <RefreshCw className="size-4" />
+              {syncing ? "同步中…" : "立即同步"}
             </Button>
-            {synced && (
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={syncing}
-                onClick={async () => {
-                  const r = await syncNow()
-                  if ("error" in r) toast.error("同步失败")
-                  else
-                    toast.success(
-                      `已同步（导入 ${r.data?.imported ?? 0} 行${r.data?.pushed ? "，已推送" : ""}）`,
-                    )
-                }}
-              >
-                <RefreshCw className="size-4" />
-                {syncing ? "同步中…" : "立即同步"}
-              </Button>
-            )}
-          </div>
+          )}
+        </div>
+      </Section>
 
-          {/* Cloud-config manual sync (ADR-0005 / #6) */}
-          <div className="mt-2 flex flex-col gap-2 border-t pt-3">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex flex-col">
-                <span className="text-sm font-medium">云配置同步</span>
-                <span className="text-muted-foreground text-xs">
-                  手动同步 app / user / pricing.json 云配置（ADR-0005/#6）。
-                </span>
-              </div>
-              {synced && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={syncingConfig}
-                  onClick={onSyncConfig}
-                >
-                  <RefreshCw className="size-4" />
-                  {syncingConfig ? "同步中…" : "同步云配置"}
-                </Button>
-              )}
-            </div>
-            {!synced && (
-              <p className="text-muted-foreground text-xs">
-                需先配置 GitHub 仓库升级为 Synced（上方）后，云配置同步才可用。
-              </p>
-            )}
-            {conflicts && conflicts.length > 0 && (
-              <ConflictResolver conflicts={conflicts} />
-            )}
-          </div>
-        </CardContent>
-      </Card>
+      {/* 云配置 · CONFIG — split out of the sync card (ADR-0005 / #6) */}
+      <Section
+        eyebrow="云配置 · CONFIG"
+        description="手动同步 app / user / pricing.json 云配置（ADR-0005/#6）。仅 Synced 模式可用。"
+      >
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-muted-foreground text-sm">
+            {synced
+              ? "app / user / pricing 三件配置"
+              : "需先在上方配置仓库升级为 Synced"}
+          </span>
+          {synced && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={syncingConfig}
+              onClick={onSyncConfig}
+            >
+              <RefreshCw className="size-4" />
+              {syncingConfig ? "同步中…" : "同步云配置"}
+            </Button>
+          )}
+        </div>
+        {conflicts && conflicts.length > 0 && (
+          <ConflictResolver conflicts={conflicts} />
+        )}
+      </Section>
 
-      <DeviceList />
+      {/* 设备 · DEVICES */}
+      <Section
+        eyebrow="设备 · DEVICES"
+        description="所有曾同步的设备（ADR-0002）。可给其他设备起显示名，便于多设备间辨认。"
+      >
+        <DeviceList />
+      </Section>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>维护</CardTitle>
-          <CardDescription>
-            补算零成本行（ADR-0009：只补当初缺价的行）。
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-wrap gap-2">
+      {/* 维护 · MAINTENANCE */}
+      <Section
+        eyebrow="维护 · MAINTENANCE"
+        description="补算零成本行（ADR-0009：只补当初缺价的行）。"
+      >
+        <Row label="补算零成本行">
           <Button
             variant="outline"
             size="sm"
@@ -266,11 +264,39 @@ export function SettingsView() {
             }}
           >
             <Calculator className="size-4" />
-            {rebilling ? "回算中…" : "补算零成本"}
+            {rebilling ? "回算中…" : "补算"}
           </Button>
-        </CardContent>
-      </Card>
+        </Row>
+      </Section>
     </div>
+  )
+}
+
+function Section({
+  eyebrow,
+  description,
+  children,
+}: {
+  eyebrow: string
+  description?: string
+  children: React.ReactNode
+}) {
+  return (
+    <section className="flex flex-col gap-2.5">
+      <div className="flex flex-col gap-1 px-0.5">
+        <h2 className="text-muted-foreground text-[11px] font-semibold tracking-[0.14em]">
+          {eyebrow}
+        </h2>
+        {description ? (
+          <p className="text-muted-foreground/70 text-xs leading-relaxed">
+            {description}
+          </p>
+        ) : null}
+      </div>
+      <Card>
+        <CardContent className="flex flex-col gap-3">{children}</CardContent>
+      </Card>
+    </section>
   )
 }
 
