@@ -1,6 +1,6 @@
 [package]
 name = "vaultone"
-version = "0.1.0"
+version = "1.0.0"
 description = "VaultOne — local LLM usage dashboard with optional GitHub-repo multi-device sync."
 authors = ["VaultOne"]
 edition = "2021"
