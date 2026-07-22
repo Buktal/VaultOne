@@ -28,7 +28,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { usePollingInterval } from "@/hooks/use-polling-interval"
 import { formatDay, formatTokens } from "@/lib/format"
 
 import type {
@@ -65,7 +64,6 @@ function formatHour(key: string): string {
 }
 
 export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
-  const pollingInterval = usePollingInterval()
   // A single local-day range collapses per-day resolution to one bar, so zoom
   // to hourly; anything wider stays per-day. A UTC+8 "today" maps to a 24h UTC
   // window that still falls on one local day, so isSame("day") catches it.
@@ -74,11 +72,7 @@ export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
     !!filter.to_ts &&
     dayjs(filter.from_ts).isSame(filter.to_ts, "day")
   const bucket: TrendBucket = hourly ? "Hour" : "Day"
-  const {
-    data = [],
-    isLoading,
-    error,
-  } = useTrendQuery({ filter, bucket }, { pollingInterval })
+  const { data = [], isLoading, error } = useTrendQuery({ filter, bucket })
 
   return (
     <Card interactive>

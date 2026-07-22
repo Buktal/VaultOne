@@ -62,11 +62,53 @@ fn build_callbacks(token: &str) -> RemoteCallbacks {
 // clone / open
 // ---------------------------------------------------------------------------
 
+/// Default branch we bootstrap (empty remote / Standalone→Synced switch).
+/// libgit2's `init` defaults to `master`; we pin `main` to match the GitHub
+/// default. A non-empty remote is always followed verbatim (`pick_origin_branch`).
+const DEFAULT_BRANCH: &str = "main";
+
 /// Open the local repo at `local`, or clone it from `repo_url` on first use.
-/// Idempotent: once `.git` exists, reopens instead of re-cloning.
+/// Idempotent: once `.git` exists, reopens instead of re-cloning. Device-unaware
+/// (no `data/` preservation on the in-place bootstrap) — tests / legacy paths.
+#[cfg(test)]
 pub fn open_or_clone(repo_url: &str, local: &Path, token: &str) -> AppResult<Repository> {
+    open_or_clone_impl(repo_url, local, token, None)
+}
+
+/// Like `open_or_clone` but knows this device's id. On the in-place bootstrap
+/// (Standalone→Synced / unbind→re-bind) it snapshots `data/<device_id>/` before
+/// the force checkout and restores it after, so this device's own JSONL — and
+/// thus what gets pushed to git — can never be overwritten by a staler remote
+/// copy. Production paths pass `cfg.device_id`.
+pub fn open_or_clone_for_device(
+    repo_url: &str,
+    local: &Path,
+    token: &str,
+    device_id: &str,
+) -> AppResult<Repository> {
+    open_or_clone_impl(repo_url, local, token, Some(device_id))
+}
+
+fn open_or_clone_impl(
+    repo_url: &str,
+    local: &Path,
+    token: &str,
+    device_id: Option<&str>,
+) -> AppResult<Repository> {
     if local.join(".git").exists() {
         return Ok(Repository::open(local)?);
+    }
+    // Standalone collects write JSONL artifacts into `local/data/` (ADR-0004).
+    // When the user later switches to Synced, `local` is non-empty but has no
+    // `.git`, and libgit2's `clone` (which demands an empty target) fails with
+    // "exists and is not an empty directory". Detect that and bootstrap the repo
+    // in place instead — preserving the locally-collected artifacts.
+    let dir_has_entries = local
+        .read_dir()
+        .map(|mut it| it.next().is_some())
+        .unwrap_or(false);
+    if dir_has_entries {
+        return init_with_remote(repo_url, local, token, device_id);
     }
     let mut fo = FetchOptions::new();
     fo.remote_callbacks(build_callbacks(token));
@@ -86,6 +128,158 @@ pub fn open_or_clone(repo_url: &str, local: &Path, token: &str) -> AppResult<Rep
     Ok(repo)
 }
 
+/// Drop the local `.git` so a fresh re-bind starts clean (used by
+/// `clear_sync_repo`). `data/` and `config/` are preserved — Standalone keeps
+/// writing artifacts to `data/`, and they carry no per-repo identity. Only
+/// `.git` pins the worktree to the old remote + branch; the DB is the source of
+/// truth for usage rows, so this loses git history, never data. Best-effort: a
+/// removal failure is logged, not fatal (the unbind's primary effect — clearing
+/// the config — already succeeded).
+pub fn reset_local_git(repo: &Path) {
+    let dot_git = repo.join(".git");
+    if dot_git.exists() {
+        if let Err(e) = std::fs::remove_dir_all(&dot_git) {
+            eprintln!("[vaultone] reset_local_git: failed to remove .git: {e}");
+        }
+    }
+}
+
+/// RAII snapshot of a flat directory — this device's `data/<deviceId>/`. Copies
+/// the files to an OS-temp dir before a force checkout, restores on demand, and
+/// removes the temp dir on drop. Guards this device's JSONL against a force
+/// checkout overwriting it with the remote's (possibly staler) copy.
+struct DirSnapshot(std::path::PathBuf);
+impl DirSnapshot {
+    /// Copy every file under `src` into a fresh temp dir.
+    fn take(src: &Path) -> std::io::Result<Self> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dst =
+            std::env::temp_dir().join(format!("vaultone-snap-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dst)?;
+        if src.exists() {
+            for entry in std::fs::read_dir(src)? {
+                let entry = entry?;
+                let p = entry.path();
+                if p.is_file() {
+                    std::fs::copy(&p, dst.join(entry.file_name()))?;
+                }
+            }
+        }
+        Ok(DirSnapshot(dst))
+    }
+
+    /// Overwrite `dst` with the snapshot (this device's local truth). Existing
+    /// files are removed first so a staler remote copy from the checkout is gone.
+    fn restore(&self, dst: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(dst)?;
+        for entry in std::fs::read_dir(dst)? {
+            let p = entry?.path();
+            if p.is_file() {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+        for entry in std::fs::read_dir(&self.0)? {
+            let p = entry?.path();
+            if p.is_file() {
+                std::fs::copy(&p, dst.join(p.file_name().unwrap()))?;
+            }
+        }
+        Ok(())
+    }
+}
+impl Drop for DirSnapshot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Bootstrap a sync repo inside an already-populated `local` — the Standalone →
+/// Synced switch, or the unbind→re-bind case. `clone` refuses a non-empty target,
+/// so init in place, fetch the remote, and force-checkout the remote tip. Because
+/// force would overwrite this device's locally-collected `data/<deviceId>/`
+/// (possibly newer than the remote copy — rows appended while unbound), we
+/// snapshot it first and restore it after the checkout when `device_id` is known.
+fn init_with_remote(
+    repo_url: &str,
+    local: &Path,
+    token: &str,
+    device_id: Option<&str>,
+) -> AppResult<Repository> {
+    let repo = Repository::init(local)?;
+    repo.config()?.set_str("core.autocrlf", "false")?;
+    {
+        let mut remote = repo.remote("origin", repo_url)?;
+        let mut fo = FetchOptions::new();
+        fo.remote_callbacks(build_callbacks(token));
+        remote.fetch(
+            &["+refs/heads/*:refs/remotes/origin/*"],
+            Some(&mut fo),
+            None,
+        )?;
+    }
+    // Snapshot this device's data/ before any checkout — a force checkout would
+    // overwrite it with the remote's (possibly staler) copy, losing rows appended
+    // locally while unbound. Restored after checkout so this device's own JSONL —
+    // and thus what we push — is always the local truth. Only when we know our
+    // device id (production); tests pass None.
+    let own = device_id.map(|d| local.join("data").join(d));
+    let snap = own
+        .as_ref()
+        .filter(|p| p.exists())
+        .and_then(|p| DirSnapshot::take(p).ok());
+
+    // Point HEAD at the remote's default branch and force-checkout its tree. If
+    // the remote is unborn (empty repo) there is nothing to check out — pin HEAD
+    // at our `main` (unborn) so the first commit+push creates `main`, not
+    // libgit2's hardcoded `master`.
+    if let Some((branch, tip)) = pick_origin_branch(&repo)? {
+        let commit = repo.find_commit(tip)?;
+        repo.branch(&branch, &commit, true)?;
+        repo.set_head(&format!("refs/heads/{branch}"))?;
+        let mut co = CheckoutBuilder::new();
+        // Force: the worktree may already hold files the remote also carries
+        // (the unbind→re-bind case — `.git` was dropped but `data/` remains, so
+        // those files are now untracked and a SAFE checkout rejects them as
+        // conflicts). This device's data/ is restored from the snapshot below,
+        // so force is safe; other devices' data + README land at the remote tip.
+        co.force();
+        repo.checkout_head(Some(&mut co))?;
+        if let (Some(snap), Some(own)) = (snap, own.as_ref()) {
+            let _ = snap.restore(own);
+        }
+    } else {
+        // Empty remote: libgit2's init default (`master`) would otherwise win.
+        // Pin to our `main` as an unborn HEAD; the first commit lands on it.
+        repo.set_head(&format!("refs/heads/{DEFAULT_BRANCH}"))?;
+    }
+    Ok(repo)
+}
+
+/// Resolve the remote's default branch + tip. `clone` records `origin/HEAD`, but
+/// an in-place init+fetch does not, so prefer `main`, then `master`, then any
+/// remote branch. `None` when the remote carries no branches yet (unborn).
+fn pick_origin_branch(repo: &Repository) -> AppResult<Option<(String, Oid)>> {
+    for name in ["main", "master"] {
+        if let Ok(oid) = repo.refname_to_id(&format!("refs/remotes/origin/{name}")) {
+            return Ok(Some((name.to_string(), oid)));
+        }
+    }
+    for item in repo.branches(Some(git2::BranchType::Remote))? {
+        let (branch, _) = item?;
+        let raw = branch.name_bytes()?;
+        let s = String::from_utf8_lossy(raw);
+        if let Some(rest) = s.strip_prefix("origin/") {
+            if let Ok(oid) = repo.refname_to_id(&format!("refs/remotes/origin/{rest}")) {
+                return Ok(Some((rest.to_string(), oid)));
+            }
+        }
+    }
+    Ok(None)
+}
+
 // ---------------------------------------------------------------------------
 // pull (fetch + fast-forward)
 // ---------------------------------------------------------------------------
@@ -95,6 +289,15 @@ pub fn open_or_clone(repo_url: &str, local: &Path, token: &str) -> AppResult<Rep
 /// device writes its own `data/<deviceId>/` subtree), and config conflict
 /// handling is deferred to S3 (ADR-0005).
 pub fn pull(repo: &Repository, token: &str) -> AppResult<()> {
+    // Unborn HEAD (fresh init, first commit still pending): no local branch to
+    // fast-forward, so there is nothing to pull — the first commit+push creates
+    // the branch. Covers the Standalone→Synced switch against an empty remote,
+    // where `head()` would otherwise error on the missing HEAD ref.
+    let mut head = match repo.head() {
+        Ok(h) => h,
+        Err(ref e) if e.code() == git2::ErrorCode::UnbornBranch => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
     let mut fo = FetchOptions::new();
     fo.remote_callbacks(build_callbacks(token));
     repo.find_remote("origin")?.fetch(
@@ -102,8 +305,6 @@ pub fn pull(repo: &Repository, token: &str) -> AppResult<()> {
         Some(&mut fo),
         None,
     )?;
-
-    let mut head = repo.head()?;
     let branch = head
         .shorthand()
         .ok_or_else(|| AppError::Sync("HEAD is detached; cannot pull".into()))?;
@@ -222,6 +423,127 @@ pub fn ensure_repo(cfg: &ConfigData, local: &Path) -> AppResult<Repository> {
 }
 
 // ---------------------------------------------------------------------------
+// Remote probe (ADR-0005): validate a repo URL + PAT WITHOUT touching the real
+// sync repo. A pure read (ls-remote) powering the Settings「测试连接」button so the
+// user can verify credentials before binding — and re-check after.
+// ---------------------------------------------------------------------------
+
+/// Outcome of a remote probe, surfaced to the UI. Always returned as `Ok`: a
+/// failed probe is a business result (`ok: false`), not an `AppError`, so the
+/// frontend reads `report.ok` instead of catching an exception.
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+pub struct VerifyReport {
+    /// True iff the repo was reachable, the PAT authenticated, and the caller
+    /// has read access.
+    pub ok: bool,
+    /// Human-readable status (zh), shown verbatim in the Settings banner.
+    pub message: String,
+}
+
+/// RAII guard removing a temp dir on drop. `tempfile` is dev-only, so the probe
+/// builds its throwaway bare-repo anchor under the OS temp dir instead.
+struct TmpBare(std::path::PathBuf);
+impl Drop for TmpBare {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn deny(message: &str) -> VerifyReport {
+    VerifyReport {
+        ok: false,
+        message: message.to_string(),
+    }
+}
+
+/// Probe a `(repo_url, token)` pair: validate the inputs, then open a fetch
+/// connection to the remote. Never mutates config and NEVER touches the real
+/// sync repo — the throwaway bare repo under the OS temp dir is the only git2
+/// anchor. Why not reuse `paths.repo`: the background scheduler (lib.rs)
+/// periodically pulls and pushes it, and libgit2 does not guarantee concurrent
+/// access to one `.git` directory; the temp anchor path-isolates the probe.
+pub fn verify_remote(repo_url: &str, token: &str) -> VerifyReport {
+    let url = repo_url.trim();
+    let tok = token.trim();
+    if url.is_empty() {
+        return deny("请填写仓库地址");
+    }
+    if tok.is_empty() {
+        return deny("请填写访问令牌");
+    }
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return deny("仓库地址需以 https:// 开头（暂不支持 SSH）");
+    }
+    match try_verify_remote(url, tok) {
+        Ok(()) => VerifyReport {
+            ok: true,
+            message: "连接成功：仓库可访问、令牌可读".to_string(),
+        },
+        Err(e) => deny(&friendly_git_error(&e)),
+    }
+}
+
+/// Open a fetch connection to an arbitrary URL using a throwaway bare repo as
+/// the git2 anchor. A successful `connect_auth` IS the whole probe: the URL
+/// resolved, the PAT authenticated, and the caller has read access (GitHub
+/// returns 404 at this stage for a missing repo or an insufficient token scope).
+/// Errors stay as raw [`git2::Error`] (NOT promoted to `AppError`) so the caller
+/// can read `code()` / `class()` for a user-facing diagnosis — those are lost
+/// once `From<git2::Error>` flattens the error to a string.
+///
+/// We intentionally do NOT call `RemoteConnection::list` / `default_branch`:
+/// git2 0.19.0 aborts the process (unsafe-precondition UB via a null-pointer
+/// `slice::from_raw_parts`) when a remote advertises zero refs, and a brand-new
+/// empty GitHub repo can. Reachability + auth + access already fully answers
+/// "is this repo + token valid". `connect_auth` (git2 0.19) returns a
+/// [`git2::RemoteConnection`] that disconnects on drop; we let it drop at the
+/// `;`. The PAT callbacks are moved in by value, so the token lives only inside
+/// that closure.
+fn try_verify_remote(url: &str, token: &str) -> Result<(), git2::Error> {
+    let dir = std::env::temp_dir().join(format!(
+        "vaultone-verify-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    // `_guard` is dropped LAST (after repo/remote below), so the .git file
+    // handles are released before the temp dir is removed (Windows file locks).
+    let _guard = TmpBare(dir.clone());
+    let repo = Repository::init_bare(&dir)?;
+    let mut remote = repo.remote_anonymous(url)?;
+    remote.connect_auth(git2::Direction::Fetch, Some(build_callbacks(token)), None)?;
+    Ok(())
+}
+
+/// Translate a git2 probe failure into a zh user hint. Prefer `code()` / `class()`
+/// over matching `message()`: libgit2's English wording drifts between versions,
+/// and "not found" collides across DNS failure and HTTP 404 (whose fixes differ).
+fn friendly_git_error(e: &git2::Error) -> String {
+    use git2::{ErrorClass, ErrorCode};
+    if e.message().contains("git credentials rejected") || e.code() == ErrorCode::Auth {
+        return "访问令牌无效或已过期".into();
+    }
+    if e.code() == ErrorCode::Timeout {
+        return "连接超时，请检查网络".into();
+    }
+    if e.code() == ErrorCode::NotFound {
+        return "无法解析主机名或地址不可达（请检查仓库地址拼写）".into();
+    }
+    if e.class() == ErrorClass::Http {
+        return "仓库不存在，或令牌无权访问该仓库（GitHub 对二者均返回 404）".into();
+    }
+    if e.class() == ErrorClass::Net {
+        return "网络连接失败，请检查网络".into();
+    }
+    if e.class() == ErrorClass::Ssl {
+        return "TLS/SSL 握手失败".into();
+    }
+    e.message().to_string()
+}
+
+// ---------------------------------------------------------------------------
 // High-level sync flow (ADR-0005): pull → import JSONL → commit → push
 // ---------------------------------------------------------------------------
 
@@ -252,7 +574,7 @@ pub fn pull_and_import(
     cfg: &ConfigData,
 ) -> AppResult<u32> {
     let (url, token) = require_synced(cfg)?;
-    let repo = open_or_clone(&url, &paths.repo, &token)?;
+    let repo = open_or_clone_for_device(&url, &paths.repo, &token, &cfg.device_id)?;
     pull(&repo, &token)?;
     let records = crate::ingest::read_all_artifacts(paths)?;
     let inserted = store.ingest(&records)?;
@@ -266,7 +588,7 @@ pub fn pull_and_import(
 /// worktree is a no-op (returns `false`). Synced-only.
 pub fn commit_and_push(paths: &crate::config::Paths, cfg: &ConfigData) -> AppResult<bool> {
     let (url, token) = require_synced(cfg)?;
-    let repo = open_or_clone(&url, &paths.repo, &token)?;
+    let repo = open_or_clone_for_device(&url, &paths.repo, &token, &cfg.device_id)?;
     if !has_changes(&repo)? {
         return Ok(false);
     }
@@ -548,7 +870,7 @@ pub fn sync_config(
     cfg: &ConfigData,
 ) -> AppResult<ConfigSyncOutcome> {
     let (url, token) = require_synced(cfg)?;
-    let repo = open_or_clone(&url, &paths.repo, &token)?;
+    let repo = open_or_clone_for_device(&url, &paths.repo, &token, &cfg.device_id)?;
     fetch_origin(&repo, &token)?;
 
     let dirty = dirty_config_files(&repo)?;
@@ -629,7 +951,7 @@ pub fn resolve_config_conflict(
     choices: &[ConfigConflictResolution],
 ) -> AppResult<ConfigSyncOutcome> {
     let (url, token) = require_synced(cfg)?;
-    let repo = open_or_clone(&url, &paths.repo, &token)?;
+    let repo = open_or_clone_for_device(&url, &paths.repo, &token, &cfg.device_id)?;
     fetch_origin(&repo, &token)?;
     let origin_oid = origin_tip_oid(&repo)?
         .ok_or_else(|| AppError::Sync("remote has no branch to resolve against".into()))?;
@@ -807,6 +1129,257 @@ mod tests {
             ensure_repo(&cfg, tmp.path()),
             Err(AppError::Sync(_))
         ));
+    }
+
+    // ---- remote probe tests (ADR-0005: 「测试连接」) ----
+    //
+    // The auth / 404 / DNS / timeout branches need a live network, so they are
+    // covered only by the manual checklist below — NOT by these unit tests:
+    //   · 坏 PAT → 真实 GitHub + 错令牌（应提示「访问令牌无效或已过期」）
+    //   · 不存在 / 无权私有仓 → 真实 GitHub + 不存在仓（应提示 404 / 无权）
+    //   · DNS 失败 → https://nonexistent.invalid/x/y.git
+    //   · 超时 → 死/慢主机
+
+    #[test]
+    fn verify_remote_validates_inputs() {
+        let r = verify_remote("", "tok");
+        assert!(!r.ok && r.message.contains("仓库地址"));
+        let r = verify_remote("https://github.com/x/y", "");
+        assert!(!r.ok && r.message.contains("访问令牌"));
+        // SSH-style URLs are rejected (HTTPS-only, ADR-0005).
+        let r = verify_remote("git@github.com:x/y.git", "tok");
+        assert!(!r.ok && r.message.contains("https"));
+    }
+
+    /// `try_verify_remote` bypasses the https:// input gate, so a local file://
+    /// bare repo can exercise the connect path without network.
+    #[test]
+    fn try_verify_remote_connects_to_local_bare() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = tmp.path().join("remote.git");
+        seed_remote(&remote);
+        let url = remote.to_string_lossy().to_string();
+        // Local file transport needs no auth; the token is unused.
+        try_verify_remote(&url, "local-no-auth").unwrap();
+    }
+
+    #[test]
+    fn try_verify_remote_fails_on_missing_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let url = tmp
+            .path()
+            .join("does-not-exist.git")
+            .to_string_lossy()
+            .to_string();
+        assert!(try_verify_remote(&url, "tok").is_err());
+    }
+
+    /// Standalone → Synced switch: `local` already holds collected artifacts and no
+    /// `.git`. `init_with_remote` must bootstrap the repo, pull the remote, and
+    /// keep the local data intact.
+    #[test]
+    fn init_with_remote_preserves_local_data_and_pulls_remote() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = tmp.path().join("remote.git");
+        seed_remote(&remote);
+        let url = remote.to_string_lossy().to_string();
+
+        let local = tmp.path().join("device");
+        let local_data = local.join("data").join("localdev");
+        std::fs::create_dir_all(&local_data).unwrap();
+        std::fs::write(
+            local_data.join("usage-2026-07-22.jsonl"),
+            "{\"uuid\":\"local-1\"}\n",
+        )
+        .unwrap();
+
+        let repo = init_with_remote(&url, &local, "", None).unwrap();
+        assert!(local.join(".git").exists());
+        // Local artifact survives the SAFE checkout (untracked, not clobbered).
+        assert!(local_data.join("usage-2026-07-22.jsonl").exists());
+        // Remote content landed (seed_remote committed a README).
+        assert!(local.join("README").exists());
+        drop(repo);
+    }
+
+    #[test]
+    fn init_with_remote_handles_unborn_remote() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = tmp.path().join("remote.git");
+        Repository::init_bare(&remote).unwrap(); // unborn — no commits
+        let url = remote.to_string_lossy().to_string();
+
+        let local = tmp.path().join("device");
+        let local_data = local.join("data").join("localdev");
+        std::fs::create_dir_all(&local_data).unwrap();
+        std::fs::write(local_data.join("usage.jsonl"), "{}\n").unwrap();
+
+        // No branches on the remote ⇒ no checkout, but local data survives + repo
+        // is init'd (first commit+push will create the branch).
+        let repo = init_with_remote(&url, &local, "", None).unwrap();
+        assert!(local.join(".git").exists());
+        assert!(local_data.join("usage.jsonl").exists());
+        drop(repo);
+    }
+
+    /// Against an empty remote the bootstrapped repo has an unborn HEAD; `pull`
+    /// must short-circuit instead of erroring on the missing HEAD ref.
+    #[test]
+    fn pull_is_noop_on_unborn_head() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = tmp.path().join("remote.git");
+        Repository::init_bare(&remote).unwrap();
+        let url = remote.to_string_lossy().to_string();
+        let local = tmp.path().join("dev");
+        let repo = init_with_remote(&url, &local, "", None).unwrap();
+        pull(&repo, "").unwrap();
+    }
+
+    /// End-to-end Standalone→Synced against an EMPTY remote: `local` already holds
+    /// collected artifacts and no `.git`. open_or_clone bootstraps in place, the
+    /// first commit+push creates the branch and ships the local data upstream.
+    #[test]
+    fn open_or_clone_then_push_ships_local_data_into_empty_remote() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = tmp.path().join("remote.git");
+        Repository::init_bare(&remote).unwrap(); // empty — unborn
+                                                 // GitHub's empty repos default to `main`; mirror that so the bare HEAD
+                                                 // lines up with the branch we push (libgit2's init_bare defaults `master`).
+        std::fs::write(remote.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        let url = remote.to_string_lossy().to_string();
+
+        let local = tmp.path().join("device");
+        let artifact = local
+            .join("data")
+            .join("localdev")
+            .join("usage-2026-07-22.jsonl");
+        std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        std::fs::write(&artifact, "{\"uuid\":\"local-1\"}\n").unwrap();
+
+        // Non-empty `local`, no `.git` ⇒ init_with_remote (unborn HEAD).
+        let repo = open_or_clone(&url, &local, "").unwrap();
+        commit_all(&repo, "first sync", "DevA", "a@devices.vaultone").unwrap();
+        push(&repo, "").unwrap();
+
+        // The first push creates our pinned default branch `main`, not master.
+        let bare = Repository::open_bare(&remote).unwrap();
+        assert!(
+            bare.refname_to_id("refs/heads/main").is_ok(),
+            "first push must create `main`, not libgit2's default `master`"
+        );
+
+        // A fresh clone now sees the local artifact on the remote.
+        let check = tmp.path().join("check");
+        let _r2 = open_or_clone(&url, &check, "").unwrap();
+        assert!(check.join("data/localdev/usage-2026-07-22.jsonl").exists());
+    }
+
+    /// `clear_sync_repo` drops `.git` so a re-bind starts clean, but must leave
+    /// the per-device usage artifacts (`data/`) intact — Standalone keeps
+    /// writing there and they are not git state.
+    #[test]
+    fn reset_local_git_removes_dot_git_but_keeps_data() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(repo.join("data/dev")).unwrap();
+        std::fs::write(repo.join("data/dev/usage.jsonl"), "{}\n").unwrap();
+        Repository::init(&repo).unwrap();
+        assert!(repo.join(".git").exists());
+
+        reset_local_git(&repo);
+
+        assert!(!repo.join(".git").exists(), "clear must drop .git");
+        assert!(
+            repo.join("data/dev/usage.jsonl").exists(),
+            "usage artifacts must survive a clear"
+        );
+    }
+
+    /// Unbind (`reset_local_git`) then re-bind the SAME repo: locally-collected
+    /// `data/` survives, the remote history is re-fetched, and a fresh
+    /// collect+push round-trips. Proves clearing `.git` on unbind loses nothing
+    /// when the user re-binds the very same repo.
+    #[test]
+    fn rebind_same_repo_after_reset_keeps_data_and_resyncs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = tmp.path().join("remote.git");
+        seed_remote(&remote);
+        let url = remote.to_string_lossy().to_string();
+
+        // Bind, collect own data, push.
+        let local = tmp.path().join("device");
+        let repo = open_or_clone(&url, &local, "").unwrap();
+        let own = local.join("data/localdev");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(own.join("usage-2026-07-22.jsonl"), "{\"uuid\":\"x\"}\n").unwrap();
+        commit_all(&repo, "collect", "Dev", "d@devices.vaultone").unwrap();
+        push(&repo, "").unwrap();
+        drop(repo);
+
+        // Unbind: `.git` dropped, `data/` kept.
+        reset_local_git(&local);
+        assert!(!local.join(".git").exists());
+        assert!(own.join("usage-2026-07-22.jsonl").exists());
+
+        // Re-bind the same repo: re-init + fetch + SAFE checkout.
+        let repo2 = open_or_clone(&url, &local, "").unwrap();
+        assert!(
+            own.join("usage-2026-07-22.jsonl").exists(),
+            "own data survives rebind"
+        );
+        assert!(local.join("README").exists(), "remote content re-lands");
+
+        // A new collect after rebind commits + pushes cleanly.
+        std::fs::write(own.join("usage-2026-07-23.jsonl"), "{\"uuid\":\"y\"}\n").unwrap();
+        commit_all(&repo2, "collect 2", "Dev", "d@devices.vaultone").unwrap();
+        push(&repo2, "").unwrap();
+
+        // A fresh device sees both days.
+        let check = tmp.path().join("check");
+        let _r3 = open_or_clone(&url, &check, "").unwrap();
+        assert!(check.join("data/localdev/usage-2026-07-22.jsonl").exists());
+        assert!(check.join("data/localdev/usage-2026-07-23.jsonl").exists());
+    }
+
+    /// Narrow edge: a same-day JSONL appended across the unbound window. Without
+    /// the device snapshot, the re-bind's force checkout would overwrite the
+    /// locally-appended rows with the remote's staler copy — and they'd never
+    /// reach git (incremental collect won't re-read cursor-advanced lines). The
+    /// snapshot must preserve the local truth.
+    #[test]
+    fn rebind_preserves_locally_appended_rows_via_device_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = tmp.path().join("remote.git");
+        seed_remote(&remote);
+        let url = remote.to_string_lossy().to_string();
+        let dev = "localdev";
+        let local = tmp.path().join("device");
+        let own = local.join("data").join(dev);
+
+        // Bind, collect one day-1 row, push (remote now has usage-07-22 = 1 row).
+        let repo = open_or_clone_for_device(&url, &local, "", dev).unwrap();
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(own.join("usage-2026-07-22.jsonl"), "{\"uuid\":\"a\"}\n").unwrap();
+        commit_all(&repo, "first", "Dev", "d@devices.vaultone").unwrap();
+        push(&repo, "").unwrap();
+        drop(repo);
+
+        // Unbind, then append a second row to the SAME day locally (remote: still 1).
+        reset_local_git(&local);
+        std::fs::write(
+            own.join("usage-2026-07-22.jsonl"),
+            "{\"uuid\":\"a\"}\n{\"uuid\":\"b\"}\n",
+        )
+        .unwrap();
+
+        // Re-bind a repo that already carries the 1-row version: the force
+        // checkout would clobber the local 2-row file. The snapshot keeps both.
+        let _repo2 = open_or_clone_for_device(&url, &local, "", dev).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(own.join("usage-2026-07-22.jsonl")).unwrap(),
+            "{\"uuid\":\"a\"}\n{\"uuid\":\"b\"}\n",
+            "locally-appended rows must survive the re-bind force checkout"
+        );
     }
 
     #[test]

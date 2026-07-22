@@ -6,7 +6,6 @@
 import { useState } from "react"
 import { useModelsQuery } from "@/app/store/api"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { usePollingInterval } from "@/hooks/use-polling-interval"
 import { formatCost, formatTokens } from "@/lib/format"
 
 import type { ModelStatsRow, UsageFilter } from "@/types/generated/bindings"
@@ -20,8 +19,7 @@ export function ModelDistribution({
   filter: UsageFilter
   onPickModel: (model: string) => void
 }) {
-  const pollingInterval = usePollingInterval()
-  const { data: rows = [] } = useModelsQuery(filter, { pollingInterval })
+  const { data: rows = [] } = useModelsQuery(filter)
   const [metric, setMetric] = useState<"cost" | "tokens">("cost")
 
   const metricValue = (r: ModelStatsRow) =>

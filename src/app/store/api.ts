@@ -16,6 +16,7 @@ import type {
   UsageFilter,
   UsageLogRow,
   UsageStats,
+  VerifyReport,
 } from "@/types/generated/bindings"
 import { commands } from "@/types/generated/bindings"
 import type { CloseBehavior, Preferences } from "@/types/preferences"
@@ -199,6 +200,15 @@ export const vaultApi = createApi({
       }),
       invalidatesTags: ["App"],
     }),
+    verifySyncRepo: b.mutation<
+      VerifyReport,
+      { repoUrl: string | null; githubToken: string | null }
+    >({
+      queryFn: async ({ repoUrl, githubToken }) => ({
+        data: await run(commands.verifySyncRepo(repoUrl, githubToken)),
+      }),
+      // Probe is read-only (ls-remote) — never invalidates any cache.
+    }),
     clearSyncRepo: b.mutation<RunMode, void>({
       queryFn: async () => ({ data: await run(commands.clearSyncRepo()) }),
       invalidatesTags: ["App"],
@@ -238,6 +248,12 @@ export const vaultApi = createApi({
       }),
       invalidatesTags: ["App"],
     }),
+    setPushInterval: b.mutation<Preferences, number>({
+      queryFn: async (seconds) => ({
+        data: await run(commands.setPushInterval(seconds)),
+      }),
+      invalidatesTags: ["App"],
+    }),
   }),
 })
 
@@ -263,12 +279,14 @@ export const {
   useSavePricingToFileMutation,
   useFetchLitellmMutation,
   useSetSyncRepoMutation,
+  useVerifySyncRepoMutation,
   useClearSyncRepoMutation,
   useSetDisplayNameMutation,
   useSetDeviceDisplayNameMutation,
   usePreferencesQuery,
   useSetCloseBehaviorMutation,
   useSetCollectIntervalMutation,
+  useSetPushIntervalMutation,
 } = vaultApi
 
 export type VaultApi = typeof vaultApi

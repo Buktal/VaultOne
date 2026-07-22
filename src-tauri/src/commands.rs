@@ -21,7 +21,7 @@ use crate::model::{
 };
 use crate::pricing;
 use crate::providers::{ClaudeCodeProvider, Provider};
-use crate::sync::{ConfigConflictResolution, ConfigSyncOutcome, SyncReport};
+use crate::sync::{ConfigConflictResolution, ConfigSyncOutcome, SyncReport, VerifyReport};
 
 /// App-wide managed state: the Local Store + local config (ADR-0004), wrapped
 /// in `Arc` so blocking tasks can take owned clones.
@@ -86,7 +86,9 @@ pub fn set_sync_repo(
     Ok(cfg.mode())
 }
 
-/// Unbind the repo, downgrading to Standalone (ADR-0006). Local data retained.
+/// Unbind the repo, downgrading to Standalone (ADR-0006). Clears the local
+/// `.git` so a re-bind (often to a different repo) starts clean instead of
+/// reusing the old remote/branch. Usage rows (DB) and `data/` are retained.
 #[tauri::command]
 #[specta::specta]
 pub fn clear_sync_repo(state: State<'_, AppState>) -> AppResult<RunMode> {
@@ -94,7 +96,44 @@ pub fn clear_sync_repo(state: State<'_, AppState>) -> AppResult<RunMode> {
         c.repo_url = None;
         c.github_token = None;
     })?;
+    let paths = state.config.paths();
+    crate::sync::reset_local_git(&paths.repo);
     Ok(cfg.mode())
+}
+
+/// Probe a sync repo + PAT for reachability (ADR-0005「测试连接」). Pass explicit
+/// values to validate BEFORE binding, or `None`/`None` to re-check the already-
+/// configured repo. Pure ls-remote — never mutates config or the real sync repo.
+/// Always returns `Ok(report)`; the probe's own outcome (auth ok / bad token /
+/// not found) lives in `report.ok`, so the frontend never throws on a failed
+/// probe (only a `spawn_blocking` join failure surfaces as an `AppError`).
+#[tauri::command]
+#[specta::specta]
+pub async fn verify_sync_repo(
+    state: State<'_, AppState>,
+    repo_url: Option<String>,
+    github_token: Option<String>,
+) -> AppResult<VerifyReport> {
+    let config = state.config.clone();
+    tauri::async_runtime::spawn_blocking(move || -> AppResult<VerifyReport> {
+        let cfg = config.get();
+        let report = match (repo_url, github_token) {
+            // Validate an as-yet-unbound pair straight from the Settings inputs.
+            (Some(url), Some(tok)) => crate::sync::verify_remote(&url, &tok),
+            // Re-check the configured repo: the raw PAT never crosses to JS, so
+            // the masked_token the UI shows can't drive a re-probe — read the
+            // real token server-side from config.
+            (None, None) => match (cfg.repo_url.as_deref(), cfg.github_token.as_deref()) {
+                (Some(url), Some(tok)) => crate::sync::verify_remote(url, tok),
+                _ => crate::sync::verify_remote("", ""),
+            },
+            // One field present, the other absent: surface as an input error.
+            _ => crate::sync::verify_remote("", ""),
+        };
+        Ok(report)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("verify task failed: {e}")))?
 }
 
 /// Rename *this* device (display name only — not a uniqueness key, ADR-0002).
@@ -406,12 +445,14 @@ pub async fn fetch_litellm_pricing(state: State<'_, AppState>) -> AppResult<u32>
 pub struct Preferences {
     pub close_behavior: CloseBehavior,
     pub collect_interval_secs: u32,
+    pub push_interval_secs: u32,
 }
 
 fn to_preferences(cfg: &crate::config::ConfigData) -> Preferences {
     Preferences {
         close_behavior: cfg.close_behavior,
         collect_interval_secs: cfg.collect_interval_secs,
+        push_interval_secs: cfg.push_interval_secs,
     }
 }
 
@@ -433,12 +474,24 @@ pub fn set_close_behavior(
     Ok(to_preferences(&cfg))
 }
 
-/// Persist the background-collect interval (seconds, clamped to [60, 3600]).
+/// Persist the background-collect interval (seconds, clamped to [10, 3600];
+/// ADR-0014). Pure-local cadence — does not touch the network.
 #[tauri::command]
 #[specta::specta]
 pub fn set_collect_interval(state: State<'_, AppState>, seconds: u32) -> AppResult<Preferences> {
-    let clamped = seconds.clamp(60, 3600);
+    let clamped = seconds.clamp(10, 3600);
     let cfg = state.config.update(|c| c.collect_interval_secs = clamped)?;
+    Ok(to_preferences(&cfg))
+}
+
+/// Persist the push-to-sync interval (seconds, clamped to [60, 7200]; Synced
+/// only; ADR-0014). Decoupled from collect so the Git history grows at this
+/// rate, not the (shorter) collect rate.
+#[tauri::command]
+#[specta::specta]
+pub fn set_push_interval(state: State<'_, AppState>, seconds: u32) -> AppResult<Preferences> {
+    let clamped = seconds.clamp(60, 7200);
+    let cfg = state.config.update(|c| c.push_interval_secs = clamped)?;
     Ok(to_preferences(&cfg))
 }
 

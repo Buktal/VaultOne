@@ -7,7 +7,6 @@
 
 import { useStatsQuery, useTrendQuery, ZERO_STATS } from "@/app/store/api"
 import { Card, CardContent } from "@/components/ui/card"
-import { usePollingInterval } from "@/hooks/use-polling-interval"
 import { formatInt, formatPct, formatTokens } from "@/lib/format"
 
 import type { UsageFilter } from "@/types/generated/bindings"
@@ -28,12 +27,8 @@ const SEGMENTS = [
 ] as const
 
 export function TokenHero({ filter }: { filter: UsageFilter }) {
-  const pollingInterval = usePollingInterval()
-  const { data: stats } = useStatsQuery(filter, { pollingInterval })
-  const { data: trend = [] } = useTrendQuery(
-    { filter, bucket: "Day" },
-    { pollingInterval },
-  )
+  const { data: stats } = useStatsQuery(filter)
+  const { data: trend = [] } = useTrendQuery({ filter, bucket: "Day" })
   const s = stats ?? ZERO_STATS
   const total = s.total_tokens || 1
 

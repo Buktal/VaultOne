@@ -80,14 +80,21 @@ pub enum CloseBehavior {
     Quit,
 }
 
-/// Default background-collect interval in seconds (ADR-0012: 5 min).
+/// Default background-collect interval in seconds (ADR-0014: 30 s — decoupled
+/// from the push cadence, which has its own interval).
 ///
 /// `u32` (not `u64`): the value crosses the Rust→JS boundary via the typed
 /// specta contract, and specta forbids exporting BigInt-style types (`u64`,
 /// `i64`, …) to avoid JS precision loss. `u32`'s range (≈4.29e9 s) is ample
-/// for an interval clamped to [60, 3600].
+/// for an interval clamped to [10, 3600].
 fn default_collect_interval_secs() -> u32 {
-    300
+    30
+}
+
+/// Default push-to-sync interval in seconds (ADR-0014: 10 min). Decoupled from
+/// collect so a short collect cadence does not bloat the Git history.
+fn default_push_interval_secs() -> u32 {
+    600
 }
 
 /// The local `config.json` content (ADR-0004). Never uploaded to the repo.
@@ -110,10 +117,15 @@ pub struct ConfigData {
     /// Window-close behavior (ADR-0012). `Ask` ⇒ show the minimize/quit dialog.
     #[serde(default)]
     pub close_behavior: CloseBehavior,
-    /// Background collect interval in seconds (ADR-0012). Clamped to [60, 3600]
+    /// Background collect interval in seconds (ADR-0014). Clamped to [10, 3600]
     /// at use; serialized verbatim so the UI shows what the user typed.
     #[serde(default = "default_collect_interval_secs")]
     pub collect_interval_secs: u32,
+    /// Push-to-sync interval in seconds (ADR-0014). Synced only; clamped to
+    /// [60, 7200] at use. Decoupled from collect so the Git push cadence stays
+    /// independent of the (shorter) collect cadence.
+    #[serde(default = "default_push_interval_secs")]
+    pub push_interval_secs: u32,
 }
 
 impl Default for ConfigData {
@@ -129,6 +141,7 @@ impl Default for ConfigData {
             github_user: None,
             close_behavior: CloseBehavior::Ask,
             collect_interval_secs: default_collect_interval_secs(),
+            push_interval_secs: default_push_interval_secs(),
         }
     }
 }

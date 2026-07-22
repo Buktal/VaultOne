@@ -57,6 +57,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::get_preferences,
         commands::set_close_behavior,
         commands::set_collect_interval,
+        commands::set_push_interval,
+        commands::verify_sync_repo,
         commands::confirm_close,
     ])
 }
@@ -192,27 +194,59 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // Background scheduler (ADR-0012): periodic collect in both modes,
-            // chained push when Synced. Replaces the old push-only loop. The
-            // first tick is collect-only so it does not race the startup pull's
-            // git-worktree ops; later ticks collect + push. Interval is re-read
-            // every tick so Settings changes apply without a restart.
+            // Background scheduler (ADR-0014): collect and push run on
+            // INDEPENDENT intervals. Collect is short (seconds, local-only) so
+            // the dashboard stays fresh; push is longer (minutes, Synced only)
+            // so the Git history grows at a controlled rate. This decouples the
+            // single chained timer from ADR-0012 — exactly the evolution
+            // ADR-0012's Consequences flagged as the right next step.
+            //
+            // One thread, two deadlines, slept-to (not polled): on each wake we
+            // re-read both intervals, so Settings changes apply without restart.
+            // Within a tick where BOTH deadlines fire, collect runs BEFORE push:
+            // collect's `writeln!` has fully flushed the JSONL by the time it
+            // returns, so the subsequent `git add` snapshots complete lines only
+            // (no half-line race). Serial execution on a single thread is what
+            // makes this safe — no lock is needed.
+            //
+            // First collect fires immediately (dashboard is fresh on open). The
+            // first push is delayed by one push_interval so it cannot race the
+            // startup pull's git-worktree ops (ADR-0012 rationale, preserved).
             let store = state.store.clone();
             let config = state.config.clone();
             let app_handle = app.handle().clone();
             std::thread::spawn(move || {
-                let mut first = true;
+                let start = std::time::Instant::now();
+                let mut next_collect = start;
+                let mut next_push = start
+                    + std::time::Duration::from_secs(
+                        config.get().push_interval_secs.clamp(60, 7200) as u64,
+                    );
                 loop {
-                    let interval = config.get().collect_interval_secs.clamp(60, 3600);
-                    if let Err(e) = commands::collect_into(&store, &config) {
-                        eprintln!("[vaultone] scheduled collect failed: {e}");
+                    let cfg = config.get();
+                    let collect_secs = cfg.collect_interval_secs.clamp(10, 3600) as u64;
+                    let push_secs = cfg.push_interval_secs.clamp(60, 7200) as u64;
+
+                    // Sleep to the nearer deadline (re-reading intervals each
+                    // wake lets Settings apply live).
+                    let now = std::time::Instant::now();
+                    let next_deadline = next_collect.min(next_push);
+                    if next_deadline > now {
+                        std::thread::sleep(next_deadline - now);
                     }
-                    let _ = app_handle.emit("usage_changed", ());
-                    if !first {
+
+                    let now = std::time::Instant::now();
+                    if now >= next_collect {
+                        if let Err(e) = commands::collect_into(&store, &config) {
+                            eprintln!("[vaultone] scheduled collect failed: {e}");
+                        }
+                        let _ = app_handle.emit("usage_changed", ());
+                        next_collect = now + std::time::Duration::from_secs(collect_secs);
+                    }
+                    if now >= next_push && cfg.is_synced() {
                         commands::push_if_synced(&config);
+                        next_push = now + std::time::Duration::from_secs(push_secs);
                     }
-                    first = false;
-                    std::thread::sleep(std::time::Duration::from_secs(interval as u64));
                 }
             });
 

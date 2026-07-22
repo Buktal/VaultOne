@@ -9,7 +9,11 @@ export const commands = {
 	getAppInfo: () => typedError<AppInfo, AppError>(__TAURI_INVOKE("get_app_info")),
 	/**  Configure the sync repo + PAT, upgrading Standalone → Synced (ADR-0006). */
 	setSyncRepo: (repoUrl: string, githubToken: string) => typedError<RunMode, AppError>(__TAURI_INVOKE("set_sync_repo", { repoUrl, githubToken })),
-	/**  Unbind the repo, downgrading to Standalone (ADR-0006). Local data retained. */
+	/**
+	 *  Unbind the repo, downgrading to Standalone (ADR-0006). Clears the local
+	 *  `.git` so a re-bind (often to a different repo) starts clean instead of
+	 *  reusing the old remote/branch. Usage rows (DB) and `data/` are retained.
+	 */
 	clearSyncRepo: () => typedError<RunMode, AppError>(__TAURI_INVOKE("clear_sync_repo")),
 	/**  Rename *this* device (display name only — not a uniqueness key, ADR-0002). */
 	setDisplayName: (displayName: string) => typedError<null, AppError>(__TAURI_INVOKE("set_display_name", { displayName })),
@@ -68,8 +72,26 @@ export const commands = {
 	getPreferences: () => typedError<Preferences, AppError>(__TAURI_INVOKE("get_preferences")),
 	/**  Persist the window-close behavior (ADR-0012). */
 	setCloseBehavior: (closeBehavior: CloseBehavior) => typedError<Preferences, AppError>(__TAURI_INVOKE("set_close_behavior", { closeBehavior })),
-	/**  Persist the background-collect interval (seconds, clamped to [60, 3600]). */
+	/**
+	 *  Persist the background-collect interval (seconds, clamped to [10, 3600];
+	 *  ADR-0014). Pure-local cadence — does not touch the network.
+	 */
 	setCollectInterval: (seconds: number) => typedError<Preferences, AppError>(__TAURI_INVOKE("set_collect_interval", { seconds })),
+	/**
+	 *  Persist the push-to-sync interval (seconds, clamped to [60, 7200]; Synced
+	 *  only; ADR-0014). Decoupled from collect so the Git history grows at this
+	 *  rate, not the (shorter) collect rate.
+	 */
+	setPushInterval: (seconds: number) => typedError<Preferences, AppError>(__TAURI_INVOKE("set_push_interval", { seconds })),
+	/**
+	 *  Probe a sync repo + PAT for reachability (ADR-0005「测试连接」). Pass explicit
+	 *  values to validate BEFORE binding, or `None`/`None` to re-check the already-
+	 *  configured repo. Pure ls-remote — never mutates config or the real sync repo.
+	 *  Always returns `Ok(report)`; the probe's own outcome (auth ok / bad token /
+	 *  not found) lives in `report.ok`, so the frontend never throws on a failed
+	 *  probe (only a `spawn_blocking` join failure surfaces as an `AppError`).
+	 */
+	verifySyncRepo: (repoUrl: string | null, githubToken: string | null) => typedError<VerifyReport, AppError>(__TAURI_INVOKE("verify_sync_repo", { repoUrl, githubToken })),
 	/**
 	 *  Resolve the one-time close dialog (ADR-0012). `remember` pins `choice` as
 	 *  the persisted behavior; the chosen action is then executed immediately.
@@ -211,6 +233,7 @@ export type ModelStatsRow = {
 export type Preferences = {
 	close_behavior: CloseBehavior,
 	collect_interval_secs: number,
+	push_interval_secs: number,
 };
 
 /**
@@ -321,6 +344,21 @@ export type UsageStats = {
 	/**  Aggregate over TurnDuration rows in range (per-turn grain). */
 	turn_count: number,
 	avg_turn_duration_ms: number | null,
+};
+
+/**
+ *  Outcome of a remote probe, surfaced to the UI. Always returned as `Ok`: a
+ *  failed probe is a business result (`ok: false`), not an `AppError`, so the
+ *  frontend reads `report.ok` instead of catching an exception.
+ */
+export type VerifyReport = {
+	/**
+	 *  True iff the repo was reachable, the PAT authenticated, and the caller
+	 *  has read access.
+	 */
+	ok: boolean,
+	/**  Human-readable status (zh), shown verbatim in the Settings banner. */
+	message: string,
 };
 
 /* Tauri Specta runtime */

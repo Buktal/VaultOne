@@ -8,4 +8,6 @@ export type CloseBehavior = "ask" | "minimize" | "quit"
 export interface Preferences {
   close_behavior: CloseBehavior
   collect_interval_secs: number
+  /** Push-to-sync interval (seconds, Synced only). ADR-0014. */
+  push_interval_secs: number
 }

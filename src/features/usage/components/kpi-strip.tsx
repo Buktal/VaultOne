@@ -6,7 +6,6 @@
 
 import { useStatsQuery, ZERO_STATS } from "@/app/store/api"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { usePollingInterval } from "@/hooks/use-polling-interval"
 import { formatCost, formatInt } from "@/lib/format"
 import { cn } from "@/lib/utils"
 
@@ -23,8 +22,7 @@ function formatDuration(ms: number | null | undefined): string {
 }
 
 export function KpiStrip({ filter }: { filter: UsageFilter }) {
-  const pollingInterval = usePollingInterval()
-  const { data: stats } = useStatsQuery(filter, { pollingInterval })
+  const { data: stats } = useStatsQuery(filter)
   const s = stats ?? ZERO_STATS
 
   const perTurn =

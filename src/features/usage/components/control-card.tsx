@@ -9,18 +9,13 @@
 // Sync stays in Settings (config concern); collect lives here (data-refresh).
 
 import dayjs from "dayjs"
-import { Activity, CalendarRange, ChevronDown, RefreshCw } from "lucide-react"
+import { Activity, CalendarRange, ChevronDown } from "lucide-react"
 import { type ReactNode, useEffect, useState } from "react"
 import { toast } from "sonner"
 import { DataFreshness } from "@/app/shell/data-freshness"
 import { useCollectMutation, useDistinctModelsQuery } from "@/app/store/api"
 import { useAppDispatch, useAppSelector } from "@/app/store/hooks"
 import { type FilterState, patchFilter } from "@/app/store/slices/filterSlice"
-import {
-  REFRESH_OPTIONS,
-  type RefreshInterval,
-  setRefreshInterval,
-} from "@/app/store/slices/uiSlice"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -212,39 +207,6 @@ function ModelChip() {
   )
 }
 
-function RefreshChip() {
-  const dispatch = useAppDispatch()
-  const value = useAppSelector((s) => s.ui.refreshInterval)
-  return (
-    <Select
-      value={String(value)}
-      onValueChange={(v) =>
-        dispatch(setRefreshInterval(Number(v) as RefreshInterval))
-      }
-    >
-      <SelectTrigger
-        className="border-border bg-card hover:bg-muted/60 h-8 w-28 rounded-md"
-        aria-label="自动刷新"
-      >
-        <RefreshCw className="text-muted-foreground size-3.5" />
-        <SelectValue>
-          {(value: string) =>
-            REFRESH_OPTIONS.find((o) => String(o.value) === value)?.label ??
-            "关闭"
-          }
-        </SelectValue>
-      </SelectTrigger>
-      <SelectContent>
-        {REFRESH_OPTIONS.map((o) => (
-          <SelectItem key={o.value} value={String(o.value)}>
-            {o.label}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  )
-}
-
 /** 纵向卡片版 — 看板右栏。标题行带主题切换 + 折叠 (ADR-0013 v2)。 */
 export function ControlCard() {
   const { onCollect, collecting } = useCollectAction()
@@ -283,9 +245,6 @@ export function ControlCard() {
           <Row label="模型">
             <ModelChip />
           </Row>
-          <Row label="刷新">
-            <RefreshChip />
-          </Row>
           <div className="bg-border my-2 h-px" />
           <Button className="w-full" disabled={collecting} onClick={onCollect}>
             <Activity />
@@ -307,7 +266,6 @@ export function ControlBar() {
     <div className="flex flex-wrap items-center gap-2">
       <DateRangeChip />
       <ModelChip />
-      <RefreshChip />
       <div className="flex-1" />
       <DataFreshness />
       <Button size="sm" disabled={collecting} onClick={onCollect}>

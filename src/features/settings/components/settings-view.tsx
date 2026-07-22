@@ -6,7 +6,16 @@
 // sync card into its own section (ADR-0005 / #6) so it no longer shares a
 // border-t with the usage-sync controls. Behaviour unchanged — layout only.
 
-import { Calculator, CloudUpload, RefreshCw, Unplug } from "lucide-react"
+import {
+  Calculator,
+  CheckCircle2,
+  CloudUpload,
+  Loader2,
+  PlugZap,
+  RefreshCw,
+  Unplug,
+  XCircle,
+} from "lucide-react"
 import { useState } from "react"
 import { toast } from "sonner"
 import {
@@ -17,6 +26,7 @@ import {
   useSetSyncRepoMutation,
   useSyncConfigMutation,
   useSyncMutation,
+  useVerifySyncRepoMutation,
 } from "@/app/store/api"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -26,7 +36,7 @@ import { Label } from "@/components/ui/label"
 import { ConflictResolver } from "@/features/settings/components/conflict-resolver"
 import { DeviceList } from "@/features/settings/components/device-list"
 import { GeneralCard } from "@/features/settings/components/general-card"
-import type { ConfigConflict } from "@/types/generated/bindings"
+import type { ConfigConflict, VerifyReport } from "@/types/generated/bindings"
 
 export function SettingsView() {
   const { data: info } = useAppInfoQuery()
@@ -36,11 +46,13 @@ export function SettingsView() {
   const [rebill, { isLoading: rebilling }] = useRebillMutation()
   const [syncNow, { isLoading: syncing }] = useSyncMutation()
   const [syncConfig, { isLoading: syncingConfig }] = useSyncConfigMutation()
+  const [verify, { isLoading: verifying }] = useVerifySyncRepoMutation()
 
   const [displayName, setDisplayName] = useState("")
   const [repoUrl, setRepoUrl] = useState("")
   const [token, setToken] = useState("")
   const [conflicts, setConflicts] = useState<ConfigConflict[] | null>(null)
+  const [verifyResult, setVerifyResult] = useState<VerifyReport | null>(null)
 
   const synced = info?.mode === "synced"
 
@@ -60,6 +72,26 @@ export function SettingsView() {
     toast.success(
       `云配置已同步${o?.pushed ? "（已推送本地改动）" : ""}${o?.pricing_changed ? "，定价已更新" : ""}`,
     )
+  }
+
+  /** 测试连接：未绑定时用输入框里的值校验；已绑定时传 null，由后端读 config
+   *  里的原文令牌复查（脱敏 token 拿不到原文）。改输入框会先清掉旧结果。 */
+  const onVerify = async () => {
+    setVerifyResult(null)
+    const r = await verify(
+      synced
+        ? { repoUrl: null, githubToken: null }
+        : { repoUrl: repoUrl.trim(), githubToken: token.trim() },
+    )
+    if ("error" in r) {
+      // 只有 spawn_blocking join 失败才会走到这（罕见）；正常探活失败在 r.data.ok。
+      setVerifyResult({
+        ok: false,
+        message: "校验请求失败，请稍后重试",
+      })
+      return
+    }
+    setVerifyResult(r.data ?? null)
   }
 
   return (
@@ -143,7 +175,10 @@ export function SettingsView() {
           <Input
             placeholder="https://github.com/<owner>/<repo>.git"
             value={repoUrl}
-            onChange={(e) => setRepoUrl(e.target.value)}
+            onChange={(e) => {
+              setRepoUrl(e.target.value)
+              setVerifyResult(null)
+            }}
             disabled={synced}
           />
           <Label className="text-muted-foreground text-xs">
@@ -153,11 +188,25 @@ export function SettingsView() {
             type="password"
             placeholder="github_pat_…"
             value={token}
-            onChange={(e) => setToken(e.target.value)}
+            onChange={(e) => {
+              setToken(e.target.value)
+              setVerifyResult(null)
+            }}
             disabled={synced}
           />
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={
+              verifying || (!synced && (!repoUrl.trim() || !token.trim()))
+            }
+            onClick={onVerify}
+          >
+            <PlugZap className="size-4" />
+            {verifying ? "校验中…" : "测试连接"}
+          </Button>
           <Button
             size="sm"
             disabled={binding || synced || !repoUrl.trim() || !token.trim()}
@@ -166,7 +215,8 @@ export function SettingsView() {
                 repoUrl: repoUrl.trim(),
                 githubToken: token.trim(),
               })
-              if ("error" in r) toast.error("配置失败")
+              if ("error" in r)
+                toast.error("配置失败", { description: describeError(r.error) })
               else {
                 toast.success("已开启多设备同步")
                 setRepoUrl("")
@@ -183,7 +233,8 @@ export function SettingsView() {
             disabled={clearing || !synced}
             onClick={async () => {
               const r = await clearRepo()
-              if ("error" in r) toast.error("解绑失败")
+              if ("error" in r)
+                toast.error("解绑失败", { description: describeError(r.error) })
               else toast.success("已切回单机（本地数据保留）")
             }}
           >
@@ -197,7 +248,10 @@ export function SettingsView() {
               disabled={syncing}
               onClick={async () => {
                 const r = await syncNow()
-                if ("error" in r) toast.error("同步失败")
+                if ("error" in r)
+                  toast.error("同步失败", {
+                    description: describeError(r.error),
+                  })
                 else
                   toast.success(
                     `已同步（导入 ${r.data?.imported ?? 0} 行${r.data?.pushed ? "，已推送" : ""}）`,
@@ -209,6 +263,9 @@ export function SettingsView() {
             </Button>
           )}
         </div>
+        {(verifying || verifyResult) && (
+          <VerifyBanner verifying={verifying} result={verifyResult} />
+        )}
       </Section>
 
       {/* 云配置 — split out of the sync card (ADR-0005 / #6) */}
@@ -313,4 +370,53 @@ function Row({
       {children}
     </div>
   )
+}
+
+/** 测试连接结果 banner（诊断型操作，结果需持久可见，故用 inline 而非 toast）。 */
+function VerifyBanner({
+  verifying,
+  result,
+}: {
+  verifying: boolean
+  result: VerifyReport | null
+}) {
+  if (verifying) {
+    return (
+      <div className="bg-muted/50 text-muted-foreground flex items-center gap-2 rounded-md border border-dashed p-2 text-xs">
+        <Loader2 className="size-3.5 animate-spin" />
+        正在校验连接…（可能需要数秒）
+      </div>
+    )
+  }
+  if (!result) return null
+  if (result.ok) {
+    return (
+      <div className="border-emerald-500/40 bg-emerald-500/5 text-emerald-600 dark:text-emerald-400 flex flex-col gap-0.5 rounded-md border p-2 text-xs leading-relaxed">
+        <span className="flex items-start gap-2">
+          <CheckCircle2 className="mt-0.5 size-3.5 shrink-0" />
+          {result.message}
+        </span>
+        <span className="text-muted-foreground pl-5">
+          仅校验读权限；推送同步另需令牌的 Contents 写权限。
+        </span>
+      </div>
+    )
+  }
+  return (
+    <div className="border-destructive/40 bg-destructive/5 text-destructive flex items-start gap-2 rounded-md border p-2 text-xs leading-relaxed">
+      <XCircle className="mt-0.5 size-3.5 shrink-0" />
+      <span>{result.message}</span>
+    </div>
+  )
+}
+
+/** 从 RTK Query 错误里抽出可读文案。run() 把 AppError 拼成 "Type: detail"，
+ * 取 message 字段即可——同步失败的根因就在 detail 里（如 push 的 401/403）。 */
+function describeError(e: unknown): string {
+  if (e && typeof e === "object") {
+    const m = e as Record<string, unknown>
+    if (typeof m.message === "string") return m.message
+    if (typeof m.data === "string") return m.data
+  }
+  return "未知原因"
 }

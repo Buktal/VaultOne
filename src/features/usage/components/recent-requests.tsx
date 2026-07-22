@@ -10,7 +10,6 @@ import { useAppDispatch, useAppSelector } from "@/app/store/hooks"
 import { toFilter } from "@/app/store/slices/filterSlice"
 import { setView } from "@/app/store/slices/viewSlice"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { usePollingInterval } from "@/hooks/use-polling-interval"
 import { formatCost, formatInt, formatTime } from "@/lib/format"
 import { cn } from "@/lib/utils"
 
@@ -31,12 +30,12 @@ export function RecentRequests() {
   const dispatch = useAppDispatch()
   const filter = useAppSelector((s) => s.filter.filter)
   const usageFilter = useMemo(() => toFilter(filter), [filter])
-  const pollingInterval = usePollingInterval()
-  const { data: rows = [] } = useLogsQuery(
-    { filter: usageFilter, limit: LIMIT, offset: 0 },
-    { pollingInterval },
-  )
-  const { data: total = 0 } = useCountQuery(usageFilter, { pollingInterval })
+  const { data: rows = [] } = useLogsQuery({
+    filter: usageFilter,
+    limit: LIMIT,
+    offset: 0,
+  })
+  const { data: total = 0 } = useCountQuery(usageFilter)
 
   return (
     <Card interactive>
