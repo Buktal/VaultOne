@@ -34,6 +34,7 @@ export function ThemeToggle() {
           <Button
             variant="ghost"
             size="icon-sm"
+            className="text-muted-foreground"
             aria-label={`切换主题（当前：${label}）`}
             onClick={() => setTheme(NEXT[theme] ?? "dark")}
           />
