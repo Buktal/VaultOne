@@ -75,7 +75,11 @@ export function GeneralCard() {
               onChange={(e) => setIntervalMin(e.target.value)}
               className="w-28"
             />
-            <Button size="sm" disabled={savingInterval} onClick={onSaveInterval}>
+            <Button
+              size="sm"
+              disabled={savingInterval}
+              onClick={onSaveInterval}
+            >
               保存
             </Button>
           </div>
@@ -92,7 +96,9 @@ export function GeneralCard() {
               <Button
                 key={value}
                 size="sm"
-                variant={prefs?.close_behavior === value ? "default" : "outline"}
+                variant={
+                  prefs?.close_behavior === value ? "default" : "outline"
+                }
                 disabled={savingClose}
                 onClick={async () => {
                   const r = await setCloseBehavior(value)

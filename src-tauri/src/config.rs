@@ -66,21 +66,18 @@ impl Paths {
 }
 
 /// Window-close behavior preference (ADR-0012). Crosses the Rust→JS boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum CloseBehavior {
     /// Show the minimize/quit dialog each time (default).
+    #[default]
     Ask,
     /// Always minimize to tray — keeps the background scheduler alive.
     Minimize,
     /// Always quit.
     Quit,
-}
-
-impl Default for CloseBehavior {
-    fn default() -> Self {
-        Self::Ask
-    }
 }
 
 /// Default background-collect interval in seconds (ADR-0012: 10 min).

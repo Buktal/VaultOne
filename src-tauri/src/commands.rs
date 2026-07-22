@@ -140,7 +140,7 @@ pub fn collect_into(store: &Store, config: &ConfigStore) -> AppResult<IngestRepo
     store.upsert_device(&cfg.device_id, &cfg.display_name, true)?;
     let book = store.load_pricing_book()?;
     let paths = config.paths();
-    ingest::ingest_collected(&store, &paths, &cfg.device_id, &book, result)
+    ingest::ingest_collected(store, &paths, &cfg.device_id, &book, result)
 }
 
 /// Best-effort push of the current Artifact to the sync repo (Synced only,
@@ -421,23 +421,16 @@ pub fn set_close_behavior(
     state: State<'_, AppState>,
     close_behavior: CloseBehavior,
 ) -> AppResult<Preferences> {
-    let cfg = state
-        .config
-        .update(|c| c.close_behavior = close_behavior)?;
+    let cfg = state.config.update(|c| c.close_behavior = close_behavior)?;
     Ok(to_preferences(&cfg))
 }
 
 /// Persist the background-collect interval (seconds, clamped to [60, 3600]).
 #[tauri::command]
 #[specta::specta]
-pub fn set_collect_interval(
-    state: State<'_, AppState>,
-    seconds: u64,
-) -> AppResult<Preferences> {
+pub fn set_collect_interval(state: State<'_, AppState>, seconds: u64) -> AppResult<Preferences> {
     let clamped = seconds.clamp(60, 3600);
-    let cfg = state
-        .config
-        .update(|c| c.collect_interval_secs = clamped)?;
+    let cfg = state.config.update(|c| c.collect_interval_secs = clamped)?;
     Ok(to_preferences(&cfg))
 }
 
