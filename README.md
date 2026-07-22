@@ -9,7 +9,17 @@
 
 **English** | [简体中文](./README.zh-CN.md)
 
-![VaultOne dashboard](./docs/images/dashboard.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./docs/images/dashboard-dark.png">
+  <img src="./docs/images/dashboard-light.png" alt="VaultOne dashboard">
+</picture>
+
+*Lightweight glance mode — tuck to the screen edge, hover to peek today's usage:*
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./docs/images/lightweight-dark.png">
+  <img src="./docs/images/lightweight-light.png" alt="Lightweight glance mode">
+</picture>
 
 ---
 

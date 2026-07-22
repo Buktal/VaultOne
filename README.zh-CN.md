@@ -9,7 +9,17 @@
 
 [English](./README.md) | **简体中文**
 
-![VaultOne 看板](./docs/images/dashboard.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./docs/images/dashboard-dark.png">
+  <img src="./docs/images/dashboard-light.png" alt="VaultOne 看板">
+</picture>
+
+*轻量速览模式——缩到屏幕边缘，悬停瞥见今日用量：*
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./docs/images/lightweight-dark.png">
+  <img src="./docs/images/lightweight-light.png" alt="轻量速览模式">
+</picture>
 
 ---
 
