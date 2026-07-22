@@ -80,14 +80,14 @@ pub enum CloseBehavior {
     Quit,
 }
 
-/// Default background-collect interval in seconds (ADR-0012: 10 min).
+/// Default background-collect interval in seconds (ADR-0012: 5 min).
 ///
 /// `u32` (not `u64`): the value crosses the Rust→JS boundary via the typed
 /// specta contract, and specta forbids exporting BigInt-style types (`u64`,
 /// `i64`, …) to avoid JS precision loss. `u32`'s range (≈4.29e9 s) is ample
 /// for an interval clamped to [60, 3600].
 fn default_collect_interval_secs() -> u32 {
-    600
+    300
 }
 
 /// The local `config.json` content (ADR-0004). Never uploaded to the repo.

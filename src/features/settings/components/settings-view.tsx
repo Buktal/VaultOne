@@ -64,18 +64,18 @@ export function SettingsView() {
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-6">
-      {/* 通用 · GENERAL — tray / ADR-0012 */}
+      {/* 通用 — tray / ADR-0012 */}
       <Section
-        eyebrow="通用 · GENERAL"
-        description="后台采集与窗口行为（ADR-0012）。应用常驻托盘，关窗默认最小化、后台继续定时采集。"
+        eyebrow="通用"
+        description="应用常驻系统托盘。关窗后默认最小化到托盘、继续在后台定时读取使用记录。"
       >
         <GeneralCard />
       </Section>
 
-      {/* 本机 · THIS DEVICE */}
+      {/* 本机 */}
       <Section
-        eyebrow="本机 · THIS DEVICE"
-        description="设备 ID 是多设备同步的唯一键（ADR-0002）；显示名仅用于展示。"
+        eyebrow="本机"
+        description="设备 ID 用于在多台设备间区分这台机器，显示名只是方便你辨认。"
       >
         <Row label="设备 ID">
           <code className="bg-muted rounded px-2 py-1 font-mono text-xs">
@@ -120,10 +120,10 @@ export function SettingsView() {
         </div>
       </Section>
 
-      {/* 同步 · SYNC */}
+      {/* 同步 */}
       <Section
-        eyebrow="同步 · SYNC"
-        description="配置仓库 + fine-grained PAT 升级为 Synced（ADR-0011）。PAT 仅存本地，绝不进入仓库。"
+        eyebrow="同步"
+        description="绑定一个私有 Git 仓库来开启多设备同步。访问令牌只存在本机，不会写入仓库。"
       >
         <Row label="当前仓库">
           <span className="text-muted-foreground font-mono text-xs">
@@ -147,7 +147,7 @@ export function SettingsView() {
             disabled={synced}
           />
           <Label className="text-muted-foreground text-xs">
-            Fine-grained PAT（Contents 读写）
+            GitHub 访问令牌（需 Contents 读写权限）
           </Label>
           <Input
             type="password"
@@ -168,14 +168,14 @@ export function SettingsView() {
               })
               if ("error" in r) toast.error("配置失败")
               else {
-                toast.success("已升级为 Synced 模式")
+                toast.success("已开启多设备同步")
                 setRepoUrl("")
                 setToken("")
               }
             }}
           >
             <CloudUpload className="size-4" />
-            绑定并升级
+            绑定并开启同步
           </Button>
           <Button
             variant="outline"
@@ -184,11 +184,11 @@ export function SettingsView() {
             onClick={async () => {
               const r = await clearRepo()
               if ("error" in r) toast.error("解绑失败")
-              else toast.success("已切回 Standalone（本地数据保留）")
+              else toast.success("已切回单机（本地数据保留）")
             }}
           >
             <Unplug className="size-4" />
-            解绑（降级单机）
+            解绑（切回单机）
           </Button>
           {synced && (
             <Button
@@ -211,16 +211,16 @@ export function SettingsView() {
         </div>
       </Section>
 
-      {/* 云配置 · CONFIG — split out of the sync card (ADR-0005 / #6) */}
+      {/* 云配置 — split out of the sync card (ADR-0005 / #6) */}
       <Section
-        eyebrow="云配置 · CONFIG"
-        description="手动同步 app / user / pricing.json 云配置（ADR-0005/#6）。仅 Synced 模式可用。"
+        eyebrow="云配置"
+        description="手动拉取或推送云端的应用、用户、定价三类配置。仅在多设备同步模式下可用。"
       >
         <div className="flex items-center justify-between gap-3">
           <span className="text-muted-foreground text-sm">
             {synced
-              ? "app / user / pricing 三件配置"
-              : "需先在上方配置仓库升级为 Synced"}
+              ? "应用 / 用户 / 定价 三类配置"
+              : "需先在上方开启多设备同步"}
           </span>
           {synced && (
             <Button
@@ -239,32 +239,32 @@ export function SettingsView() {
         )}
       </Section>
 
-      {/* 设备 · DEVICES */}
+      {/* 设备 */}
       <Section
-        eyebrow="设备 · DEVICES"
-        description="所有曾同步的设备（ADR-0002）。可给其他设备起显示名，便于多设备间辨认。"
+        eyebrow="设备"
+        description="所有同步过的设备。可以给其他设备起个好认的名字。"
       >
         <DeviceList />
       </Section>
 
-      {/* 维护 · MAINTENANCE */}
+      {/* 维护 */}
       <Section
-        eyebrow="维护 · MAINTENANCE"
-        description="补算零成本行（ADR-0009：只补当初缺价的行）。"
+        eyebrow="维护"
+        description="为早期缺少定价、记为 0 成本的历史记录，用当前定价补上金额。"
       >
-        <Row label="补算零成本行">
+        <Row label="补算缺失成本">
           <Button
             variant="outline"
             size="sm"
             disabled={rebilling}
             onClick={async () => {
               const r = await rebill()
-              if ("error" in r) toast.error("回算失败")
-              else toast.success(`已补算 ${r.data ?? 0} 行`)
+              if ("error" in r) toast.error("补算失败")
+              else toast.success(`已补算 ${r.data ?? 0} 条`)
             }}
           >
             <Calculator className="size-4" />
-            {rebilling ? "回算中…" : "补算"}
+            {rebilling ? "补算中…" : "补算"}
           </Button>
         </Row>
       </Section>
