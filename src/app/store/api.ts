@@ -1,5 +1,4 @@
 import { createApi, fakeBaseQuery } from "@reduxjs/toolkit/query/react"
-import { invoke } from "@tauri-apps/api/core"
 import type {
   AppError,
   AppInfo,
@@ -220,28 +219,21 @@ export const vaultApi = createApi({
     }),
 
     // ---- preferences (ADR-0012: tray + background) ----
-    // Raw `invoke` until bindings regenerate; same envelope as generated cmds.
+    // Go through the generated `commands.*` so tauri-specta's `typedError`
+    // wrapping matches what `run` expects. Raw `invoke` skips that wrapping.
     preferences: b.query<Preferences, void>({
-      queryFn: async () => ({
-        data: await run(invoke<Envelope<Preferences>>("get_preferences")),
-      }),
+      queryFn: async () => ({ data: await run(commands.getPreferences()) }),
       providesTags: ["App"],
     }),
     setCloseBehavior: b.mutation<Preferences, CloseBehavior>({
       queryFn: async (closeBehavior) => ({
-        data: await run(
-          invoke<Envelope<Preferences>>("set_close_behavior", {
-            closeBehavior,
-          }),
-        ),
+        data: await run(commands.setCloseBehavior(closeBehavior)),
       }),
       invalidatesTags: ["App"],
     }),
     setCollectInterval: b.mutation<Preferences, number>({
       queryFn: async (seconds) => ({
-        data: await run(
-          invoke<Envelope<Preferences>>("set_collect_interval", { seconds }),
-        ),
+        data: await run(commands.setCollectInterval(seconds)),
       }),
       invalidatesTags: ["App"],
     }),
@@ -288,5 +280,5 @@ export async function confirmClose(
   choice: CloseBehavior,
   remember: boolean,
 ): Promise<void> {
-  await run(invoke<Envelope<null>>("confirm_close", { choice, remember }))
+  await run(commands.confirmClose(choice, remember))
 }
