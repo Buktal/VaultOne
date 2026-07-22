@@ -212,7 +212,7 @@ pub fn run() {
                         commands::push_if_synced(&config);
                     }
                     first = false;
-                    std::thread::sleep(std::time::Duration::from_secs(interval));
+                    std::thread::sleep(std::time::Duration::from_secs(interval as u64));
                 }
             });
 

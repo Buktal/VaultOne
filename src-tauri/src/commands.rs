@@ -397,7 +397,7 @@ pub async fn fetch_litellm_pricing(state: State<'_, AppState>) -> AppResult<u32>
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct Preferences {
     pub close_behavior: CloseBehavior,
-    pub collect_interval_secs: u64,
+    pub collect_interval_secs: u32,
 }
 
 fn to_preferences(cfg: &crate::config::ConfigData) -> Preferences {
@@ -428,7 +428,7 @@ pub fn set_close_behavior(
 /// Persist the background-collect interval (seconds, clamped to [60, 3600]).
 #[tauri::command]
 #[specta::specta]
-pub fn set_collect_interval(state: State<'_, AppState>, seconds: u64) -> AppResult<Preferences> {
+pub fn set_collect_interval(state: State<'_, AppState>, seconds: u32) -> AppResult<Preferences> {
     let clamped = seconds.clamp(60, 3600);
     let cfg = state.config.update(|c| c.collect_interval_secs = clamped)?;
     Ok(to_preferences(&cfg))

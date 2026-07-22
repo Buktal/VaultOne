@@ -16,9 +16,8 @@ export const commands = {
 	/**  Set a friendly name for *another* device seen in the repo (ADR-0002 map). */
 	setDeviceDisplayName: (deviceId: string, displayName: string) => typedError<null, AppError>(__TAURI_INVOKE("set_device_display_name", { deviceId, displayName })),
 	/**
-	 *  Discover + parse Claude Code sessions, compute cost, write Local Store +
-	 *  JSONL Artifact (ADR-0001 / 0004), then best-effort push the new Artifact in
-	 *  Synced mode (ADR-0005). Heavy disk/git work → offloaded to a thread.
+	 *  Manual「立即采集」: collect now, best-effort push if Synced, refresh the UI.
+	 *  Heavy disk/git work → offloaded to a thread.
 	 */
 	collectNow: () => typedError<IngestReport, AppError>(__TAURI_INVOKE("collect_now")),
 	/**
@@ -65,6 +64,18 @@ export const commands = {
 	 *  Network → async + offloaded. Best-effort: returns count merged (0 offline).
 	 */
 	fetchLitellmPricing: () => typedError<number, AppError>(__TAURI_INVOKE("fetch_litellm_pricing")),
+	/**  Read the current preferences for the Settings card. */
+	getPreferences: () => typedError<Preferences, AppError>(__TAURI_INVOKE("get_preferences")),
+	/**  Persist the window-close behavior (ADR-0012). */
+	setCloseBehavior: (closeBehavior: CloseBehavior) => typedError<Preferences, AppError>(__TAURI_INVOKE("set_close_behavior", { closeBehavior })),
+	/**  Persist the background-collect interval (seconds, clamped to [60, 3600]). */
+	setCollectInterval: (seconds: number) => typedError<Preferences, AppError>(__TAURI_INVOKE("set_collect_interval", { seconds })),
+	/**
+	 *  Resolve the one-time close dialog (ADR-0012). `remember` pins `choice` as
+	 *  the persisted behavior; the chosen action is then executed immediately.
+	 *  `Minimize`/`Ask` hide the window (scheduler keeps running); `Quit` exits.
+	 */
+	confirmClose: (choice: CloseBehavior, remember: boolean) => typedError<null, AppError>(__TAURI_INVOKE("confirm_close", { choice, remember })),
 };
 
 /* Types */
@@ -100,6 +111,15 @@ export type AppInfo = {
 	claude_projects_dir: string | null,
 	version: string,
 };
+
+/**  Window-close behavior preference (ADR-0012). Crosses the Rust→JS boundary. */
+export type CloseBehavior = 
+/**  Show the minimize/quit dialog each time (default). */
+"ask" | 
+/**  Always minimize to tray — keeps the background scheduler alive. */
+"minimize" | 
+/**  Always quit. */
+"quit";
 
 /**  One conflicting config file with both sides for the UI to preview. */
 export type ConfigConflict = {
@@ -185,6 +205,12 @@ export type ModelStatsRow = {
 	request_count: number,
 	total_tokens: number,
 	total_cost_usd: number | null,
+};
+
+/**  User-tunable preferences surfaced in the Settings「通用」card (ADR-0012). */
+export type Preferences = {
+	close_behavior: CloseBehavior,
+	collect_interval_secs: number,
 };
 
 /**

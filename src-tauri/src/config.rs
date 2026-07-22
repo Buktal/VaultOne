@@ -81,7 +81,12 @@ pub enum CloseBehavior {
 }
 
 /// Default background-collect interval in seconds (ADR-0012: 10 min).
-fn default_collect_interval_secs() -> u64 {
+///
+/// `u32` (not `u64`): the value crosses the Rust→JS boundary via the typed
+/// specta contract, and specta forbids exporting BigInt-style types (`u64`,
+/// `i64`, …) to avoid JS precision loss. `u32`'s range (≈4.29e9 s) is ample
+/// for an interval clamped to [60, 3600].
+fn default_collect_interval_secs() -> u32 {
     600
 }
 
@@ -108,7 +113,7 @@ pub struct ConfigData {
     /// Background collect interval in seconds (ADR-0012). Clamped to [60, 3600]
     /// at use; serialized verbatim so the UI shows what the user typed.
     #[serde(default = "default_collect_interval_secs")]
-    pub collect_interval_secs: u64,
+    pub collect_interval_secs: u32,
 }
 
 impl Default for ConfigData {
