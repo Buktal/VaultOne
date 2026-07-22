@@ -13,9 +13,11 @@
     "windows": [
       {
         "label": "main",
-        "title": "vaultone",
+        "title": "VaultOne",
         "width": 800,
-        "height": 600
+        "height": 600,
+        "decorations": false,
+        "shadow": true
       }
     ],
     "security": {
