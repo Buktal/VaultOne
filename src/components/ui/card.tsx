@@ -9,8 +9,8 @@ function Card({
   ...props
 }: React.ComponentProps<"div"> & {
   size?: "default" | "sm"
-  /** Lift-on-hover treatment for standalone dashboard cards. Off by default so
-   * container cards (tables, dialogs) stay flat. */
+  /** Hover-shadow treatment for standalone dashboard cards (flat idiom — no
+   * lift). Off by default so container cards (tables, dialogs) stay flat. */
   interactive?: boolean
 }) {
   return (
@@ -19,7 +19,7 @@ function Card({
       data-size={size}
       className={cn(
         "group/card flex flex-col gap-(--card-spacing) overflow-hidden rounded-lg border border-border bg-card py-(--card-spacing) text-sm text-card-foreground shadow-sm transition-[box-shadow,transform,border-color] duration-200 [--card-spacing:--spacing(5)] has-[>img:first-child]:pt-0 data-[size=sm]:[--card-spacing:--spacing(4)] *:[img:first-child]:rounded-t-lg *:[img:last-child]:rounded-b-lg",
-        interactive && "hover:-translate-y-0.5 hover:shadow-md",
+        interactive && "hover:shadow-md",
         className,
       )}
       {...props}

@@ -1,12 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <rect x="0" y="0" width="1024" height="1024" rx="192" fill="#5C3D2E"/>
-  <g fill="none" stroke="#F0E6D2" stroke-width="60" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M 346 279 L 203 279 L 203 745 L 346 745"/>
-    <path d="M 678 279 L 821 279 L 821 745 L 678 745"/>
-  </g>
-  <g fill="#E8B34A">
-    <rect x="443" y="673" width="138" height="55" rx="13"/>
-    <rect x="483" y="279" width="57" height="407" rx="16"/>
-    <path d="M 483 335 L 395 398 L 483 398 Z"/>
-  </g>
+  <rect x="0" y="0" width="1024" height="1024" rx="220" fill="#241A14"/>
+  <path d="M 311 499 Q 609 212 874 311" fill="none" stroke="#8C6A4A" stroke-width="18" stroke-opacity="0.55" stroke-linecap="round"/>
+  <circle cx="315" cy="710" r="204" fill="none" stroke="#D9A066" stroke-width="68"/>
+  <text x="571" y="548" font-family="Geist Variable, Geist, system-ui, sans-serif" font-weight="800" font-size="281" fill="#D9A066">n</text>
+  <text x="824" y="422" font-family="Geist Variable, Geist, system-ui, sans-serif" font-weight="800" font-size="166" fill="#D9A066">e</text>
 </svg>
