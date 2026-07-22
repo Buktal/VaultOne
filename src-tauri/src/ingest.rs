@@ -97,11 +97,16 @@ pub fn ingest_collected(
         .map(|t| turn_durationify(t, device_id))
         .collect();
     let turns_inserted = if turns.is_empty() {
-        0
+        Vec::new()
     } else {
-        let n = store.ingest_turn_durations(&turns)?;
-        append_turn_jsonl(paths, device_id, &turns)?;
-        n as u32
+        // Only newly-inserted turns are appended to the JSONL — mirroring the
+        // usage path above. Previously ALL turns were re-appended each collect,
+        // duplicating them in the Artifact under full rescans.
+        let inserted = store.ingest_turn_durations(&turns)?;
+        if !inserted.is_empty() {
+            append_turn_jsonl(paths, device_id, &inserted)?;
+        }
+        inserted
     };
 
     Ok(IngestReport {
@@ -109,7 +114,7 @@ pub fn ingest_collected(
         events_collected,
         rows_inserted: inserted.len() as u32,
         turn_durations_collected,
-        turn_durations_inserted: turns_inserted,
+        turn_durations_inserted: turns_inserted.len() as u32,
         files_scanned: result.files_scanned,
         lines_skipped: result.lines_skipped,
     })
@@ -428,5 +433,28 @@ mod tests {
         let turns = read_device_turn_artifacts(&paths, "0123456789ab").unwrap();
         assert_eq!(usage.len(), 1);
         assert_eq!(turns.len(), 2);
+    }
+
+    #[test]
+    fn turn_jsonl_appends_only_new_turns_on_reingest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let book = seed_book();
+        let result = CollectResult {
+            source: "claude_code".into(),
+            events: vec![],
+            turn_durations: vec![raw_turn("td1"), raw_turn("td2")],
+            files_scanned: 1,
+            lines_skipped: 0,
+        };
+        ingest_collected(&store, &paths, "0123456789ab", &book, result.clone()).unwrap();
+        // Re-ingest the SAME turns: DB dedups (inserted == 0) and the JSONL
+        // Artifact must NOT gain duplicate rows (regression: previously every
+        // turn was re-appended each collect under full rescans).
+        let rep = ingest_collected(&store, &paths, "0123456789ab", &book, result).unwrap();
+        assert_eq!(rep.turn_durations_inserted, 0);
+        let turns = read_device_turn_artifacts(&paths, "0123456789ab").unwrap();
+        assert_eq!(turns.len(), 2, "JSONL holds each turn once, not doubled");
     }
 }

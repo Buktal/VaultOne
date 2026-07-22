@@ -135,12 +135,19 @@ pub fn set_device_display_name(
 /// both follow the exact same ingest path.
 pub fn collect_into(store: &Store, config: &ConfigStore) -> AppResult<IngestReport> {
     let provider = ClaudeCodeProvider::new()?;
-    let result = provider.collect()?;
+    // Incremental collect (ADR-0013): load per-file cursors, parse only new
+    // lines, then persist the advanced cursors AFTER ingest — so a failed
+    // ingest leaves the cursor untouched (next collect re-parses the same
+    // lines; the ledger dedups). First run / empty table ⇒ full scan.
+    let progress = store.load_scan_progress()?;
+    let (result, delta) = provider.collect_incremental(&progress)?;
     let cfg = config.get();
     store.upsert_device(&cfg.device_id, &cfg.display_name, true)?;
     let book = store.load_pricing_book()?;
     let paths = config.paths();
-    ingest::ingest_collected(store, &paths, &cfg.device_id, &book, result)
+    let report = ingest::ingest_collected(store, &paths, &cfg.device_id, &book, result)?;
+    store.save_scan_progress(&delta)?;
+    Ok(report)
 }
 
 /// Best-effort push of the current Artifact to the sync repo (Synced only,

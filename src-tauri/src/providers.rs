@@ -59,6 +59,24 @@ pub struct CollectResult {
     pub lines_skipped: u32,
 }
 
+/// Per-file incremental scan cursor (ADR-0013). Persisted in `scan_progress`;
+/// replaceable — a lost cursor triggers a full rescan (the ledger dedups).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FileCursor {
+    /// File mtime (nanos) as last seen by this cursor.
+    pub last_modified: i64,
+    /// Last fully-processed 1-based line number. 0 = nothing parsed yet.
+    pub last_line_offset: i64,
+}
+
+/// file_path → cursor. Loaded before `collect_incremental`, saved after. A plain
+/// `HashMap` alias (not a newtype) — it is a trivial wrapper.
+pub type ScanProgress = std::collections::HashMap<String, FileCursor>;
+
+/// One collect's worth of cursor advances: only entries for files actually
+/// opened and read. Saved as an UPSERT. Same shape as `ScanProgress` (a subset).
+pub type ScanProgressDelta = std::collections::HashMap<String, FileCursor>;
+
 /// Provider plugin interface (extensible to Codex / Gemini / …).
 pub trait Provider: Send + Sync {
     /// Stable provider tag, e.g. `claude_code`. Becomes `RawUsage.source`.
@@ -74,6 +92,22 @@ pub trait Provider: Send + Sync {
     fn collect(&self) -> AppResult<CollectResult> {
         let files = self.discover()?;
         self.parse(&files)
+    }
+
+    /// Incremental collect (ADR-0013): parse only lines past each file's
+    /// recorded cursor, returning the advanced cursors to persist. The default
+    /// impl **degrades to a full parse and returns an empty delta** (the cursor
+    /// never advances), so a provider that does not override this stays correct
+    /// and full-scan. Override for append-only JSONL sources (ClaudeCodeProvider).
+    fn collect_incremental(
+        &self,
+        progress: &ScanProgress,
+    ) -> AppResult<(CollectResult, ScanProgressDelta)> {
+        let _ = progress;
+        let result = self.collect()?;
+        // Empty delta ⇒ nothing saved; next collect is still full. Correct for a
+        // provider with no incremental logic.
+        Ok((result, ScanProgressDelta::new()))
     }
 }
 
@@ -199,6 +233,118 @@ impl Provider for ClaudeCodeProvider {
             lines_skipped: skipped,
         })
     }
+
+    /// Incremental collect (ADR-0013): parse only lines past each file's
+    /// recorded cursor and return the advanced cursors to persist. The mtime
+    /// gate skips unchanged files (no IO/serde); a never-seen file ({0,0})
+    /// falls through to a full parse on first sight.
+    fn collect_incremental(
+        &self,
+        progress: &ScanProgress,
+    ) -> AppResult<(CollectResult, ScanProgressDelta)> {
+        let files = self.discover()?;
+        // Same message-id dedup as `parse` — one assistant response may span
+        // several content-block events that all repeat the full usage.
+        let mut events_by_mid: std::collections::HashMap<String, RawUsage> =
+            std::collections::HashMap::new();
+        let mut turn_durations = Vec::new();
+        let mut skipped = 0u32;
+        let mut delta = ScanProgressDelta::new();
+
+        for file in &files {
+            let path_str = file.to_string_lossy().into_owned();
+            // mtime gate — one stat; unchanged files do no IO/serde.
+            let metadata = match std::fs::metadata(file) {
+                Ok(m) => m,
+                Err(_) => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+            let mtime = metadata_modified_nanos(&metadata);
+            let prev = progress.get(&path_str).copied().unwrap_or_default();
+            // `prev.last_modified != 0` lets a never-seen file parse in full.
+            if prev.last_modified != 0 && mtime <= prev.last_modified {
+                continue;
+            }
+            let text = match std::fs::read_to_string(file) {
+                Ok(t) => t,
+                Err(_) => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+            // Truncation self-heal: if the file shrank below the last known
+            // offset, re-read from the start. (CC-Switch lacks this — it would
+            // silently drop anything appended after a truncation.)
+            let total_lines = text.lines().count() as i64;
+            let start_line = if total_lines < prev.last_line_offset {
+                0
+            } else {
+                prev.last_line_offset
+            };
+            // Line parse loop — mirrors `parse`'s inner loop but skips lines
+            // already processed (line_no <= start_line). NOTE: the stored uuid
+            // stays the event uuid (not the message id) — re-keying would cause
+            // a mass migration duplicate on first run (ADR-0013 limitations).
+            for (idx, line) in text.lines().enumerate() {
+                let line_no = idx as i64 + 1; // 1-based, matching CC-Switch
+                if line_no <= start_line {
+                    continue;
+                }
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                match serde_json::from_str::<SessionEvent>(line) {
+                    Ok(ev) => {
+                        let mid = ev.message.as_ref().and_then(|m| m.id.clone());
+                        match ev.classify() {
+                            Parsed::Usage(u) => {
+                                let key = mid.unwrap_or_else(|| u.uuid.clone());
+                                events_by_mid.entry(key).or_insert(u);
+                            }
+                            Parsed::TurnDuration(td) => turn_durations.push(td),
+                            Parsed::Skip => {}
+                        }
+                    }
+                    Err(_) => skipped += 1,
+                }
+            }
+            // Partial-last-line guard: if the file has no trailing newline the
+            // last line may be mid-write (Claude streaming) — don't advance past
+            // it, else the next collect skips it. Improvement over CC-Switch.
+            let ends_clean = text.ends_with('\n') || text.ends_with('\r');
+            let new_offset = if ends_clean {
+                total_lines
+            } else if total_lines > start_line {
+                total_lines - 1
+            } else {
+                start_line // no new complete line — don't regress
+            };
+            delta.insert(
+                path_str,
+                FileCursor {
+                    last_modified: mtime,
+                    last_line_offset: new_offset,
+                },
+            );
+        }
+
+        // Deterministic order (timestamp, then uuid) — same as `parse`.
+        let mut events: Vec<RawUsage> = events_by_mid.into_values().collect();
+        events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
+        let result = CollectResult {
+            source: self.name().to_string(),
+            events,
+            turn_durations,
+            // files_scanned stays "discovered count" (IngestReport / ADR-0008
+            // typed contract) — do not redefine to "parsed count".
+            files_scanned: files.len() as u32,
+            lines_skipped: skipped,
+        };
+        Ok((result, delta))
+    }
 }
 
 // ---- Lenient session-log deserialization ----
@@ -323,6 +469,18 @@ impl SessionEvent {
     }
 }
 
+/// File mtime in nanos since UNIX_EPOCH, for the incremental mtime gate. Clamped
+/// to `i64::MAX` (the SQLite column is INTEGER). Returns 0 if mtime is
+/// unavailable — then the gate never skips (safe, just re-parses).
+fn metadata_modified_nanos(metadata: &std::fs::Metadata) -> i64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
+}
+
 /// ISO8601 UTC "now", used as a last-resort timestamp when the source omits one.
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
@@ -340,10 +498,10 @@ mod tests {
     use std::io::Write;
     use std::path::Path;
 
-    fn write_lines(path: &Path, lines: &[&str]) {
+    fn write_lines(path: &Path, lines: &[impl AsRef<str>]) {
         let mut f = fs::File::create(path).unwrap();
         for l in lines {
-            writeln!(f, "{l}").unwrap();
+            writeln!(f, "{}", l.as_ref()).unwrap();
         }
     }
 
@@ -440,5 +598,138 @@ mod tests {
         let base = tempfile::tempdir().unwrap();
         let p = ClaudeCodeProvider::with_dir(base.path().join("does-not-exist"));
         assert!(p.discover().unwrap().is_empty());
+    }
+
+    // ---- incremental collect (ADR-0013) ----
+
+    /// One assistant event line (with message id) for incremental tests.
+    fn assistant_line(uuid: &str, mid: &str, out: u32) -> String {
+        format!(
+            r#"{{"type":"assistant","timestamp":"2026-07-21T15:56:07.000Z","uuid":"{uuid}","message":{{"id":"{mid}","model":"glm-5.2","stop_reason":"tool_use","usage":{{"input_tokens":100,"output_tokens":{out}}}}}}}"#
+        )
+    }
+
+    #[test]
+    fn incremental_empty_progress_parses_all_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("s.jsonl");
+        write_lines(&file, &[assistant_line("u1", "msg_A", 10)]);
+        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let (result, delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
+        assert_eq!(result.events.len(), 1, "first run is a full parse");
+        assert_eq!(delta.len(), 1, "a cursor is recorded for the file");
+        let key = file.to_string_lossy().into_owned();
+        let cursor = delta.get(&key).unwrap();
+        assert!(cursor.last_line_offset >= 1);
+        assert!(cursor.last_modified > 0);
+    }
+
+    #[test]
+    fn incremental_skips_unchanged_file_via_mtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("s.jsonl");
+        write_lines(&file, &[assistant_line("u1", "msg_A", 10)]);
+        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let (r1, delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
+        assert_eq!(r1.events.len(), 1);
+        let progress: ScanProgress = delta;
+        // Second collect, file untouched → mtime gate skips it entirely.
+        let (r2, delta2) = p.collect_incremental(&progress).unwrap();
+        assert_eq!(r2.events.len(), 0, "unchanged file yields no events");
+        assert!(delta2.is_empty(), "unchanged file advances no cursor");
+    }
+
+    #[test]
+    fn incremental_parses_only_appended_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("s.jsonl");
+        write_lines(&file, &[assistant_line("u1", "msg_A", 10)]);
+        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let (_, progress) = p.collect_incremental(&ScanProgress::new()).unwrap();
+        // Append a new event — content change bumps mtime past the gate.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&file)
+                .unwrap();
+            writeln!(f, "{}", assistant_line("u2", "msg_B", 20)).unwrap();
+        }
+        let (r2, _) = p.collect_incremental(&progress).unwrap();
+        assert_eq!(r2.events.len(), 1, "only the appended event is parsed");
+        assert_eq!(r2.events[0].uuid, "u2");
+    }
+
+    #[test]
+    fn incremental_truncation_resets_offset() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("s.jsonl");
+        write_lines(
+            &file,
+            &[
+                assistant_line("u1", "msg_A", 10),
+                assistant_line("u2", "msg_B", 20),
+                assistant_line("u3", "msg_C", 30),
+            ],
+        );
+        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let (_, progress) = p.collect_incremental(&ScanProgress::new()).unwrap();
+        // Simulate a truncation: rewrite with fewer lines + a new message id.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        write_lines(&file, &[assistant_line("u9", "msg_NEW", 999)]);
+        let (r2, _) = p.collect_incremental(&progress).unwrap();
+        // Truncation detected (total < prev offset) → re-read from 0 → the new
+        // message is parsed despite the shrunken file.
+        assert_eq!(r2.events.len(), 1);
+        assert_eq!(r2.events[0].uuid, "u9");
+    }
+
+    #[test]
+    fn incremental_partial_last_line_not_advanced_past() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("s.jsonl");
+        let complete = assistant_line("u1", "msg_A", 10);
+        // One complete line (with newline) then a partial JSON line WITHOUT a
+        // trailing newline — as if Claude is mid-write.
+        {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&file).unwrap();
+            writeln!(f, "{complete}").unwrap();
+            write!(f, r#"{{"type":"assistant","#).unwrap();
+        }
+        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let (r1, delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
+        let key = file.to_string_lossy().into_owned();
+        let cursor = delta.get(&key).unwrap();
+        // 2 lines visible (1 complete + 1 partial), but no trailing newline ⇒
+        // cursor stops at line 1, leaving the partial line for next collect.
+        assert_eq!(cursor.last_line_offset, 1);
+        assert_eq!(r1.events.len(), 1, "complete line parsed, partial skipped");
+    }
+
+    #[test]
+    fn incremental_default_impl_returns_empty_delta() {
+        // A provider that does NOT override collect_incremental must still work:
+        // full parse, empty delta (cursor never advances).
+        struct StubProvider;
+        impl Provider for StubProvider {
+            fn name(&self) -> &'static str {
+                "stub"
+            }
+            fn discover(&self) -> AppResult<Vec<PathBuf>> {
+                Ok(Vec::new())
+            }
+            fn parse(&self, _files: &[PathBuf]) -> AppResult<CollectResult> {
+                Ok(CollectResult::default())
+            }
+        }
+        let p = StubProvider;
+        let (result, delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
+        assert!(delta.is_empty(), "default impl advances no cursor");
+        assert!(
+            result.events.is_empty(),
+            "default impl still yields a full-parse result"
+        );
     }
 }

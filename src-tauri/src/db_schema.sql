@@ -84,3 +84,15 @@ CREATE TABLE IF NOT EXISTS device (
     is_self     INTEGER NOT NULL DEFAULT 0,
     first_seen  TEXT NOT NULL
 );
+
+-- Incremental scan cursor (ADR-0013). Replaceable cache: a lost/truncated row
+-- only triggers a full rescan of that file on the next collect — the dedup
+-- ledger (not this table) is the source of truth. NOT part of the JSONL
+-- Artifact; it is local parse-progress state, not authoritative data. A brand-
+-- new table like turn_durations: created by this idempotent SCHEMA replay, no
+-- migrate_schema entry needed.
+CREATE TABLE IF NOT EXISTS scan_progress (
+    file_path        TEXT PRIMARY KEY,          -- absolute session-log path
+    last_modified    INTEGER NOT NULL,          -- mtime in nanos since UNIX_EPOCH
+    last_line_offset INTEGER NOT NULL DEFAULT 0 -- 1-based line no last fully processed (0 = none)
+);

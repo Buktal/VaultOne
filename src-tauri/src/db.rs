@@ -19,6 +19,7 @@ use crate::model::{
     UsageLogRow, UsageRecord, UsageStats,
 };
 use crate::pricing::{ModelPricing, PricingBook};
+use crate::providers::{FileCursor, ScanProgress, ScanProgressDelta};
 
 /// Schema DDL (ADR-0002 / 0004 / 0007). `IF NOT EXISTS` ⇒ idempotent migration.
 pub const SCHEMA: &str = include_str!("db_schema.sql");
@@ -224,15 +225,16 @@ impl Store {
     }
 
     /// Insert per-turn durations, deduping by uuid (INSERT OR IGNORE). Separate
-    /// grain from per-call usage_records. Returns the number of rows inserted.
-    pub fn ingest_turn_durations(&self, tds: &[TurnDuration]) -> AppResult<usize> {
+    /// grain from per-call usage_records. Returns the newly inserted subset
+    /// (mirrors `ingest`) so only new rows are appended to the JSONL Artifact.
+    pub fn ingest_turn_durations(&self, tds: &[TurnDuration]) -> AppResult<Vec<TurnDuration>> {
         if tds.is_empty() {
-            return Ok(0);
+            return Ok(Vec::new());
         }
         let conn = self.conn.lock().expect("db mutex poisoned");
-        let mut inserted = 0usize;
+        let mut inserted = Vec::new();
         for td in tds {
-            inserted += conn.execute(
+            let n = conn.execute(
                 "INSERT OR IGNORE INTO turn_durations
                  (uuid, timestamp, day, device_id, duration_ms)
                  VALUES (?1,?2,?3,?4,?5)",
@@ -244,8 +246,54 @@ impl Store {
                     td.duration_ms as i64
                 ],
             )?;
+            if n > 0 {
+                inserted.push(td.clone());
+            }
         }
         Ok(inserted)
+    }
+
+    /// Load all incremental scan cursors (ADR-0013). Empty on a fresh/cleared
+    /// DB ⇒ the next collect is a full scan (safe fallback — the ledger dedups).
+    pub fn load_scan_progress(&self) -> AppResult<ScanProgress> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt =
+            conn.prepare("SELECT file_path, last_modified, last_line_offset FROM scan_progress")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                FileCursor {
+                    last_modified: r.get::<_, i64>(1)?,
+                    last_line_offset: r.get::<_, i64>(2)?,
+                },
+            ))
+        })?;
+        let mut map = ScanProgress::new();
+        for row in rows {
+            let (path, cursor) = row?;
+            map.insert(path, cursor);
+        }
+        Ok(map)
+    }
+
+    /// Bulk UPSERT incremental scan cursors (ADR-0013). Called AFTER a
+    /// successful ingest so the cursor never advances past un-ingested rows.
+    pub fn save_scan_progress(&self, delta: &ScanProgressDelta) -> AppResult<()> {
+        if delta.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn.prepare(
+            "INSERT INTO scan_progress (file_path, last_modified, last_line_offset)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(file_path) DO UPDATE SET
+               last_modified = excluded.last_modified,
+               last_line_offset = excluded.last_line_offset",
+        )?;
+        for (path, cursor) in delta {
+            stmt.execute(params![path, cursor.last_modified, cursor.last_line_offset])?;
+        }
+        Ok(())
     }
 
     /// Rebill zero-cost rows whose model now has a price (ADR-0007: freeze +
@@ -1038,5 +1086,77 @@ mod tests {
         let stats = s.query_stats(&UsageFilter::default()).unwrap();
         assert_eq!(stats.turn_count, 2);
         assert!((stats.avg_turn_duration_ms - 150_000.0).abs() < 1e-9);
+    }
+
+    // ---- incremental scan cursors (ADR-0013) ----
+
+    #[test]
+    fn scan_progress_save_load_roundtrip() {
+        let s = mem();
+        let mut delta = ScanProgressDelta::new();
+        delta.insert(
+            "C:/a.jsonl".into(),
+            FileCursor {
+                last_modified: 1_000,
+                last_line_offset: 5,
+            },
+        );
+        delta.insert(
+            "C:/b.jsonl".into(),
+            FileCursor {
+                last_modified: 2_000,
+                last_line_offset: 10,
+            },
+        );
+        s.save_scan_progress(&delta).unwrap();
+        let loaded = s.load_scan_progress().unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded.get("C:/a.jsonl").unwrap().last_line_offset, 5);
+        assert_eq!(loaded.get("C:/b.jsonl").unwrap().last_modified, 2_000);
+    }
+
+    #[test]
+    fn scan_progress_upsert_overwrites_on_conflict() {
+        let s = mem();
+        let mut delta = ScanProgressDelta::new();
+        delta.insert(
+            "C:/a.jsonl".into(),
+            FileCursor {
+                last_modified: 1,
+                last_line_offset: 5,
+            },
+        );
+        s.save_scan_progress(&delta).unwrap();
+        // Same path, advanced cursor — UPSERT must overwrite, not duplicate.
+        delta.insert(
+            "C:/a.jsonl".into(),
+            FileCursor {
+                last_modified: 2,
+                last_line_offset: 10,
+            },
+        );
+        s.save_scan_progress(&delta).unwrap();
+        let loaded = s.load_scan_progress().unwrap();
+        assert_eq!(loaded.len(), 1, "upsert overwrites, not inserts");
+        let c = loaded.get("C:/a.jsonl").unwrap();
+        assert_eq!(c.last_modified, 2);
+        assert_eq!(c.last_line_offset, 10);
+    }
+
+    #[test]
+    fn scan_progress_load_empty_on_fresh_db() {
+        let s = mem();
+        assert!(
+            s.load_scan_progress().unwrap().is_empty(),
+            "fresh DB has no cursors ⇒ first collect is a full scan"
+        );
+    }
+
+    #[test]
+    fn scan_progress_save_empty_delta_is_noop() {
+        let s = mem();
+        let delta = ScanProgressDelta::new();
+        s.save_scan_progress(&delta).unwrap();
+        assert!(s.load_scan_progress().unwrap().is_empty());
     }
 }
