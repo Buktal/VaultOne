@@ -32,8 +32,8 @@ export function DataFreshness() {
   return (
     <div className="flex items-center gap-2 text-xs">
       <span className="relative flex size-1.5">
-        <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-        <span className="relative inline-flex size-1.5 rounded-full bg-emerald-400" />
+        <span className="absolute inline-flex size-full animate-ping rounded-full bg-accent-brand opacity-75" />
+        <span className="relative inline-flex size-1.5 rounded-full bg-accent-brand" />
       </span>
       <span className="text-muted-foreground">
         <span>

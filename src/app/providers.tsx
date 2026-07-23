@@ -13,12 +13,20 @@ import { Provider } from "react-redux"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import "@/i18n"
+import { useSkinEffect } from "@/hooks/use-skin"
 import { LanguageSync } from "@/i18n/LanguageSync"
 
 import { CloseRequestedDialog } from "./close-requested-dialog"
 import { vaultApi } from "./store/api"
 import { setMode } from "./store/slices/viewSlice"
 import { store } from "./store/store"
+
+/** Reflects the persisted color skin onto <html data-skin> (multi-skin
+ *  theming). Must live inside the Redux <Provider> — it reads prefs. */
+function SkinEffect() {
+  useSkinEffect()
+  return null
+}
 
 export function AppProviders({ children }: { children: ReactNode }) {
   // ADR-0005 event-driven refresh: Rust emits `usage_changed` after writing the
@@ -48,6 +56,7 @@ export function AppProviders({ children }: { children: ReactNode }) {
   return (
     <Provider store={store}>
       <LanguageSync />
+      <SkinEffect />
       <ThemeProvider
         attribute="class"
         defaultTheme="dark"

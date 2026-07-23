@@ -15,6 +15,7 @@
 // value via a SelectValue render function; without it Base UI shows the raw
 // value ("10" / "300" / "zh"), not the localized "10 秒" / "5 分钟" / "中文".
 
+import { Check } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 import { UpdateControl } from "@/app/shell/update-card"
@@ -24,7 +25,9 @@ import {
   useSetCloseBehaviorMutation,
   useSetCollectIntervalMutation,
   useSetLanguageMutation,
+  useSetLightweightExpandMutation,
   useSetPushIntervalMutation,
+  useSetSkinMutation,
 } from "@/app/store/api"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
@@ -36,7 +39,13 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { LANGUAGES } from "@/i18n/languages"
-import type { CloseBehavior, Language } from "@/types/preferences"
+import { cn } from "@/lib/utils"
+import type {
+  CloseBehavior,
+  Language,
+  LightweightExpand,
+  Skin,
+} from "@/types/preferences"
 
 /** Pull a human-readable reason out of an RTK Query mutation error. */
 function describeError(e: unknown, fallback: string): string {
@@ -56,11 +65,44 @@ const CLOSE_OPTIONS: ReadonlyArray<[CloseBehavior, string]> = [
   ["quit", "common.quit"],
 ]
 
+/** Lightweight half-icon expand trigger (ADR-0015): click (default) or hover. */
+const EXPAND_OPTIONS: ReadonlyArray<[LightweightExpand, string]> = [
+  ["click", "settings.general.lightweightExpandClick"],
+  ["hover", "settings.general.lightweightExpandHover"],
+]
+
 /** Collect presets (ADR-0014): seconds-level, local-only. */
 const COLLECT_OPTIONS: ReadonlyArray<number> = [10, 30, 60]
 
 /** Push presets (ADR-0014): minutes-level, Git, Synced only. */
 const PUSH_OPTIONS: ReadonlyArray<number> = [300, 600, 900, 1800, 3600]
+
+/**
+ * Color skins (multi-skin theming). Chromatic swatches read straight from CSS
+ * — each carries `data-skin={value}` and uses `var(--brand)`, so the swatch IS
+ * the live accent from index.css (single source: edit a [data-skin] block and
+ * the swatch follows, no TS sync). `neutral` is the exception: its grey is the
+ * :root/.dark default with NO [data-skin] block, so var(--brand) would inherit
+ * the active skin's brand on <html> — it uses a literal `brand` fill instead.
+ * The selection check follows the MODE, not the skin: black in light, white in
+ * dark, with a dark drop-shadow so it reads on any swatch fill. Names are
+ * English literals (no i18n); `neutral` first as the default.
+ */
+const SKINS: ReadonlyArray<{
+  value: Skin
+  label: string
+  brand?: string
+}> = [
+  {
+    value: "neutral",
+    label: "Neutral",
+    brand: "#6b7280",
+  },
+  { value: "sage", label: "Sage" },
+  { value: "azure", label: "Azure" },
+  { value: "crimson", label: "Crimson" },
+  { value: "mauve", label: "Mauve" },
+]
 
 export function GeneralCard() {
   const { t } = useTranslation()
@@ -68,12 +110,15 @@ export function GeneralCard() {
   const { data: info } = useAppInfoQuery()
   const synced = info?.mode === "synced"
   const [setLanguage, { isLoading: savingLang }] = useSetLanguageMutation()
+  const [setLightweightExpand, { isLoading: savingExpand }] =
+    useSetLightweightExpandMutation()
   const [setCloseBehavior, { isLoading: savingClose }] =
     useSetCloseBehaviorMutation()
   const [setCollectInterval, { isLoading: savingCollect }] =
     useSetCollectIntervalMutation()
   const [setPushInterval, { isLoading: savingPush }] =
     useSetPushIntervalMutation()
+  const [setSkin, { isLoading: savingSkin }] = useSetSkinMutation()
 
   return (
     <div className="flex flex-col">
@@ -85,6 +130,53 @@ export function GeneralCard() {
         </p>
       ) : null}
 
+      <SettingRow
+        label={t("settings.general.skin")}
+        hint={t("settings.general.skinHint")}
+      >
+        <div className="flex gap-1.5">
+          {SKINS.map((s) => {
+            const selected = prefs?.skin === s.value
+            return (
+              <button
+                key={s.value}
+                type="button"
+                title={s.label}
+                aria-label={s.label}
+                aria-pressed={selected}
+                data-skin={s.brand ? undefined : s.value}
+                disabled={savingSkin}
+                onClick={async () => {
+                  const r = await setSkin(s.value)
+                  if ("error" in r)
+                    toast.error(t("settings.toast.saveFailed"), {
+                      description: describeError(
+                        r.error,
+                        t("common.unknownReason"),
+                      ),
+                    })
+                }}
+                className={cn(
+                  "flex h-8 w-8 items-center justify-center rounded-md border-2 transition",
+                  selected
+                    ? "border-foreground"
+                    : "border-transparent hover:border-border",
+                )}
+                style={{ background: s.brand ?? "var(--brand)" }}
+              >
+                {selected ? (
+                  <Check
+                    className="size-3.5 text-black dark:text-white"
+                    style={{
+                      filter: "drop-shadow(0 0 1px rgba(0, 0, 0, 0.55))",
+                    }}
+                  />
+                ) : null}
+              </button>
+            )
+          })}
+        </div>
+      </SettingRow>
       <SettingRow
         label={t("settings.general.language")}
         hint={t("settings.general.languageHint")}
@@ -196,6 +288,36 @@ export function GeneralCard() {
               disabled={savingClose}
               onClick={async () => {
                 const r = await setCloseBehavior(value)
+                if ("error" in r)
+                  toast.error(t("settings.toast.saveFailed"), {
+                    description: describeError(
+                      r.error,
+                      t("common.unknownReason"),
+                    ),
+                  })
+              }}
+            >
+              {t(key)}
+            </Button>
+          ))}
+        </div>
+      </SettingRow>
+
+      <SettingRow
+        label={t("settings.general.lightweightExpand")}
+        hint={t("settings.general.lightweightExpandHint")}
+      >
+        <div className="flex flex-wrap justify-end gap-2">
+          {EXPAND_OPTIONS.map(([value, key]) => (
+            <Button
+              key={value}
+              size="sm"
+              variant={
+                prefs?.lightweight_expand === value ? "default" : "outline"
+              }
+              disabled={savingExpand}
+              onClick={async () => {
+                const r = await setLightweightExpand(value)
                 if ("error" in r)
                   toast.error(t("settings.toast.saveFailed"), {
                     description: describeError(

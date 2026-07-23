@@ -19,7 +19,13 @@ import type {
   VerifyReport,
 } from "@/types/generated/bindings"
 import { commands } from "@/types/generated/bindings"
-import type { CloseBehavior, Language, Preferences } from "@/types/preferences"
+import type {
+  CloseBehavior,
+  Language,
+  LightweightExpand,
+  Preferences,
+  Skin,
+} from "@/types/preferences"
 
 /**
  * RTK Query data layer over the typed Tauri command contract.
@@ -260,6 +266,18 @@ export const vaultApi = createApi({
       }),
       invalidatesTags: ["App"],
     }),
+    setLightweightExpand: b.mutation<Preferences, LightweightExpand>({
+      queryFn: async (mode) => ({
+        data: await run(commands.setLightweightExpand(mode)),
+      }),
+      invalidatesTags: ["App"],
+    }),
+    setSkin: b.mutation<Preferences, Skin>({
+      queryFn: async (skin) => ({
+        data: await run(commands.setSkin(skin)),
+      }),
+      invalidatesTags: ["App"],
+    }),
   }),
 })
 
@@ -294,6 +312,8 @@ export const {
   useSetCollectIntervalMutation,
   useSetPushIntervalMutation,
   useSetLanguageMutation,
+  useSetLightweightExpandMutation,
+  useSetSkinMutation,
 } = vaultApi
 
 export type VaultApi = typeof vaultApi

@@ -80,6 +80,52 @@ pub enum CloseBehavior {
     Quit,
 }
 
+/// How the lightweight glance card's tucked half-icon expands (ADR-0015).
+/// Crosses the Rust→JS boundary; Rust itself doesn't act on it (a pure frontend
+/// interaction), but it rides `ConfigData` so every Settings preference lives in
+/// one place.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum LightweightExpand {
+    /// Click the half-icon to expand (default — won't fire on a stray hover).
+    #[default]
+    Click,
+    /// Hover the half-icon to expand.
+    Hover,
+}
+
+/// Color skin for multi-skin theming (ADR-0013 token-first). Serialized
+/// snake_case; `neutral` is the default and maps to NO `data-skin` attribute on
+/// `<html>` (the :root/.dark values in src/index.css ARE the Neutral palette —
+/// pure greyscale chrome over a default multi-hue chart). Per-device, not synced
+/// (config.json never enters the repo). The four chromatic skins each override
+/// `--brand` (+ `--brand-strong`) and the button-foreground vars in index.css;
+/// everything else holds. The frontend applies it; Rust only stores it.
+///
+/// Back-compat: the legacy snake_case names (`pixso`/`cuiwei`/`tingwu`/
+/// `yanzhi`/`zizi`) are accepted as aliases, so an older config.json lands on
+/// the closest new skin instead of failing to deserialize — `pixso` (the old
+/// default) → `Neutral` (the new default); the rest map by hue family.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Skin {
+    #[default]
+    #[serde(alias = "pixso")]
+    Neutral,
+    #[serde(alias = "cuiwei")]
+    Sage,
+    #[serde(alias = "tingwu")]
+    Azure,
+    #[serde(alias = "yanzhi")]
+    Crimson,
+    #[serde(alias = "zizi")]
+    Mauve,
+}
+
 /// Default background-collect interval in seconds (ADR-0014: 30 s — decoupled
 /// from the push cadence, which has its own interval).
 ///
@@ -144,6 +190,14 @@ pub struct ConfigData {
     /// (config.json never enters the repo).
     #[serde(default)]
     pub language: Language,
+    /// How the lightweight half-icon expands (ADR-0015). Frontend-only behavior;
+    /// Rust doesn't read it, but it lives here so all Settings prefs are unified.
+    #[serde(default)]
+    pub lightweight_expand: LightweightExpand,
+    /// Color skin (multi-skin theming). Frontend-only effect; Rust doesn't act
+    /// on it, but it rides ConfigData so every Settings preference is unified.
+    #[serde(default)]
+    pub skin: Skin,
 }
 
 impl Default for ConfigData {
@@ -161,6 +215,8 @@ impl Default for ConfigData {
             collect_interval_secs: default_collect_interval_secs(),
             push_interval_secs: default_push_interval_secs(),
             language: Language::En,
+            lightweight_expand: LightweightExpand::Click,
+            skin: Skin::Neutral,
         }
     }
 }

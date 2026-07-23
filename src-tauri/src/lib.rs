@@ -60,9 +60,12 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::set_collect_interval,
         commands::set_push_interval,
         commands::set_language,
+        commands::set_lightweight_expand,
+        commands::set_skin,
         commands::verify_sync_repo,
         commands::confirm_close,
         window_geom::dock_window_right,
+        window_geom::center_window,
     ])
 }
 

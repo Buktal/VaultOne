@@ -1,35 +1,91 @@
-// Lightweight glance card (ADR-0015): the same main window morphed into a
-// small, always-on-top, edge-dockable "today" snapshot. The body is the SAME
-// <TokenHero> as the dashboard's right column (1:1, today口径), so the glance
-// and the dashboard read as one system — no hand-rolled duplicate.
+// Lightweight glance card (ADR-0018): the same main window morphs into a small,
+// always-on-top, right-edge-docked "today" snapshot. Two sub-shapes (both
+// docked flush-right via the Rust `dock_window_right` command — one atomic
+// SetWindowPos of the OUTER rect; see lightweight-geometry.ts):
+//   - tucked: a mini-bar that ALWAYS shows today's token total — the "glance"
+//     value. Layout [number][→大]. The whole bar drags via startDragging() on
+//     the root (a JS call, NOT data-tauri-drag-region, so it doesn't swallow the
+//     number's click): a press that moves >4px starts a window drag, a press
+//     that doesn't is a click → expand. →大 stops propagation so it stays a
+//     pure click.
+//   - expanded: a 1:1 reuse of the dashboard's right-column anchor (TokenHero,
+//     ADR-0011) fed today's filter — the "中窗口" mirrors the 右中 card exactly,
+//     only adding a drag/title bar with expand + shrink controls.
 //
-// The window height adapts to the content: a ResizeObserver measures the root
-// and reports it via setCardHeight, and the hook sizes the window to fit (width
-// is fixed at CARD_WIDTH). The single "expand to full" affordance is a small
-// icon in the drag bar (mirrors the title-bar CtrlButton treatment); the
-// full-mode title bar is unchanged.
+// Three "windows", each reachable from the others: full ⇄ expanded ⇄ tucked,
+// plus tucked → full directly via its [→大] button. Phase is store-driven
+// (viewSlice.lightweightPhase); this card just renders it.
 //
-// Expand/collapse is a top-right → bottom-left clip-path reveal driven by
-// useLightweightTuck's phase (.lw-reveal-in / .lw-reveal-out in index.css).
+// Icon language (per target shape, consistent across windows): →tucked =
+// AlignHorizontalJustifyEnd (a strip pinned to the right edge); →full = Airplay
+// (cast to the big screen). →中 keeps PictureInPicture2 in the title bar.
+//
+// Button ORDER everywhere is target-size descending (大→中→小): each window
+// lists its switch targets biggest-first. So the expanded title bar is
+// [全→大][缩→小], not the reverse.
+//
+// Data: tucked reads total_tokens from a useStatsQuery(todayFilter). Expanded
+// reuses <TokenHero filter={todayFilter}/> — which runs its own stats + trend
+// queries — so the snapshot is identical to the dashboard from one source.
 // Refresh is free: providers.tsx invalidates the Usage tags on every
-// `usage_changed`, and TokenHero's query matches the dashboard's "today".
+// `usage_changed`, and the filter matches the dashboard's "today" preset.
 
+import { getCurrentWindow } from "@tauri-apps/api/window"
 import dayjs from "dayjs"
-import { Maximize2 } from "lucide-react"
-import { useEffect, useMemo, useRef } from "react"
+import { Airplay, AlignHorizontalJustifyEnd } from "lucide-react"
+import { type MouseEvent, useEffect, useMemo, useRef } from "react"
 import { useTranslation } from "react-i18next"
 import { useLightweightTuck } from "@/app/shell/use-lightweight-tuck"
+import { usePreferencesQuery, useStatsQuery, ZERO_STATS } from "@/app/store/api"
 import { useAppDispatch } from "@/app/store/hooks"
 import { toFilter } from "@/app/store/slices/filterSlice"
 import { setMode } from "@/app/store/slices/viewSlice"
-import { TokenHero } from "@/features/usage/components/token-hero"
-import { cn } from "@/lib/utils"
+import { formatTokens } from "@/lib/format"
+
+import { TokenHero } from "./token-hero"
+
+const appWindow = getCurrentWindow()
+/** Square of the move distance (CSS px) that distinguishes a drag from a click
+ *  on the tucked bar. 4px — small enough to feel instant, large enough that a
+ *  click's natural jitter doesn't start a drag. */
+const DRAG_THRESHOLD_SQ = 16
 
 export function LightweightCard() {
   const { t } = useTranslation()
   const dispatch = useAppDispatch()
-  const { phase, expand, setCardHeight, scheduleTuck, cancelTuck } =
-    useLightweightTuck()
+  const { phase, expand, tuck, setCardHeight } = useLightweightTuck()
+
+  // Whole-bar drag for the tucked mini-bar. startDragging() is a JS call, not
+  // data-tauri-drag-region, so it does NOT swallow the number's click — a press
+  // that moves > DRAG_THRESHOLD starts a window drag, a press that doesn't is a
+  // plain click → expand. →大 stops propagation to stay a pure click. This is
+  // why the whole bar (number + gutters) is draggable, not just a tiny grip.
+  const dragArmed = useRef(false)
+  const dragStart = useRef({ x: 0, y: 0 })
+  const dragged = useRef(false)
+  const armDrag = (e: MouseEvent) => {
+    if (e.button !== 0) return
+    dragArmed.current = true
+    dragged.current = false
+    dragStart.current = { x: e.screenX, y: e.screenY }
+  }
+  const maybeDrag = (e: MouseEvent) => {
+    if (!dragArmed.current || dragged.current) return
+    const dx = e.screenX - dragStart.current.x
+    const dy = e.screenY - dragStart.current.y
+    if (dx * dx + dy * dy > DRAG_THRESHOLD_SQ) {
+      dragged.current = true
+      dragArmed.current = false
+      void appWindow.startDragging()
+    }
+  }
+  const disarm = () => {
+    dragArmed.current = false
+  }
+  // Hover-to-expand is opt-in (ADR-0018): the default is click. When hover is
+  // chosen, the tucked number area also expands on mouse-enter.
+  const { data: prefs } = usePreferencesQuery()
+  const hoverExpand = prefs?.lightweight_expand === "hover"
 
   // 今日 · 全部设备 — reuses toFilter (local-day → UTC timestamp bounds) so the
   // 口径 is identical to the dashboard's "today" preset. Recomputed when the
@@ -47,8 +103,13 @@ export function LightweightCard() {
     [today],
   )
 
-  // Measure the card's natural height and tell the hook, so the window shrinks
-  // to fit the content (width stays fixed). Tucked is a fixed 48×48, so skip it.
+  // tucked reads total_tokens here; expanded reuses <TokenHero> which runs its
+  // own queries. ZERO_STATS keeps the first paint sane before data lands.
+  const { data: stats } = useStatsQuery(todayFilter)
+  const s = stats ?? ZERO_STATS
+
+  // Measure the expanded card's natural height and tell the hook, so the
+  // window shrinks to fit the content. Tucked is a fixed mini-bar, so skip it.
   const rootRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (phase === "tucked") return
@@ -64,73 +125,88 @@ export function LightweightCard() {
     return () => ro.disconnect()
   }, [phase, setCardHeight])
 
-  // Tucked "half-icon" (ADR-0015 灵动岛): a tiny mark docked at the right edge;
-  // hover/click expands it back to the card. size-10 (40px) in a 48×48 window
-  // → ~4px inset, visually filled (no oversized frame around the logo).
+  // Tucked mini-bar: [number] [→大]. The whole bar drags via startDragging() on
+  // the root (see armDrag/maybeDrag above) — not data-tauri-drag-region, so the
+  // number stays clickable. number is flex-1 (the big drag/click target); →大
+  // stops propagation so a press on it never starts a drag.
   if (phase === "tucked") {
     return (
-      <button
-        type="button"
-        className="bg-background flex h-screen w-screen cursor-default animate-in fade-in zoom-in-95 items-center justify-center border-0 p-0 duration-150 motion-reduce:animate-none"
-        onMouseEnter={expand}
-        onClick={expand}
-        aria-label={t("usage.lightweight.expandToday")}
+      // biome-ignore lint/a11y/noStaticElementInteractions: Tauri window drag handle — mouse-only startDragging with no keyboard equivalent; keyboard users reach the same actions via the inner buttons.
+      <div
+        onMouseDown={armDrag}
+        onMouseMove={maybeDrag}
+        onMouseUp={disarm}
+        onMouseLeave={disarm}
+        className="bg-background flex h-screen w-screen animate-in fade-in slide-in-from-right-2 cursor-grab items-stretch gap-1 overflow-hidden px-1 duration-150 motion-reduce:animate-none"
       >
-        <img
-          src="/vaultone-cream.svg"
-          alt=""
-          className="hidden dark:block size-10"
-        />
-        <img
-          src="/vaultone-ink.svg"
-          alt=""
-          className="block dark:hidden size-10"
-        />
-      </button>
+        <button
+          type="button"
+          onMouseEnter={hoverExpand ? expand : undefined}
+          onClick={() => {
+            if (!dragged.current) expand()
+          }}
+          aria-label={t("usage.lightweight.expandToday")}
+          className="flex flex-1 cursor-pointer items-center justify-center border-0 bg-transparent p-0"
+        >
+          <span className="font-semibold tabular-nums text-base leading-none">
+            {formatTokens(s.total_tokens)}
+          </span>
+        </button>
+        <button
+          type="button"
+          aria-label={t("usage.lightweight.expandFull")}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => dispatch(setMode("full"))}
+          className="text-muted-foreground hover:bg-muted hover:text-foreground inline-flex w-6 shrink-0 items-center justify-center rounded-md my-0.5"
+        >
+          <Airplay className="size-3.5" />
+        </button>
+      </div>
     )
   }
 
-  const leaving = phase === "leaving"
   return (
     <div
-      // key changes between enter/leave so the reveal animation replays even
-      // when the same card instance would otherwise stay mounted (e.g. a re-
-      // enter mid-collapse). No h-screen: the root sizes to its content and the
-      // hook matches the window height to it.
-      key={leaving ? "leave" : "in"}
       ref={rootRef}
       role="dialog"
       aria-label={t("usage.lightweight.todayGlance")}
-      onMouseEnter={cancelTuck}
-      onMouseLeave={scheduleTuck}
-      className={cn(
-        "bg-background text-foreground flex w-screen flex-col overflow-hidden",
-        // Content wipes in from the top-right toward the bottom-left (the card
-        // grows left/down from the right-edge dock). Opaque window ⇒ the body
-        // bg fills the new size instantly; the clip then renders content over it.
-        leaving ? "lw-reveal-out" : "lw-reveal-in",
-      )}
+      className="bg-background text-foreground lw-reveal-in flex w-screen flex-col overflow-hidden"
     >
-      {/* Drag region + a single expand-to-full icon. The button has no
-          data-tauri-drag-region so it stays clickable inside the drag bar. */}
+      {/* Drag region + two actions, ordered 大→小 (biggest target first): expand
+          to full, then shrink to tucked. The buttons have no
+          data-tauri-drag-region so they stay clickable inside the drag bar.
+          Airplay = cast to the full dashboard; AlignHorizontalJustifyEnd = the
+          right-pinned mini-bar that shrink lands on. */}
       <div
         data-tauri-drag-region
         className="text-muted-foreground flex h-8 shrink-0 items-center justify-between ps-3 pe-1 text-xs select-none"
       >
         <span data-tauri-drag-region>{t("usage.lightweight.header")}</span>
-        <button
-          type="button"
-          aria-label={t("usage.lightweight.expandFull")}
-          onClick={() => dispatch(setMode("full"))}
-          className="text-muted-foreground hover:bg-muted hover:text-foreground inline-flex size-7 items-center justify-center rounded-md transition-colors"
-        >
-          <Maximize2 className="size-3.5" />
-        </button>
+        <div className="flex items-center">
+          <button
+            type="button"
+            aria-label={t("usage.lightweight.expandFull")}
+            onClick={() => dispatch(setMode("full"))}
+            className="text-muted-foreground hover:bg-muted hover:text-foreground inline-flex size-7 items-center justify-center rounded-md transition-colors"
+          >
+            <Airplay className="size-3.5" />
+          </button>
+          <button
+            type="button"
+            aria-label={t("usage.lightweight.tuck")}
+            onClick={tuck}
+            className="text-muted-foreground hover:bg-muted hover:text-foreground inline-flex size-7 items-center justify-center rounded-md transition-colors"
+          >
+            <AlignHorizontalJustifyEnd className="size-3.5" />
+          </button>
+        </div>
       </div>
 
-      {/* 1:1 with the dashboard's right-column TokenHero (today口径). p-2 wraps
-          it with a little outer padding; height is measured, not fixed. */}
-      <div className="p-2">
+      {/* The dashboard's 右中 card, unchanged. p-3 insets it off the window's
+          square edge so the card's rounded corners don't sit flush against a
+          square window border — the full dashboard gives the same card the
+          same breathing room via the main-area padding/gap. */}
+      <div className="p-3">
         <TokenHero filter={todayFilter} />
       </div>
     </div>

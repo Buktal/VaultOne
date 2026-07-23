@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use tauri::{Emitter, Manager, State};
 
-use crate::config::{CloseBehavior, ConfigStore, Language};
+use crate::config::{CloseBehavior, ConfigStore, Language, LightweightExpand, Skin};
 use crate::db::Store;
 use crate::error::{AppError, AppResult};
 use crate::ingest::{self, IngestReport};
@@ -447,6 +447,8 @@ pub struct Preferences {
     pub collect_interval_secs: u32,
     pub push_interval_secs: u32,
     pub language: Language,
+    pub lightweight_expand: LightweightExpand,
+    pub skin: Skin,
 }
 
 fn to_preferences(cfg: &crate::config::ConfigData) -> Preferences {
@@ -455,6 +457,8 @@ fn to_preferences(cfg: &crate::config::ConfigData) -> Preferences {
         collect_interval_secs: cfg.collect_interval_secs,
         push_interval_secs: cfg.push_interval_secs,
         language: cfg.language,
+        lightweight_expand: cfg.lightweight_expand,
+        skin: cfg.skin,
     }
 }
 
@@ -514,6 +518,29 @@ pub fn set_language(
             let _ = tray.set_menu(Some(menu));
         }
     }
+    Ok(to_preferences(&cfg))
+}
+
+/// Persist the lightweight half-icon expand trigger (ADR-0015). Pure frontend
+/// behavior; Rust doesn't read it back, but it rides ConfigData for unity.
+#[tauri::command]
+#[specta::specta]
+pub fn set_lightweight_expand(
+    state: State<'_, AppState>,
+    lightweight_expand: LightweightExpand,
+) -> AppResult<Preferences> {
+    let cfg = state
+        .config
+        .update(|c| c.lightweight_expand = lightweight_expand)?;
+    Ok(to_preferences(&cfg))
+}
+
+/// Persist the color skin (multi-skin theming). Pure frontend effect — Rust
+/// never reads it back; it rides ConfigData for unity with the other prefs.
+#[tauri::command]
+#[specta::specta]
+pub fn set_skin(state: State<'_, AppState>, skin: Skin) -> AppResult<Preferences> {
+    let cfg = state.config.update(|c| c.skin = skin)?;
     Ok(to_preferences(&cfg))
 }
 

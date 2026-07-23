@@ -69,27 +69,37 @@ export const commands = {
 	 */
 	fetchLitellmPricing: () => typedError<number, AppError>(__TAURI_INVOKE("fetch_litellm_pricing")),
 	/**  Read the current preferences for the Settings card. */
-	getPreferences: () => typedError<Preferences, AppError>(__TAURI_INVOKE("get_preferences")),
+	getPreferences: () => typedError<Preferences_Serialize, AppError>(__TAURI_INVOKE("get_preferences")),
 	/**  Persist the window-close behavior (ADR-0012). */
-	setCloseBehavior: (closeBehavior: CloseBehavior) => typedError<Preferences, AppError>(__TAURI_INVOKE("set_close_behavior", { closeBehavior })),
+	setCloseBehavior: (closeBehavior: CloseBehavior) => typedError<Preferences_Serialize, AppError>(__TAURI_INVOKE("set_close_behavior", { closeBehavior })),
 	/**
 	 *  Persist the background-collect interval (seconds, clamped to [10, 3600];
 	 *  ADR-0014). Pure-local cadence — does not touch the network.
 	 */
-	setCollectInterval: (seconds: number) => typedError<Preferences, AppError>(__TAURI_INVOKE("set_collect_interval", { seconds })),
+	setCollectInterval: (seconds: number) => typedError<Preferences_Serialize, AppError>(__TAURI_INVOKE("set_collect_interval", { seconds })),
 	/**
 	 *  Persist the push-to-sync interval (seconds, clamped to [60, 7200]; Synced
 	 *  only; ADR-0014). Decoupled from collect so the Git history grows at this
 	 *  rate, not the (shorter) collect rate.
 	 */
-	setPushInterval: (seconds: number) => typedError<Preferences, AppError>(__TAURI_INVOKE("set_push_interval", { seconds })),
+	setPushInterval: (seconds: number) => typedError<Preferences_Serialize, AppError>(__TAURI_INVOKE("set_push_interval", { seconds })),
 	/**
 	 *  Persist the display language (ADR-0016) and rebuild the tray menu so the
 	 *  "Quit" item follows the new language immediately. The tray item is the only
 	 *  user-facing Rust string; all other UI text is frontend i18n driven by this
 	 *  same preference.
 	 */
-	setLanguage: (language: Language) => typedError<Preferences, AppError>(__TAURI_INVOKE("set_language", { language })),
+	setLanguage: (language: Language) => typedError<Preferences_Serialize, AppError>(__TAURI_INVOKE("set_language", { language })),
+	/**
+	 *  Persist the lightweight half-icon expand trigger (ADR-0015). Pure frontend
+	 *  behavior; Rust doesn't read it back, but it rides ConfigData for unity.
+	 */
+	setLightweightExpand: (lightweightExpand: LightweightExpand) => typedError<Preferences_Serialize, AppError>(__TAURI_INVOKE("set_lightweight_expand", { lightweightExpand })),
+	/**
+	 *  Persist the color skin (multi-skin theming). Pure frontend effect — Rust
+	 *  never reads it back; it rides ConfigData for unity with the other prefs.
+	 */
+	setSkin: (skin: Skin_Deserialize) => typedError<Preferences_Serialize, AppError>(__TAURI_INVOKE("set_skin", { skin })),
 	/**
 	 *  Probe a sync repo + PAT for reachability (ADR-0005「测试连接」). Pass explicit
 	 *  values to validate BEFORE binding, or `None`/`None` to re-check the already-
@@ -117,6 +127,15 @@ export const commands = {
 	 *  Windows, but the crate still has to compile elsewhere for dev/CI).
 	 */
 	dockWindowRight: (clientLogicalW: number | null, clientLogicalH: number | null, logicalY: number | null, insetLogical: number | null) => typedError<number | null, string>(__TAURI_INVOKE("dock_window_right", { clientLogicalW, clientLogicalH, logicalY, insetLogical })),
+	/**
+	 *  Center the window on its current monitor at a given CLIENT size, in one
+	 *  atomic `SetWindowPos` (size + position together). Used by the lightweight →
+	 *  full restore. Like `dock_window_right`, the single `SetWindowPos` avoids the
+	 *  `[new size, old pos]` straddle that would flip `MonitorFromWindow` to a
+	 *  neighbour of different DPI and lock WebView2 to the wrong rasterization
+	 *  scale (content renders too small on high-DPI multi-monitor setups).
+	 */
+	centerWindow: (clientLogicalW: number | null, clientLogicalH: number | null) => typedError<null, string>(__TAURI_INVOKE("center_window", { clientLogicalW, clientLogicalH })),
 };
 
 /* Types */
@@ -240,6 +259,18 @@ export type IngestReport = {
  */
 export type Language = "en" | "zh" | "ja";
 
+/**
+ *  How the lightweight glance card's tucked half-icon expands (ADR-0015).
+ *  Crosses the Rust→JS boundary; Rust itself doesn't act on it (a pure frontend
+ *  interaction), but it rides `ConfigData` so every Settings preference lives in
+ *  one place.
+ */
+export type LightweightExpand = 
+/**  Click the half-icon to expand (default — won't fire on a stray hover). */
+"click" | 
+/**  Hover the half-icon to expand. */
+"hover";
+
 /**  Query params for the request-log endpoint (adds paging to `UsageFilter`). */
 export type LogsQuery = {
 	filter: UsageFilter,
@@ -256,11 +287,26 @@ export type ModelStatsRow = {
 };
 
 /**  User-tunable preferences surfaced in the Settings「通用」card (ADR-0012). */
-export type Preferences = {
+export type Preferences = Preferences_Serialize | Preferences_Deserialize;
+
+/**  User-tunable preferences surfaced in the Settings「通用」card (ADR-0012). */
+export type Preferences_Deserialize = {
 	close_behavior: CloseBehavior,
 	collect_interval_secs: number,
 	push_interval_secs: number,
 	language: Language,
+	lightweight_expand: LightweightExpand,
+	skin: Skin_Deserialize,
+};
+
+/**  User-tunable preferences surfaced in the Settings「通用」card (ADR-0012). */
+export type Preferences_Serialize = {
+	close_behavior: CloseBehavior,
+	collect_interval_secs: number,
+	push_interval_secs: number,
+	language: Language,
+	lightweight_expand: LightweightExpand,
+	skin: Skin_Serialize,
 };
 
 /**
@@ -283,6 +329,54 @@ export type PricingEntry = {
 
 /**  Run mode: default Standalone; Synced once a repo is configured. */
 export type RunMode = "standalone" | "synced";
+
+/**
+ *  Color skin for multi-skin theming (ADR-0013 token-first). Serialized
+ *  snake_case; `neutral` is the default and maps to NO `data-skin` attribute on
+ *  `<html>` (the :root/.dark values in src/index.css ARE the Neutral palette —
+ *  pure greyscale chrome over a default multi-hue chart). Per-device, not synced
+ *  (config.json never enters the repo). The four chromatic skins each override
+ *  `--brand` (+ `--brand-strong`) and the button-foreground vars in index.css;
+ *  everything else holds. The frontend applies it; Rust only stores it.
+ * 
+ *  Back-compat: the legacy snake_case names (`pixso`/`cuiwei`/`tingwu`/
+ *  `yanzhi`/`zizi`) are accepted as aliases, so an older config.json lands on
+ *  the closest new skin instead of failing to deserialize — `pixso` (the old
+ *  default) → `Neutral` (the new default); the rest map by hue family.
+ */
+export type Skin = Skin_Serialize | Skin_Deserialize;
+
+/**
+ *  Color skin for multi-skin theming (ADR-0013 token-first). Serialized
+ *  snake_case; `neutral` is the default and maps to NO `data-skin` attribute on
+ *  `<html>` (the :root/.dark values in src/index.css ARE the Neutral palette —
+ *  pure greyscale chrome over a default multi-hue chart). Per-device, not synced
+ *  (config.json never enters the repo). The four chromatic skins each override
+ *  `--brand` (+ `--brand-strong`) and the button-foreground vars in index.css;
+ *  everything else holds. The frontend applies it; Rust only stores it.
+ * 
+ *  Back-compat: the legacy snake_case names (`pixso`/`cuiwei`/`tingwu`/
+ *  `yanzhi`/`zizi`) are accepted as aliases, so an older config.json lands on
+ *  the closest new skin instead of failing to deserialize — `pixso` (the old
+ *  default) → `Neutral` (the new default); the rest map by hue family.
+ */
+export type Skin_Deserialize = "neutral" | "pixso" | "sage" | "cuiwei" | "azure" | "tingwu" | "crimson" | "yanzhi" | "mauve" | "zizi";
+
+/**
+ *  Color skin for multi-skin theming (ADR-0013 token-first). Serialized
+ *  snake_case; `neutral` is the default and maps to NO `data-skin` attribute on
+ *  `<html>` (the :root/.dark values in src/index.css ARE the Neutral palette —
+ *  pure greyscale chrome over a default multi-hue chart). Per-device, not synced
+ *  (config.json never enters the repo). The four chromatic skins each override
+ *  `--brand` (+ `--brand-strong`) and the button-foreground vars in index.css;
+ *  everything else holds. The frontend applies it; Rust only stores it.
+ * 
+ *  Back-compat: the legacy snake_case names (`pixso`/`cuiwei`/`tingwu`/
+ *  `yanzhi`/`zizi`) are accepted as aliases, so an older config.json lands on
+ *  the closest new skin instead of failing to deserialize — `pixso` (the old
+ *  default) → `Neutral` (the new default); the rest map by hue family.
+ */
+export type Skin_Serialize = "neutral" | "sage" | "azure" | "crimson" | "mauve";
 
 /**  Outcome of one sync round, surfaced to the UI. */
 export type SyncReport = {

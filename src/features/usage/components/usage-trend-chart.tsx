@@ -1,7 +1,15 @@
-// Usage trend chart (ADR-0011, token-first): stacked area of the four token
-// buckets (input / output / cache creation / cache read). The stacked total
-// IS total consumption — the chart shows how each day's tokens compose.
-// Single token axis; cost is demoted to the KPI strip (token-first).
+// Usage trend chart (ADR-0011, amended): multi-line chart of the four token
+// buckets (input / output / cache creation / cache read). Each bucket is its
+// own INDEPENDENT line with a solid dot per data point — no stacked area, no
+// fill under the line. The point is to compare each bucket's trend over time,
+// not to read cumulative composition (the stacked-area story the original
+// ADR-0011 told; daily totals now come from the tooltip's total row + the KPI
+// strip).
+//
+// Built on the shadcn Chart primitive (ChartContainer / ChartConfig /
+// ChartLegend — see src/components/ui/chart.tsx). Colors flow straight from
+// the semantic B-tier chart tokens (--chart-input / -output / -cache-create /
+// -cache-read), so a skin swap changes the mood, never the meaning.
 //
 // NOTE: the spec's efficiency sub-charts (avg turn duration / request·turn by
 // day) need per-day turn aggregates that TrendPoint does not carry today —
@@ -10,16 +18,7 @@
 
 import dayjs from "dayjs"
 import { useTranslation } from "react-i18next"
-import {
-  Area,
-  AreaChart,
-  CartesianGrid,
-  Legend,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts"
+import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts"
 import { useTrendQuery } from "@/app/store/api"
 import { QueryState } from "@/components/query-state"
 import {
@@ -29,6 +28,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import {
+  type ChartConfig,
+  ChartContainer,
+  ChartLegend,
+  ChartLegendContent,
+  ChartTooltip,
+} from "@/components/ui/chart"
 import { formatDay, formatTokens } from "@/lib/format"
 
 import type {
@@ -43,7 +49,8 @@ type Bucket = {
   color: string
 }
 
-// Stack order bottom → top: input (largest) at the base.
+// Order matches the KPI strip / token hero: input → output → cache creation →
+// cache read. Each line keeps its hue family across skins (ADR-0013).
 const BUCKETS: Bucket[] = [
   {
     key: "input_tokens",
@@ -84,6 +91,29 @@ export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
   const bucket: TrendBucket = hourly ? "Hour" : "Day"
   const { data = [], isLoading, error } = useTrendQuery({ filter, bucket })
 
+  // ChartConfig keys MUST equal the dataKeys (input_tokens …) so the shadcn
+  // legend helper resolves label + color from payload.dataKey. stroke / dot
+  // use the bucket's own color directly (var(--chart-*)), not the
+  // ChartStyle-injected --color-<key> — keeps the source of truth in BUCKETS.
+  const chartConfig = {
+    input_tokens: {
+      label: t("usage.tokens.input"),
+      color: "var(--chart-input)",
+    },
+    output_tokens: {
+      label: t("usage.tokens.output"),
+      color: "var(--chart-output)",
+    },
+    cache_creation_tokens: {
+      label: t("usage.tokens.cacheCreation"),
+      color: "var(--chart-cache-create)",
+    },
+    cache_read_tokens: {
+      label: t("usage.tokens.cacheRead"),
+      color: "var(--chart-cache-read)",
+    },
+  } satisfies ChartConfig
+
   return (
     <Card interactive>
       <CardHeader>
@@ -106,45 +136,50 @@ export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
           emptyLabel={t("usage.trend.empty")}
           emptyDescription={t("usage.trend.emptyDesc")}
         >
-          <div className="h-72 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart
-                data={data}
-                margin={{ top: 8, right: 16, bottom: 0, left: 0 }}
-              >
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                <XAxis
-                  dataKey="day"
-                  tickFormatter={(v) =>
-                    hourly ? formatHour(String(v)) : formatDay(String(v))
-                  }
-                  fontSize={12}
-                  stroke="var(--muted-foreground)"
+          <ChartContainer config={chartConfig} className="h-72 w-full">
+            <LineChart
+              data={data}
+              margin={{ top: 8, right: 16, bottom: 0, left: 0 }}
+            >
+              <CartesianGrid
+                vertical={false}
+                strokeDasharray="3 3"
+                stroke="var(--border)"
+              />
+              <XAxis
+                dataKey="day"
+                tickLine={false}
+                axisLine={false}
+                tickFormatter={(v) =>
+                  hourly ? formatHour(String(v)) : formatDay(String(v))
+                }
+                fontSize={12}
+                stroke="var(--muted-foreground)"
+              />
+              <YAxis
+                tickLine={false}
+                axisLine={false}
+                tickFormatter={(v) => formatTokens(Number(v))}
+                fontSize={12}
+                stroke="var(--muted-foreground)"
+              />
+              <ChartTooltip content={<TrendTooltip hourly={hourly} />} />
+              <ChartLegend content={<ChartLegendContent />} />
+              {BUCKETS.map((b) => (
+                <Line
+                  key={b.key}
+                  type="monotone"
+                  dataKey={b.key}
+                  name={t(b.name)}
+                  stroke={b.color}
+                  strokeWidth={2}
+                  dot={{ r: 3, fill: b.color, strokeWidth: 0 }}
+                  activeDot={{ r: 5, fill: b.color, strokeWidth: 0 }}
+                  isAnimationActive={false}
                 />
-                <YAxis
-                  tickFormatter={(v) => formatTokens(Number(v))}
-                  fontSize={12}
-                  stroke="var(--muted-foreground)"
-                />
-                <Tooltip content={<TrendTooltip hourly={hourly} />} />
-                <Legend />
-                {BUCKETS.map((b) => (
-                  <Area
-                    key={b.key}
-                    type="monotone"
-                    dataKey={b.key}
-                    name={t(b.name)}
-                    stackId="tokens"
-                    stroke={b.color}
-                    fill={b.color}
-                    fillOpacity={0.75}
-                    strokeWidth={1}
-                    isAnimationActive={false}
-                  />
-                ))}
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
+              ))}
+            </LineChart>
+          </ChartContainer>
         </QueryState>
       </CardContent>
     </Card>
