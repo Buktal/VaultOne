@@ -1,5 +1,7 @@
 # VaultOne
 
+> **VaultOne 不保存你的 AI 数据，只帮你管理你已经拥有的数据。**
+
 > 本地优先的桌面看板，呈现你的 Claude Code token 用量与成本——直接读取 Claude Code 已写出的会话日志，并可选地通过你自己的 GitHub 仓库在多设备间同步。
 
 [![Version](https://img.shields.io/github/v/release/Buktal/VaultOne?color=blue&label=version)](https://github.com/Buktal/VaultOne/releases)

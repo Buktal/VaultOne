@@ -1,5 +1,7 @@
 # VaultOne
 
+> **VaultOne doesn't store your AI data. It helps you understand and manage data you already own.**
+
 > A local-first desktop dashboard for your Claude Code token usage and cost — read straight from the session logs Claude Code already writes, with optional multi-device sync through a GitHub repo you control.
 
 [![Version](https://img.shields.io/github/v/release/Buktal/VaultOne?color=blue&label=version)](https://github.com/Buktal/VaultOne/releases)

@@ -1,5 +1,7 @@
 # VaultOne
 
+> **VaultOne はあなたの AI データを保存しません。あなたが既に所有しているデータを理解し、管理することを支援します。**
+
 > Claude Code のトークン使用量とコストを可視化する、ローカルファーストのデスクトップダッシュボード。Claude Code が既に書き出しているセッションログを直接読み取り、必要に応じて自分が管理する GitHub リポジトリ経由で複数端末間同期できます。
 
 [![Version](https://img.shields.io/github/v/release/Buktal/VaultOne?color=blue&label=version)](https://github.com/Buktal/VaultOne/releases)
