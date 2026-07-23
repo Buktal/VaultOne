@@ -3,9 +3,11 @@
 // docked flush-right via the Rust `dock_window_right` command — one atomic
 // SetWindowPos of the OUTER rect; see lightweight-geometry.ts):
 //   - tucked: a mini-bar that ALWAYS shows today's token total — the "glance"
-//     value. Layout [grip(drag)][number(click→中)][→大]. Tauri's drag
-//     region swallows clicks (tauri#9751/#9901), so the drag grip and the
-//     clickable number/expand are SIBLINGS, never nested.
+//     value. Layout [number][→大]. The whole bar drags via startDragging() on
+//     the root (a JS call, NOT data-tauri-drag-region, so it doesn't swallow the
+//     number's click): a press that moves >4px starts a window drag, a press
+//     that doesn't is a click → expand. →大 stops propagation so it stays a
+//     pure click.
 //   - expanded: a 1:1 reuse of the dashboard's right-column anchor (TokenHero,
 //     ADR-0011) fed today's filter — the "中窗口" mirrors the 右中 card exactly,
 //     only adding a drag/title bar with expand + shrink controls.
@@ -28,9 +30,10 @@
 // Refresh is free: providers.tsx invalidates the Usage tags on every
 // `usage_changed`, and the filter matches the dashboard's "today" preset.
 
+import { getCurrentWindow } from "@tauri-apps/api/window"
 import dayjs from "dayjs"
-import { Airplay, AlignHorizontalJustifyEnd, GripVertical } from "lucide-react"
-import { useEffect, useMemo, useRef } from "react"
+import { Airplay, AlignHorizontalJustifyEnd } from "lucide-react"
+import { type MouseEvent, useEffect, useMemo, useRef } from "react"
 import { useTranslation } from "react-i18next"
 import { useLightweightTuck } from "@/app/shell/use-lightweight-tuck"
 import { usePreferencesQuery, useStatsQuery, ZERO_STATS } from "@/app/store/api"
@@ -41,10 +44,44 @@ import { formatTokens } from "@/lib/format"
 
 import { TokenHero } from "./token-hero"
 
+const appWindow = getCurrentWindow()
+/** Square of the move distance (CSS px) that distinguishes a drag from a click
+ *  on the tucked bar. 4px — small enough to feel instant, large enough that a
+ *  click's natural jitter doesn't start a drag. */
+const DRAG_THRESHOLD_SQ = 16
+
 export function LightweightCard() {
   const { t } = useTranslation()
   const dispatch = useAppDispatch()
   const { phase, expand, tuck, setCardHeight } = useLightweightTuck()
+
+  // Whole-bar drag for the tucked mini-bar. startDragging() is a JS call, not
+  // data-tauri-drag-region, so it does NOT swallow the number's click — a press
+  // that moves > DRAG_THRESHOLD starts a window drag, a press that doesn't is a
+  // plain click → expand. →大 stops propagation to stay a pure click. This is
+  // why the whole bar (number + gutters) is draggable, not just a tiny grip.
+  const dragArmed = useRef(false)
+  const dragStart = useRef({ x: 0, y: 0 })
+  const dragged = useRef(false)
+  const armDrag = (e: MouseEvent) => {
+    if (e.button !== 0) return
+    dragArmed.current = true
+    dragged.current = false
+    dragStart.current = { x: e.screenX, y: e.screenY }
+  }
+  const maybeDrag = (e: MouseEvent) => {
+    if (!dragArmed.current || dragged.current) return
+    const dx = e.screenX - dragStart.current.x
+    const dy = e.screenY - dragStart.current.y
+    if (dx * dx + dy * dy > DRAG_THRESHOLD_SQ) {
+      dragged.current = true
+      dragArmed.current = false
+      void appWindow.startDragging()
+    }
+  }
+  const disarm = () => {
+    dragArmed.current = false
+  }
   // Hover-to-expand is opt-in (ADR-0018): the default is click. When hover is
   // chosen, the tucked number area also expands on mouse-enter.
   const { data: prefs } = usePreferencesQuery()
@@ -88,26 +125,26 @@ export function LightweightCard() {
     return () => ro.disconnect()
   }, [phase, setCardHeight])
 
-  // Tucked mini-bar: [grip(drag)] [number(click→中)] [→大]. The three cells
-  // have breathing room (px-1 + gap-1), and the grip / →大 hover tiles are
-  // rounded with a vertical inset (my-0.5) so they don't kiss the window edge
-  // on hover. The grip is the ONLY data-tauri-drag-region — drag and click
-  // stay siblings (Tauri's drag region swallows clicks on itself and its
-  // children, tauri#9751/#9901).
+  // Tucked mini-bar: [number] [→大]. The whole bar drags via startDragging() on
+  // the root (see armDrag/maybeDrag above) — not data-tauri-drag-region, so the
+  // number stays clickable. number is flex-1 (the big drag/click target); →大
+  // stops propagation so a press on it never starts a drag.
   if (phase === "tucked") {
     return (
-      <div className="bg-background flex h-screen w-screen animate-in fade-in slide-in-from-right-2 items-stretch gap-1 overflow-hidden px-1 duration-150 motion-reduce:animate-none">
-        <div
-          data-tauri-drag-region
-          aria-hidden
-          className="hover:bg-muted flex w-4 shrink-0 cursor-grab items-center justify-center rounded-md my-0.5"
-        >
-          <GripVertical className="text-muted-foreground size-3" />
-        </div>
+      // biome-ignore lint/a11y/noStaticElementInteractions: Tauri window drag handle — mouse-only startDragging with no keyboard equivalent; keyboard users reach the same actions via the inner buttons.
+      <div
+        onMouseDown={armDrag}
+        onMouseMove={maybeDrag}
+        onMouseUp={disarm}
+        onMouseLeave={disarm}
+        className="bg-background flex h-screen w-screen animate-in fade-in slide-in-from-right-2 cursor-grab items-stretch gap-1 overflow-hidden px-1 duration-150 motion-reduce:animate-none"
+      >
         <button
           type="button"
           onMouseEnter={hoverExpand ? expand : undefined}
-          onClick={expand}
+          onClick={() => {
+            if (!dragged.current) expand()
+          }}
           aria-label={t("usage.lightweight.expandToday")}
           className="flex flex-1 cursor-pointer items-center justify-center border-0 bg-transparent p-0"
         >
@@ -118,6 +155,7 @@ export function LightweightCard() {
         <button
           type="button"
           aria-label={t("usage.lightweight.expandFull")}
+          onMouseDown={(e) => e.stopPropagation()}
           onClick={() => dispatch(setMode("full"))}
           className="text-muted-foreground hover:bg-muted hover:text-foreground inline-flex w-6 shrink-0 items-center justify-center rounded-md my-0.5"
         >
