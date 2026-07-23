@@ -7,19 +7,13 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-orange.svg)](https://tauri.app/)
 
-**English** | [简体中文](./README.zh-CN.md) | [Changelog](./CHANGELOG.md)
+**English** | [简体中文](./README.zh-CN.md) | [日本語](./README.ja-JP.md) | [Changelog](./CHANGELOG.md)
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="./docs/images/dashboard-dark.png">
-  <img src="./docs/images/dashboard-light.png" alt="VaultOne dashboard">
-</picture>
+<img src="./docs/images/en/dashboard.png" alt="VaultOne dashboard">
 
 *Lightweight glance mode — tuck to the screen edge, hover to peek today's usage:*
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="./docs/images/lightweight-dark.png">
-  <img src="./docs/images/lightweight-light.png" alt="Lightweight glance mode">
-</picture>
+<img src="./docs/images/en/lightweight.png" alt="Lightweight glance mode">
 
 ---
 

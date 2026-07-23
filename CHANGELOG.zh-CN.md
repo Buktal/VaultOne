@@ -4,6 +4,17 @@ VaultOne 的所有显著变更记录于此。
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，并遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.1.0] - 2026-07-23
+
+### 新增
+
+- **自动更新** —— 启动时检查新版本（24h 节流）或从设置手动检查；从 GitHub Releases 直接下载并安装签名安装包，带 Ed25519 签名校验与一键重启。完全通过 GitHub 分发——无需自建服务器。更新失败时提供跳转 Releases 页面的手动降级。
+- **显示语言** —— UI 在 English、简体中文、日本語 之间切换。
+
+### 修复
+
+- **轻量模式** —— 修正贴边速览图标的边缘吸附，并平滑斜向展开动画。
+
 ## [1.0.0] - 2026-07-23
 
 首次公开发布（开源）。
@@ -22,4 +33,5 @@ VaultOne 的所有显著变更记录于此。
 - **macOS**：仅 Apple Silicon（arm64）；构建未签名——首次启动右键 →「打开」（或 `xattr -dr com.apple.quarantine /Applications/VaultOne.app`）。Intel Mac 用户可从源码构建。
 - **Provider**：当前仅 Claude Code；更多 provider（Codex、Cursor 等）规划中。
 
+[1.1.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.0.0
