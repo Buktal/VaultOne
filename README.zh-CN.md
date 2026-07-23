@@ -9,7 +9,7 @@
 
 [English](./README.md) | **简体中文** | [日本語](./README.ja-JP.md) | [更新日志](./CHANGELOG.zh-CN.md)
 
-<img src="./docs/images/light-usage.png" alt="VaultOne 看板">
+<img src="./docs/images/ad-zh.png" alt="VaultOne 看板">
 
 ---
 

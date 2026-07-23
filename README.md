@@ -9,7 +9,7 @@
 
 **English** | [简体中文](./README.zh-CN.md) | [日本語](./README.ja-JP.md) | [Changelog](./CHANGELOG.md)
 
-<img src="./docs/images/light-usage.png" alt="VaultOne dashboard">
+<img src="./docs/images/ad-en.png" alt="VaultOne dashboard">
 
 ---
 
