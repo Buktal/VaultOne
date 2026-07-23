@@ -65,11 +65,12 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           node scripts/extract-changelog.mjs > body.md
-          {
-            echo "RELEASE_BODY<<EOF"
-            cat body.md
-            echo "EOF"
-          } >> "$GITHUB_ENV"
+          # Write a multi-line GITHUB_ENV value with printf so the closing
+          # delimiter always sits on its own line even if body.md lacks a
+          # trailing newline (extract-changelog.mjs trims its output).
+          printf 'RELEASE_BODY<<CHANGELOG_EOF\n' >> "$GITHUB_ENV"
+          cat body.md >> "$GITHUB_ENV"
+          printf '\nCHANGELOG_EOF\n' >> "$GITHUB_ENV"
 
       - name: Build and publish
         uses: tauri-apps/tauri-action@v0

@@ -16,4 +16,6 @@ const re = new RegExp(
 )
 const match = changelog.match(re)
 
-process.stdout.write(match ? match[1].trim() : "See CHANGELOG.md.")
+// Keep a trailing newline: release.yml writes this into $GITHUB_ENV via a
+// heredoc-style delimiter, whose closing token must sit on its own line.
+process.stdout.write(`${match ? match[1].trim() : "See CHANGELOG.md."}\n`)
