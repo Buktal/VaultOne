@@ -8,6 +8,12 @@
 // Language (ADR-0016) is the one preference Rust must know at cold start (to
 // build the localized tray), so it lives here alongside the others. All
 // discrete presets (Select, instant-effect) — no save button.
+//
+// Row-based layout (ADR-0011 v2): each preference is a SettingRow — label +
+// hint on the left, control on the right, hairline between rows — so the card
+// stays scannable as more options land. Trigger labels are derived from the
+// value via a SelectValue render function; without it Base UI shows the raw
+// value ("10" / "300" / "zh"), not the localized "10 秒" / "5 分钟" / "中文".
 
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
@@ -70,19 +76,19 @@ export function GeneralCard() {
     useSetPushIntervalMutation()
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col">
       {prefsError ? (
-        <p className="border-destructive/40 bg-destructive/5 text-destructive rounded-md border p-2 text-xs leading-relaxed">
+        <p className="border-destructive/40 bg-destructive/5 text-destructive mb-2 rounded-md border p-2 text-xs leading-relaxed">
           {t("settings.general.readError", {
             detail: describeError(prefsError, t("common.unknownReason")),
           })}
         </p>
       ) : null}
 
-      <div className="flex flex-col gap-1.5">
-        <Label className="text-muted-foreground text-xs">
-          {t("settings.general.language")}
-        </Label>
+      <SettingRow
+        label={t("settings.general.language")}
+        hint={t("settings.general.languageHint")}
+      >
         <Select
           value={prefs?.language}
           onValueChange={async (v) => {
@@ -94,7 +100,11 @@ export function GeneralCard() {
           }}
         >
           <SelectTrigger className="w-36" disabled={savingLang}>
-            <SelectValue placeholder="—" />
+            <SelectValue placeholder="—">
+              {(v: string) =>
+                LANGUAGES.find((o) => o.code === v)?.nativeName ?? "—"
+              }
+            </SelectValue>
           </SelectTrigger>
           <SelectContent>
             {LANGUAGES.map((o) => (
@@ -104,15 +114,12 @@ export function GeneralCard() {
             ))}
           </SelectContent>
         </Select>
-        <p className="text-muted-foreground text-xs">
-          {t("settings.general.languageHint")}
-        </p>
-      </div>
+      </SettingRow>
 
-      <div className="flex flex-col gap-1.5">
-        <Label className="text-muted-foreground text-xs">
-          {t("settings.general.collectInterval")}
-        </Label>
+      <SettingRow
+        label={t("settings.general.collectInterval")}
+        hint={t("settings.general.collectIntervalHint")}
+      >
         <Select
           value={prefs ? String(prefs.collect_interval_secs) : undefined}
           onValueChange={async (v) => {
@@ -124,7 +131,9 @@ export function GeneralCard() {
           }}
         >
           <SelectTrigger className="w-36" disabled={savingCollect}>
-            <SelectValue placeholder="—" />
+            <SelectValue placeholder="—">
+              {(v: string) => t("common.seconds", { n: Number(v) })}
+            </SelectValue>
           </SelectTrigger>
           <SelectContent>
             {COLLECT_OPTIONS.map((v) => (
@@ -134,15 +143,12 @@ export function GeneralCard() {
             ))}
           </SelectContent>
         </Select>
-        <p className="text-muted-foreground text-xs">
-          {t("settings.general.collectIntervalHint")}
-        </p>
-      </div>
+      </SettingRow>
 
-      <div className="flex flex-col gap-1.5">
-        <Label className="text-muted-foreground text-xs">
-          {t("settings.general.pushInterval")}
-        </Label>
+      <SettingRow
+        label={t("settings.general.pushInterval")}
+        hint={t("settings.general.pushIntervalHint")}
+      >
         {synced ? (
           <Select
             value={prefs ? String(prefs.push_interval_secs) : undefined}
@@ -158,7 +164,9 @@ export function GeneralCard() {
             }}
           >
             <SelectTrigger className="w-36" disabled={savingPush}>
-              <SelectValue placeholder="—" />
+              <SelectValue placeholder="—">
+                {(v: string) => t("common.minutes", { n: Number(v) / 60 })}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {PUSH_OPTIONS.map((v) => (
@@ -169,20 +177,17 @@ export function GeneralCard() {
             </SelectContent>
           </Select>
         ) : (
-          <p className="text-muted-foreground text-xs">
+          <span className="text-muted-foreground text-xs">
             {t("settings.general.pushNeedsSync")}
-          </p>
+          </span>
         )}
-        <p className="text-muted-foreground text-xs">
-          {t("settings.general.pushIntervalHint")}
-        </p>
-      </div>
+      </SettingRow>
 
-      <div className="flex flex-col gap-1.5">
-        <Label className="text-muted-foreground text-xs">
-          {t("settings.general.closeBehavior")}
-        </Label>
-        <div className="flex flex-wrap gap-2">
+      <SettingRow
+        label={t("settings.general.closeBehavior")}
+        hint={t("settings.general.closeBehaviorHint")}
+      >
+        <div className="flex flex-wrap justify-end gap-2">
           {CLOSE_OPTIONS.map(([value, key]) => (
             <Button
               key={value}
@@ -204,20 +209,42 @@ export function GeneralCard() {
             </Button>
           ))}
         </div>
-        <p className="text-muted-foreground text-xs">
-          {t("settings.general.closeBehaviorHint")}
-        </p>
-      </div>
+      </SettingRow>
 
-      <div className="flex flex-col gap-1.5">
-        <Label className="text-muted-foreground text-xs">
-          {t("settings.general.versionUpdate")}
-        </Label>
+      <SettingRow
+        label={t("settings.general.versionUpdate")}
+        hint={t("settings.general.updateHint")}
+      >
         <UpdateControl />
-        <p className="text-muted-foreground text-xs">
-          {t("settings.general.updateHint")}
-        </p>
+      </SettingRow>
+    </div>
+  )
+}
+
+/** Row-based preference row (ADR-0011 v2): label + hint on the left, control
+ *  on the right, hairline between rows. Content-only — rendered inside the
+ *  通用 Section's CardContent, whose vertical padding comes from the Card
+ *  (--card-spacing), so rows only carry their own inter-row spacing. */
+function SettingRow({
+  label,
+  hint,
+  children,
+}: {
+  label: string
+  hint?: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="border-border flex items-start justify-between gap-4 border-t py-2.5 first:border-t-0 first:pt-0 last:pb-0">
+      <div className="flex min-w-0 flex-col gap-1">
+        <Label className="text-foreground">{label}</Label>
+        {hint ? (
+          <p className="text-muted-foreground text-xs leading-relaxed">
+            {hint}
+          </p>
+        ) : null}
       </div>
+      <div className="shrink-0">{children}</div>
     </div>
   )
 }
