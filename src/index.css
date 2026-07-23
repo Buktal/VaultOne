@@ -20,12 +20,6 @@
   --color-chart-cache-create: var(--chart-cache-create);
   --color-chart-output: var(--chart-output);
   --color-chart-input: var(--chart-input);
-  --color-chart-5: var(--chart-5);
-  --color-chart-4: var(--chart-4);
-  --color-chart-3: var(--chart-3);
-  --color-chart-2: var(--chart-2);
-  --color-chart-1: var(--chart-1);
-  --color-metric-tokens: var(--metric-tokens);
   --color-metric-cost: var(--metric-cost);
   --color-ring: var(--ring);
   --color-input: var(--input);
@@ -59,20 +53,32 @@
 }
 
 /*
- * Visual language: Pixso dark (ADR-0011 演进).
- *   - Dark theme = Pixso dark token set (#1C1C1E bg / #2C2C2E card /
- *     #3A3A3C elevated / #14C393 brand). Flat solid surfaces — no glass,
- *     no backdrop-blur, no glow shadows; surfaces separate by lightness
- *     step + hairline border (iOS dark idiom).
- *   - Chart palette = VaultOne data palette (4 token buckets), hue-paired
- *     across dark/light so each bucket keeps its hue family (shade tuned
- *     for background contrast). input=蓝 / output=金 / cache_creation=粉 /
- *     cache_read=绿(命中). Swap this one group to re-theme every chart.
- *   - metric-cost = distinct vermilion — cost is a separate money dimension
- *     (ADR-0011 token-first); intentionally outside the 4-bucket palette.
- *   - Font: Geist (display + body), CJK falls back to system (PingFang/YaHei).
- *   - Light theme retained as fallback.
- * Default theme = dark.
+ * Visual language & theming — ADR-0011 / 0013, extended for multi-skin.
+ *
+ * TWO TIERS — what changes when:
+ *   A. Mode-scoped (light/dark): fonts + neutral surfaces.
+ *      IRON RULE — a [data-skin] block may NEVER set any of these. Text
+ *      legibility follows the mode, never the skin.
+ *        --foreground / --muted-foreground / --card-foreground
+ *        --background / --card / --popover / --border / --input / --sidebar-*
+ *   B. Skin-scoped: the data palette + brand accent. This is everything a
+ *      skin owns — six vars, nothing else:
+ *        --chart-input / -output / -cache-create / -cache-read
+ *        --metric-cost   --brand (+ --brand-strong)
+ *      Hue-family anchoring: each bucket keeps its hue family across skins
+ *      (input=blue-green  output=yellow  cache_create=pink/violet
+ *       cache_read=green  cost=red-orange), so swapping a skin changes the
+ *      mood, never the meaning. Brand color once hardcoded in 8 places now
+ *      flows from --brand.
+ *
+ * Default skin = Pixso green (the values in :root/.dark below; no data-skin
+ * attribute set). Named skins below override the B-tier only. cost always
+ * wins the red/orange family; brand steps aside to a cool accent so the two
+ * never collide. Adding a skin = one [data-skin] block of 7 lines.
+ *
+ * Surfaces are flat solid — no glass, no backdrop-blur, no glow (iOS dark
+ * idiom); they separate by lightness step + hairline border. Font: Geist,
+ * CJK falls back to system (PingFang/YaHei). Light theme retained as fallback.
  */
 :root {
   --background: oklch(0.965 0 0); /* off-white; pure #fff was too glaring */
@@ -81,6 +87,10 @@
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0 0);
+  /* --primary stays near-black in light: a neutral button surface (ADR-0013).
+     The brand color reaches the UI only via --accent-brand (selection rail /
+     icon), NOT via --primary, so a skin swap doesn't cascade into every
+     primary button. In .dark, --primary DOES become --brand. */
   --primary: oklch(0.205 0 0);
   --primary-foreground: oklch(0.985 0 0);
   --secondary: oklch(0.94 0 0);
@@ -93,21 +103,15 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
-  /* token-first data palette (ADR-0011). Light shades — brighter for contrast
+  /* B-tier — default skin (Pixso green). Light shades: brighter for contrast
      on white; each pairs to its dark counterpart by hue family. 命中=绿. */
   --chart-input: #80e0e6; /* 输入 input_tokens — 青 */
   --chart-output: #ffbb4f; /* 输出 output_tokens — 金 */
   --chart-cache-create: #ff7576; /* 缓存创建 cache_creation — 珊瑚红 */
   --chart-cache-read: #89b37c; /* 缓存命中 cache_read — 鼠尾草绿 */
-  --metric-tokens: #80e0e6; /* token 总量主色 = input 青 */
   --metric-cost: #d55e00; /* 成本 USD — 朱红（独立「钱」维度，非四桶）*/
-  /* Legacy --chart-1..5 aliases — mirror the semantic palette above for any
-     consumer still on positional names. */
-  --chart-1: #80e0e6;
-  --chart-2: #ffbb4f;
-  --chart-3: #ff7576;
-  --chart-4: #89b37c;
-  --chart-5: #d55e00;
+  --brand: #0fae84; /* 强调 / 选中 / 链接 — Pixso 绿（light 档）*/
+  --brand-strong: #04785c; /* 选中文字色，AA on the tint */
   --radius: 0.45rem;
   --sidebar: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
@@ -117,24 +121,18 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
-  /*
-   * Brand accent for selection / emphasis (ADR-0013 v3). The light theme's
-   * --primary is intentionally near-black for a neutral surface, so selection
-   * has no color signal and bg-muted (L 0.97 on 1.0) is invisible on white.
-   * Selection instead draws on the VaultOne green — without re-routing
-   * --primary, which would cascade into every primary button / ring / delta.
-   * --accent-tint = selection fill, --accent-brand = left rail + icon,
-   * --accent-brand-strong = label text (AA on the tint). Restores the
-   * "绿字灰底选中" intent from the shell prototype. --row-hover replaces
-   * the ~invisible bg-muted/40 table-row hover.
-   */
-  --accent-brand: #0fae84;
-  --accent-brand-strong: #04785c;
-  --accent-tint: color-mix(in srgb, #0fae84 11%, transparent);
+  /* Brand accent for selection (ADR-0013 v3). Light --primary is neutral
+     near-black, so selection draws on the brand color instead:
+     --accent-tint = selection fill, --accent-brand = left rail + icon,
+     --accent-brand-strong = label text (AA on the tint). --row-hover replaces
+     the ~invisible bg-muted/40 table-row hover. */
+  --accent-brand: var(--brand);
+  --accent-brand-strong: var(--brand-strong);
+  --accent-tint: color-mix(in srgb, var(--brand) 11%, transparent);
   --row-hover: #ededed;
+  --row-hover-shadow: 0 4px 12px -4px rgba(0, 0, 0, 0.15);
   /* Scrollbar — thin, no arrows (Windows WebView2). Flat semi-transparent
-     thumb over a transparent track, darkens on hover. Pairs with the webkit
-     rules in @layer base. */
+     thumb over a transparent track, darkens on hover. */
   --scrollbar-thumb: rgba(0, 0, 0, 0.18);
   --scrollbar-thumb-hover: rgba(0, 0, 0, 0.3);
 }
@@ -146,7 +144,13 @@
   --card-foreground: #ffffff;
   --popover: #2c2c2e;
   --popover-foreground: #ffffff;
-  --primary: #14c393;
+  /* B-tier brand flows into primary/ring/sidebar-primary in dark (ADR-0013):
+     dark's primary IS the brand color, so a skin swap recolors primary
+     buttons, focus rings, and the sidebar active item. Light keeps --primary
+     neutral, so the same skin touches far less there. */
+  --brand: #14c393;
+  --brand-strong: #2ee8b8;
+  --primary: var(--brand);
   --primary-foreground: #04130d;
   --secondary: #3a3a3c;
   --secondary-foreground: #ffffff;
@@ -157,35 +161,82 @@
   --destructive: #f87171;
   --border: rgba(255, 255, 255, 0.08);
   --input: #3a3a3c;
-  --ring: #14c393;
-  /* token-first data palette (ADR-0011). Dark shades — pastel/vivid for pop
-     on #1C1C1E; each pairs to its light counterpart by hue family. 命中=绿. */
+  --ring: var(--brand);
+  /* B-tier data palette — default skin (Pixso green). Dark shades: pastel /
+     vivid for pop on #1C1C1E; each pairs to its light counterpart by hue. */
   --chart-input: #28aef3;
   --chart-output: #fcb859;
   --chart-cache-create: #f2c8ed;
   --chart-cache-read: #a9dfd8;
-  --metric-tokens: #28aef3;
   --metric-cost: #d55e00;
-  --chart-1: #28aef3;
-  --chart-2: #fcb859;
-  --chart-3: #f2c8ed;
-  --chart-4: #a9dfd8;
-  --chart-5: #d55e00;
   --sidebar: #1c1c1e;
   --sidebar-foreground: #ffffff;
-  --sidebar-primary: #14c393;
+  --sidebar-primary: var(--brand);
   --sidebar-primary-foreground: #04130d;
   --sidebar-accent: #3a3a3c;
   --sidebar-accent-foreground: #ffffff;
   --sidebar-border: rgba(255, 255, 255, 0.08);
-  --sidebar-ring: #14c393;
-  /* Brand accent (dark): same green family, brighter text on the tinted rail. */
-  --accent-brand: #14c393;
-  --accent-brand-strong: #2ee8b8;
-  --accent-tint: color-mix(in srgb, #14c393 14%, transparent);
+  --sidebar-ring: var(--brand);
+  --accent-brand: var(--brand);
+  --accent-brand-strong: var(--brand-strong);
+  --accent-tint: color-mix(in srgb, var(--brand) 14%, transparent);
   --row-hover: rgba(255, 255, 255, 0.06);
+  --row-hover-shadow: 0 4px 12px -4px rgba(0, 0, 0, 0.5);
   --scrollbar-thumb: rgba(255, 255, 255, 0.16);
   --scrollbar-thumb-hover: rgba(255, 255, 255, 0.28);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * B-tier skins — override ONLY the data palette + brand. Iron rule: NEVER set
+ * a font color or neutral surface in these blocks. Hue-family anchored (see
+ * the file header): input=blue-green · output=yellow · cache_create=pink/
+ * violet · cache_read=green · cost=red-orange. brand always yields the red/
+ * orange family to cost. Values currently apply to both light & dark; per-mode
+ * shades can be tuned later once we see them on real surfaces.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* 翠微 — 暗·古韵。brand = 墨蓝（让出红/橙给 cost）。 */
+[data-skin="cuiwei"] {
+  --chart-input: #108b96;
+  --chart-output: #fac03d;
+  --chart-cache-create: #422256;
+  --chart-cache-read: #4c8045;
+  --metric-cost: #4c8045;
+  --brand: #b7d6b3;
+  --brand-strong: #4c8045;
+}
+
+/* 听乌 — 全色相·中和。brand = 藏青（夜空）。 */
+[data-skin="tingwu"] {
+  --chart-input: #3d8e86;
+  --chart-output: #ecd452;
+  --chart-cache-create: #4a4b9d;
+  --chart-cache-read: #68945c;
+  --metric-cost: #d24735;
+  --brand: #003e74;
+  --brand-strong: #3a77b5;
+}
+
+/* 胭脂 — 淡·粉彩。brand = 天蓝（让出红给 cost）。 */
+[data-skin="yanzhi"] {
+  --chart-input: #5b9953;
+  --chart-output: #ffe941;
+  --chart-cache-create: #abcce0;
+  --chart-cache-read: #9d2932;
+  --metric-cost: #9d2932;
+  --brand: #cf4551;
+  --brand-strong: #9d2932;
+}
+
+/* 紫紫 — 艳·高对比。brand = 宝蓝。 */
+[data-skin="zizi"] {
+  --chart-input: #1e7fa0;
+  --chart-output: #ffee6f;
+  --chart-cache-create: #494166;
+  --chart-cache-read: #4c8045;
+  --metric-cost: #ea5414;
+  --brand: #2e59a7;
+  --brand-strong: #6a8dd4;
 }
 
 @layer base {
@@ -221,11 +272,18 @@
   ::-webkit-scrollbar-corner {
     display: none;
   }
+  /* Prevent the small lightweight window's content from spilling into body
+     scrollbars — the mini-bar is a fixed-size edge strip, so the body must
+     never scroll. The full dashboard scrolls inside its own <main>, unaffected. */
+  html,
   body {
-    @apply bg-background text-foreground;
+    margin: 0;
+  }
+  body {
+    @apply bg-background text-foreground overflow-hidden;
   }
   html {
-    @apply font-sans;
+    @apply font-sans overflow-hidden;
   }
   button:not(:disabled),
   [role="button"]:not(:disabled) {

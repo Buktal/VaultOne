@@ -5,11 +5,18 @@
 // minimize-to-tray / quit / ask flow as a system close.
 
 import { getCurrentWindow } from "@tauri-apps/api/window"
-import { Copy, Minus, PictureInPicture2, Square, X } from "lucide-react"
+import {
+  AlignHorizontalJustifyEnd,
+  Copy,
+  Minus,
+  PictureInPicture2,
+  Square,
+  X,
+} from "lucide-react"
 import { type ReactNode, useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { useAppDispatch } from "@/app/store/hooks"
-import { setMode } from "@/app/store/slices/viewSlice"
+import { setLightweightPhase, setMode } from "@/app/store/slices/viewSlice"
 import { cn } from "@/lib/utils"
 
 export function TitleBar() {
@@ -33,15 +40,28 @@ export function TitleBar() {
       data-tauri-drag-region
       className="flex h-9 shrink-0 select-none items-center justify-end gap-1 pe-2"
     >
-      {/* Lightweight mode entry (ADR-0015): alongside the window controls but
-          decoupled from Close — entering the glance card is not closing the
-          window. Sits at the left of the cluster (me-1 sets it apart). */}
+      {/* Lightweight entries (ADR-0018): →中 (the 5-field glance card) and →小
+          (the docked mini-bar). Both enter lightweight; the phase picks which
+          sub-shape lands first. Decoupled from Close — entering is not closing. */}
       <CtrlButton
-        onClick={() => dispatch(setMode("lightweight"))}
+        onClick={() => {
+          dispatch(setMode("lightweight"))
+          dispatch(setLightweightPhase("expanded"))
+        }}
         label={t("titlebar.lightweight")}
         className="me-1"
       >
         <PictureInPicture2 className="size-3.5" />
+      </CtrlButton>
+      <CtrlButton
+        onClick={() => {
+          dispatch(setMode("lightweight"))
+          dispatch(setLightweightPhase("tucked"))
+        }}
+        label={t("titlebar.lightweightSmall")}
+        className="me-1"
+      >
+        <AlignHorizontalJustifyEnd className="size-3.5" />
       </CtrlButton>
       <CtrlButton
         onClick={() => appWindow.minimize()}

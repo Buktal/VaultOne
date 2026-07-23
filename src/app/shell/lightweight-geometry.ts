@@ -1,4 +1,4 @@
-// Shared geometry + edge math for the lightweight glance window (ADR-0015).
+// Shared geometry for the lightweight glance window (ADR-0018).
 //
 // The actual docking is done in Rust (dock_window_right): one atomic
 // SetWindowPos of the OUTER rect (shadow included), with the monitor picked by
@@ -6,8 +6,8 @@
 // once — the shadow no longer overshoots the monitor edge (was ~1/5 on the
 // neighbour), there is no intermediate [new pos, old size] state to flip
 // MonitorFromWindow, and the window stays wholly on one monitor so WebView2
-// renders at that monitor's DPI. This file keeps the JS-side constants and the
-// drag-to-edge detection only.
+// renders at that monitor's DPI. This file keeps the JS-side constants and
+// monitor helpers only.
 
 import {
   availableMonitors,
@@ -18,16 +18,19 @@ import {
 
 import { commands } from "@/types/generated/bindings"
 
-/** Expanded glance card width (fixed). Height adapts to the content. */
-export const CARD_WIDTH = 288
+/** Expanded glance card (window) width. The reused TokenHero card sits inside a
+ *  p-3 inset so its rounded corners clear the square window edge, so the card
+ *  renders a touch narrower than this. 320 keeps the window compact on the
+ *  right edge while the card's content mirrors the 右中 anchor. Height adapts. */
+export const CARD_WIDTH = 320
 /** Initial height guess before the content is measured; replaced on mount. */
 export const CARD_HEIGHT_DEFAULT = 360
-/** Tucked "half-icon" — 48×48 with a size-10 (40px) logo → ~4px inset. */
-export const TUCKED_WIDTH = 48
-export const TUCKED_HEIGHT = 48
-/** A move whose right edge is within this many logical px of the monitor's
- * right edge counts as "docked" → tuck. (Right edge only for v1.) */
-export const EDGE_THRESHOLD = 12
+/** Tucked mini-bar — [grip][number][→大] (ADR-0018). The three cells are spaced
+ * with px-1 + gap-1 and the hover tiles inset (my-0.5), so the width fits the
+ * longest compact token (up to ~"123.4M") plus grip + →大 + that spacing.
+ * Short height = thin strip. */
+export const TUCKED_WIDTH = 120
+export const TUCKED_HEIGHT = 40
 /** Logical px from the top where the glance card docks on entry. */
 export const ENTRY_DOCK_Y = 48
 /** How far the OUTER rect is kept inside the monitor edge (passed to the Rust
@@ -61,14 +64,6 @@ export async function monitorForWindow(): Promise<Monitor | null> {
   return (await currentMonitor()) ?? null
 }
 
-/** Right edge of the window's current monitor, in logical px (null if unknown).
- * Used by the drag-to-edge auto-tuck test. */
-export async function rightEdgeLogical(): Promise<number | null> {
-  const mon = await monitorForWindow()
-  if (!mon) return null
-  return (mon.position.x + mon.size.width) / (mon.scaleFactor || 1)
-}
-
 /** Dock the window flush-right via the Rust command (one atomic SetWindowPos of
  *  the OUTER rect, monitor picked by Windows' largest-intersection rule). The
  *  caller picks the inset: tucked flush-edges (0), expanded keeps a gap (2) so
@@ -88,4 +83,18 @@ export async function dockRight(
   )
   if ("error" in r) return null
   return r.data
+}
+
+/** Center the window on its current monitor at the given CLIENT size, via one
+ *  atomic Rust SetWindowPos (size + position together). Avoids the
+ *  `[new size, old pos]` straddle of separate setSize + setPosition, which on a
+ *  multi-monitor setup of mixed DPI flips MonitorFromWindow and locks WebView2
+ *  to the wrong rasterization scale (content renders too small). No-op on
+ *  failure. */
+export async function centerWindow(
+  clientLogicalW: number,
+  clientLogicalH: number,
+): Promise<void> {
+  const r = await commands.centerWindow(clientLogicalW, clientLogicalH)
+  if ("error" in r) return
 }

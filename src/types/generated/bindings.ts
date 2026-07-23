@@ -91,6 +91,16 @@ export const commands = {
 	 */
 	setLanguage: (language: Language) => typedError<Preferences, AppError>(__TAURI_INVOKE("set_language", { language })),
 	/**
+	 *  Persist the lightweight half-icon expand trigger (ADR-0015). Pure frontend
+	 *  behavior; Rust doesn't read it back, but it rides ConfigData for unity.
+	 */
+	setLightweightExpand: (lightweightExpand: LightweightExpand) => typedError<Preferences, AppError>(__TAURI_INVOKE("set_lightweight_expand", { lightweightExpand })),
+	/**
+	 *  Persist the color skin (multi-skin theming). Pure frontend effect — Rust
+	 *  never reads it back; it rides ConfigData for unity with the other prefs.
+	 */
+	setSkin: (skin: Skin) => typedError<Preferences, AppError>(__TAURI_INVOKE("set_skin", { skin })),
+	/**
 	 *  Probe a sync repo + PAT for reachability (ADR-0005「测试连接」). Pass explicit
 	 *  values to validate BEFORE binding, or `None`/`None` to re-check the already-
 	 *  configured repo. Pure ls-remote — never mutates config or the real sync repo.
@@ -117,6 +127,15 @@ export const commands = {
 	 *  Windows, but the crate still has to compile elsewhere for dev/CI).
 	 */
 	dockWindowRight: (clientLogicalW: number | null, clientLogicalH: number | null, logicalY: number | null, insetLogical: number | null) => typedError<number | null, string>(__TAURI_INVOKE("dock_window_right", { clientLogicalW, clientLogicalH, logicalY, insetLogical })),
+	/**
+	 *  Center the window on its current monitor at a given CLIENT size, in one
+	 *  atomic `SetWindowPos` (size + position together). Used by the lightweight →
+	 *  full restore. Like `dock_window_right`, the single `SetWindowPos` avoids the
+	 *  `[new size, old pos]` straddle that would flip `MonitorFromWindow` to a
+	 *  neighbour of different DPI and lock WebView2 to the wrong rasterization
+	 *  scale (content renders too small on high-DPI multi-monitor setups).
+	 */
+	centerWindow: (clientLogicalW: number | null, clientLogicalH: number | null) => typedError<null, string>(__TAURI_INVOKE("center_window", { clientLogicalW, clientLogicalH })),
 };
 
 /* Types */
@@ -240,6 +259,18 @@ export type IngestReport = {
  */
 export type Language = "en" | "zh" | "ja";
 
+/**
+ *  How the lightweight glance card's tucked half-icon expands (ADR-0015).
+ *  Crosses the Rust→JS boundary; Rust itself doesn't act on it (a pure frontend
+ *  interaction), but it rides `ConfigData` so every Settings preference lives in
+ *  one place.
+ */
+export type LightweightExpand = 
+/**  Click the half-icon to expand (default — won't fire on a stray hover). */
+"click" | 
+/**  Hover the half-icon to expand. */
+"hover";
+
 /**  Query params for the request-log endpoint (adds paging to `UsageFilter`). */
 export type LogsQuery = {
 	filter: UsageFilter,
@@ -261,6 +292,8 @@ export type Preferences = {
 	collect_interval_secs: number,
 	push_interval_secs: number,
 	language: Language,
+	lightweight_expand: LightweightExpand,
+	skin: Skin,
 };
 
 /**
@@ -283,6 +316,24 @@ export type PricingEntry = {
 
 /**  Run mode: default Standalone; Synced once a repo is configured. */
 export type RunMode = "standalone" | "synced";
+
+/**
+ *  Color skin for multi-skin theming (ADR-0013 token-first). Serialized
+ *  snake_case; `pixso` is the default and maps to NO `data-skin` attribute on
+ *  `<html>` (the :root/.dark values in src/index.css ARE the Pixso palette).
+ *  Per-device, not synced (config.json never enters the repo). Hue-family
+ *  anchored — each data bucket keeps its hue family across skins, so a swap
+ *  changes the mood, never the meaning. The frontend applies it; Rust stores.
+ */
+export type Skin = "pixso" | 
+/**  翠微 — dark, classical tones. */
+"cuiwei" | 
+/**  听乌 — full hue range, neutral. */
+"tingwu" | 
+/**  胭脂 — pale, pastel. */
+"yanzhi" | 
+/**  紫紫 — vivid, high-contrast. */
+"zizi";
 
 /**  Outcome of one sync round, surfaced to the UI. */
 export type SyncReport = {

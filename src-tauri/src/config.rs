@@ -80,6 +80,45 @@ pub enum CloseBehavior {
     Quit,
 }
 
+/// How the lightweight glance card's tucked half-icon expands (ADR-0015).
+/// Crosses the Rust→JS boundary; Rust itself doesn't act on it (a pure frontend
+/// interaction), but it rides `ConfigData` so every Settings preference lives in
+/// one place.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum LightweightExpand {
+    /// Click the half-icon to expand (default — won't fire on a stray hover).
+    #[default]
+    Click,
+    /// Hover the half-icon to expand.
+    Hover,
+}
+
+/// Color skin for multi-skin theming (ADR-0013 token-first). Serialized
+/// snake_case; `pixso` is the default and maps to NO `data-skin` attribute on
+/// `<html>` (the :root/.dark values in src/index.css ARE the Pixso palette).
+/// Per-device, not synced (config.json never enters the repo). Hue-family
+/// anchored — each data bucket keeps its hue family across skins, so a swap
+/// changes the mood, never the meaning. The frontend applies it; Rust stores.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Skin {
+    #[default]
+    Pixso,
+    /// 翠微 — dark, classical tones.
+    Cuiwei,
+    /// 听乌 — full hue range, neutral.
+    Tingwu,
+    /// 胭脂 — pale, pastel.
+    Yanzhi,
+    /// 紫紫 — vivid, high-contrast.
+    Zizi,
+}
+
 /// Default background-collect interval in seconds (ADR-0014: 30 s — decoupled
 /// from the push cadence, which has its own interval).
 ///
@@ -144,6 +183,14 @@ pub struct ConfigData {
     /// (config.json never enters the repo).
     #[serde(default)]
     pub language: Language,
+    /// How the lightweight half-icon expands (ADR-0015). Frontend-only behavior;
+    /// Rust doesn't read it, but it lives here so all Settings prefs are unified.
+    #[serde(default)]
+    pub lightweight_expand: LightweightExpand,
+    /// Color skin (multi-skin theming). Frontend-only effect; Rust doesn't act
+    /// on it, but it rides ConfigData so every Settings preference is unified.
+    #[serde(default)]
+    pub skin: Skin,
 }
 
 impl Default for ConfigData {
@@ -161,6 +208,8 @@ impl Default for ConfigData {
             collect_interval_secs: default_collect_interval_secs(),
             push_interval_secs: default_push_interval_secs(),
             language: Language::En,
+            lightweight_expand: LightweightExpand::Click,
+            skin: Skin::Pixso,
         }
     }
 }
