@@ -243,7 +243,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
                     {info?.device_id ?? "—"}
                   </span>
                 </div>
-                <div className="mt-1 flex items-center gap-2">
+                <div className="mt-1 flex items-center justify-between gap-2">
                   <span
                     className={cn(
                       "inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-medium",
@@ -254,29 +254,31 @@ export function Shell({ children }: { children: React.ReactNode }) {
                   >
                     {modeLabel}
                   </span>
-                  {info?.version ? (
-                    <span className="text-muted-foreground text-[10px]">
-                      v{info.version}
-                    </span>
-                  ) : null}
-                  <UpdateIndicator />
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <button
-                          type="button"
-                          onClick={() => void openReleases()}
-                          aria-label={t("shell.changelog")}
-                          className="text-muted-foreground hover:text-foreground inline-flex size-3.5 items-center justify-center transition-colors"
-                        />
-                      }
-                    >
-                      <BookText className="size-3.5" />
-                    </TooltipTrigger>
-                    <TooltipContent side="right">
-                      {t("shell.changelogGithub")}
-                    </TooltipContent>
-                  </Tooltip>
+                  <div className="flex items-center gap-1.5">
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <button
+                            type="button"
+                            onClick={() => void openReleases()}
+                            aria-label={t("shell.changelog")}
+                            className="text-muted-foreground hover:text-foreground inline-flex size-3.5 items-center justify-center transition-colors"
+                          />
+                        }
+                      >
+                        <BookText className="size-3.5" />
+                      </TooltipTrigger>
+                      <TooltipContent side="right">
+                        {t("shell.changelogGithub")}
+                      </TooltipContent>
+                    </Tooltip>
+                    {info?.version ? (
+                      <span className="text-muted-foreground text-[10px]">
+                        v{info.version}
+                      </span>
+                    ) : null}
+                    <UpdateIndicator />
+                  </div>
                 </div>
                 <div className="mt-2 flex items-center justify-between border-border/60 border-t pt-2">
                   <ThemeToggle />
