@@ -5,6 +5,17 @@ All notable changes to VaultOne are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-07-23
+
+### Added
+
+- **Auto-update** — check for new versions on launch (throttled to once per 24h) or manually from Settings; download and install signed installers straight from GitHub Releases, with Ed25519 signature verification and one-click relaunch. Distributed entirely through GitHub — no self-hosted server. On updater failure, a manual fallback opens the Releases page.
+- **Display language** — switch the UI between English, 简体中文, and 日本語.
+
+### Fixed
+
+- **Lightweight mode** — edge-flush the tucked peek icon and smooth out the diagonal reveal animation.
+
 ## [1.0.0] - 2026-07-23
 
 First public, open-source release.
@@ -23,4 +34,5 @@ First public, open-source release.
 - **macOS**: Apple Silicon (arm64) only; builds are unsigned — right-click → **Open** on first launch (or `xattr -dr com.apple.quarantine /Applications/VaultOne.app`). Intel Mac users can build from source.
 - **Providers**: Claude Code only; additional providers (Codex, Cursor, …) are planned.
 
+[1.1.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.0.0
