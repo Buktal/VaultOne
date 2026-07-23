@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-orange.svg)](https://tauri.app/)
 
-[English](./README.md) | **简体中文**
+[English](./README.md) | **简体中文** | [更新日志](./CHANGELOG.zh-CN.md)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="./docs/images/dashboard-dark.png">
