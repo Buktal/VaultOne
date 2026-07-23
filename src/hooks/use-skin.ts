@@ -1,9 +1,9 @@
-// Reflects the persisted color skin onto <html data-skin="…">. `pixso` (the
+// Reflects the persisted color skin onto <html data-skin="…">. `neutral` (the
 // default) clears the attribute so the :root/.dark baseline applies; any other
 // skin sets it, and the [data-skin="…"] blocks in index.css override ONLY the
-// data palette + brand — never fonts or neutral surfaces (the iron rule in
-// index.css). Independent of next-themes, which still owns the `.dark` class;
-// the two dimensions compose freely (mode × skin).
+// brand + data palette + button pair-color — never body fonts or neutral
+// surfaces (the iron rule in index.css). Independent of next-themes, which
+// still owns the `.dark` class; the two dimensions compose freely (mode × skin).
 
 import { useEffect } from "react"
 import { usePreferencesQuery } from "@/app/store/api"
@@ -15,7 +15,7 @@ export function useSkinEffect(): void {
   const skin = prefs?.skin
   useEffect(() => {
     const el = document.documentElement
-    if (skin && skin !== "pixso") {
+    if (skin && skin !== "neutral") {
       el.setAttribute("data-skin", skin)
     } else {
       el.removeAttribute("data-skin")

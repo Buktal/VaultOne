@@ -61,25 +61,36 @@
  *      legibility follows the mode, never the skin.
  *        --foreground / --muted-foreground / --card-foreground
  *        --background / --card / --popover / --border / --input / --sidebar-*
- *   B. Skin-scoped: the data palette + brand accent. This is everything a
- *      skin owns — six vars, nothing else:
+ *        --primary-foreground is the ONE font color a skin MAY set, because it
+ *        is the button's pair color (it rides on the button surface, which IS
+ *        skin-scoped) — not body text. It flows from --btn-fg / --btn-fg-dark.
+ *   B. Skin-scoped: brand + data palette + button pair-color. A skin block owns:
+ *        --brand (+ --brand-strong)         accent + button surface
+ *        --btn-fg  / --btn-fg-dark          button text, light / dark
  *        --chart-input / -output / -cache-create / -cache-read
- *        --metric-cost   --brand (+ --brand-strong)
- *      Hue-family anchoring: each bucket keeps its hue family across skins
- *      (input=blue-green  output=yellow  cache_create=pink/violet
- *       cache_read=green  cost=red-orange), so swapping a skin changes the
- *      mood, never the meaning. Brand color once hardcoded in 8 places now
- *      flows from --brand.
+ *        --metric-cost
+ *        (--sr-success/tool/warn/error, optionally, to recolor stop-reason
+ *         chips independently of the chart — otherwise they alias the chart)
  *
- * Default skin = Pixso green (the values in :root/.dark below; no data-skin
- * attribute set). Named skins below override the B-tier only. cost always
- * wins the red/orange family; brand steps aside to a cool accent so the two
- * never collide. Adding a skin = one [data-skin] block of 7 lines.
+ * BUTTON RULE (skin-agnostic, defined once here, every skin inherits it):
+ *     light  --primary = --brand-strong   --primary-foreground = --btn-fg
+ *     dark   --primary = --brand          --primary-foreground = --btn-fg-dark
+ * So a skin swap recolors every primary button / progress bar / synced dot in
+ * BOTH modes — the light/dark control gap (ADR-0013 v3) is closed by driving
+ * --primary from the brand, not from a hardcoded neutral. Neutral's own brand
+ * values are greyscale, which is how it stays black/white while still following
+ * the same rule. --btn-fg / --btn-fg-dark are written out per skin so the pair
+ * color is tunable without touching logic (AA: deep button ⇒ white text, pale
+ * button ⇒ dark text; Crimson's red wants white in BOTH modes).
  *
- * Surfaces are flat solid — no glass, no backdrop-blur, no glow (iOS dark
- * idiom); they separate by lightness step + hairline border. Font: Geist,
- * CJK falls back to system (PingFang/YaHei). Light theme retained as fallback.
+ * DEFAULT SKIN = Neutral: greyscale chrome (--brand is a grey) over the default
+ * multi-hue chart (data viz needs color even when the chrome is mono). NO
+ * data-skin attribute is set for it. The four chromatic skins override the
+ * B-tier only. Surfaces are flat solid — no glass, no backdrop-blur, no glow
+ * (iOS dark idiom); they separate by lightness step + hairline border.
+ * Font: Geist, CJK falls back to system (PingFang/YaHei).
  */
+
 :root {
   --background: oklch(0.965 0 0); /* off-white; pure #fff was too glaring */
   --foreground: oklch(0.145 0 0);
@@ -87,48 +98,53 @@
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0 0);
-  /* --primary stays near-black in light: a neutral button surface (ADR-0013).
-     The brand color reaches the UI only via --accent-brand (selection rail /
-     icon), NOT via --primary, so a skin swap doesn't cascade into every
-     primary button. In .dark, --primary DOES become --brand. */
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
+  /* Button surface follows the brand (BUTTON RULE above). Neutral's
+     --brand-strong is near-black ⇒ black button; --btn-fg is its pair color. */
+  --primary: var(--brand-strong);
+  --primary-foreground: var(--btn-fg);
+  --btn-fg: #ffffff;
   --secondary: oklch(0.94 0 0);
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.94 0 0);
-  --muted-foreground: oklch(0.556 0 0);
+  /* Deepened from 0.556 — light-mode secondary text & icons read too pale. */
+  --muted-foreground: oklch(0.42 0 0);
   --accent: oklch(0.94 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
-  /* B-tier — default skin (Pixso green). Light shades: brighter for contrast
-     on white; each pairs to its dark counterpart by hue family. 命中=绿. */
-  --chart-input: #80e0e6; /* 输入 input_tokens — 青 */
-  --chart-output: #ffbb4f; /* 输出 output_tokens — 金 */
-  --chart-cache-create: #ff7576; /* 缓存创建 cache_creation — 珊瑚红 */
-  --chart-cache-read: #89b37c; /* 缓存命中 cache_read — 鼠尾草绿 */
-  --metric-cost: #d55e00; /* 成本 USD — 朱红（独立「钱」维度，非四桶）*/
-  --brand: #0fae84; /* 强调 / 选中 / 链接 — Pixso 绿（light 档）*/
-  --brand-strong: #04785c; /* 选中文字色，AA on the tint */
+  /* B-tier — default skin (Neutral). --brand is a grey, so the chrome stays
+     monochrome while the chart below stays multi-hue (data needs color). The
+     four chromatic skins override --brand / --brand-strong / --btn-fg. */
+  --brand: oklch(0.45 0 0);
+  --brand-strong: oklch(0.205 0 0);
+  --chart-input: #d89744; /* 输入 input_tokens — 青 */
+  --chart-output: #cb3d49; /* 输出 output_tokens — 金 */
+  --chart-cache-create: #2e59a7; /* 缓存创建 cache_creation — 珊瑚红 */
+  --chart-cache-read: #4c8045; /* 缓存命中 cache_read — 鼠尾草绿 */
+  --metric-cost: #9d2932; /* 成本 USD — 朱红（独立「钱」维度，非四桶）*/
   --radius: 0.45rem;
   --sidebar: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-primary: var(--brand-strong);
+  --sidebar-primary-foreground: var(--btn-fg);
   --sidebar-accent: oklch(0.94 0 0);
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
-  /* Brand accent for selection (ADR-0013 v3). Light --primary is neutral
-     near-black, so selection draws on the brand color instead:
-     --accent-tint = selection fill, --accent-brand = left rail + icon,
-     --accent-brand-strong = label text (AA on the tint). --row-hover replaces
-     the ~invisible bg-muted/40 table-row hover. */
+  /* Selection accent derives from the brand, so it recolors with the skin
+     without a skin block having to repeat it: --accent-tint = selection fill,
+     --accent-brand = left rail + icon, --accent-brand-strong = label text. */
   --accent-brand: var(--brand);
   --accent-brand-strong: var(--brand-strong);
-  --accent-tint: color-mix(in srgb, var(--brand) 11%, transparent);
+  --accent-tint: color-mix(in srgb, var(--brand) 10%, transparent);
+  /* stop_reason semantic aliases (see .sr-chip). Default to the chart buckets
+     by hue family; a skin may override any --sr-* to recolor chips alone. */
+  --sr-success: var(--chart-cache-read);
+  --sr-tool: var(--chart-input);
+  --sr-warn: var(--chart-output);
+  --sr-error: var(--destructive);
   --row-hover: #ededed;
   --row-hover-shadow: 0 4px 12px -4px rgba(0, 0, 0, 0.15);
   /* Scrollbar — thin, no arrows (Windows WebView2). Flat semi-transparent
@@ -144,14 +160,14 @@
   --card-foreground: #ffffff;
   --popover: #2c2c2e;
   --popover-foreground: #ffffff;
-  /* B-tier brand flows into primary/ring/sidebar-primary in dark (ADR-0013):
-     dark's primary IS the brand color, so a skin swap recolors primary
-     buttons, focus rings, and the sidebar active item. Light keeps --primary
-     neutral, so the same skin touches far less there. */
-  --brand: #14c393;
-  --brand-strong: #2ee8b8;
+  /* BUTTON RULE: dark --primary is the brand's LIGHT shade; --btn-fg-dark is
+     its pair color. Neutral's --brand is a light grey ⇒ light-grey button with
+     dark text (near-white, easier on the eye than pure #fff on #1C1C1E). */
   --primary: var(--brand);
-  --primary-foreground: #04130d;
+  --primary-foreground: var(--btn-fg-dark);
+  --btn-fg-dark: oklch(0.2 0 0);
+  --brand: oklch(0.72 0 0);
+  --brand-strong: oklch(0.9 0 0);
   --secondary: #3a3a3c;
   --secondary-foreground: #ffffff;
   --muted: #3a3a3c;
@@ -162,24 +178,27 @@
   --border: rgba(255, 255, 255, 0.08);
   --input: #3a3a3c;
   --ring: var(--brand);
-  /* B-tier data palette — default skin (Pixso green). Dark shades: pastel /
-     vivid for pop on #1C1C1E; each pairs to its light counterpart by hue. */
-  --chart-input: #28aef3;
-  --chart-output: #fcb859;
-  --chart-cache-create: #f2c8ed;
-  --chart-cache-read: #a9dfd8;
-  --metric-cost: #d55e00;
+  /* B-tier data palette — default skin (Neutral). Dark shades: vivid for pop
+     on #1C1C1E; each pairs to its light counterpart by hue. */
+  --chart-input: #d89744;
+  --chart-output: #cb3d49;
+  --chart-cache-create: #2e59a7;
+  --chart-cache-read: #4c8045;
+  --metric-cost: #cb3d49;
   --sidebar: #1c1c1e;
   --sidebar-foreground: #ffffff;
   --sidebar-primary: var(--brand);
-  --sidebar-primary-foreground: #04130d;
+  --sidebar-primary-foreground: var(--btn-fg-dark);
   --sidebar-accent: #3a3a3c;
   --sidebar-accent-foreground: #ffffff;
   --sidebar-border: rgba(255, 255, 255, 0.08);
   --sidebar-ring: var(--brand);
   --accent-brand: var(--brand);
-  --accent-brand-strong: var(--brand-strong);
-  --accent-tint: color-mix(in srgb, var(--brand) 14%, transparent);
+  /* Selection label text: dark mode uses the LIGHT shade (--brand) so the text
+     reads on the dark tint fill. Light mode uses --brand-strong (deep) on the
+     pale tint — see :root. Same var name, swapped source per mode. */
+  --accent-brand-strong: var(--brand);
+  --accent-tint: color-mix(in srgb, var(--brand) 12%, transparent);
   --row-hover: rgba(255, 255, 255, 0.06);
   --row-hover-shadow: 0 4px 12px -4px rgba(0, 0, 0, 0.5);
   --scrollbar-thumb: rgba(255, 255, 255, 0.16);
@@ -187,56 +206,65 @@
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * B-tier skins — override ONLY the data palette + brand. Iron rule: NEVER set
- * a font color or neutral surface in these blocks. Hue-family anchored (see
- * the file header): input=blue-green · output=yellow · cache_create=pink/
- * violet · cache_read=green · cost=red-orange. brand always yields the red/
- * orange family to cost. Values currently apply to both light & dark; per-mode
- * shades can be tuned later once we see them on real surfaces.
+ * B-tier chromatic skins — override brand + data palette + button pair color.
+ * Iron rule: NEVER set a body font color or neutral surface here. The BUTTON
+ * RULE (light primary=brand-strong, dark primary=brand) is inherited from
+ * :root/.dark, so each skin only states its brand shades and the two button
+ * pair colors. --btn-fg = light-mode button text, --btn-fg-dark = dark-mode.
+ * Chart + cost values are the designer-tuned palette per skin (hue-family
+ * anchored); cost currently shares cache-read's hue on purpose.
  * ───────────────────────────────────────────────────────────────────────── */
 
-/* 翠微 — 暗·古韵。brand = 墨蓝（让出红/橙给 cost）。 */
-[data-skin="cuiwei"] {
-  --chart-input: #108b96;
-  --chart-output: #fac03d;
-  --chart-cache-create: #422256;
-  --chart-cache-read: #4c8045;
-  --metric-cost: #4c8045;
+/* Sage — pale green accent, deep-green button. */
+[data-skin="sage"] {
   --brand: #b7d6b3;
   --brand-strong: #4c8045;
+  --btn-fg: #ffffff; /* light: deep-green button → white text */
+  --btn-fg-dark: #04130d; /* dark: pale-green button → dark text */
+  --chart-input: #507dcf;
+  --chart-output: #f4e20f;
+  --chart-cache-create: #f2946c;
+  --chart-cache-read: #4c8045;
+  --metric-cost: #4c8045;
 }
 
-/* 听乌 — 全色相·中和。brand = 藏青（夜空）。 */
-[data-skin="tingwu"] {
-  --chart-input: #3d8e86;
+/* Azure — misty blue accent, deep-blue button. */
+[data-skin="azure"] {
+  --brand: #8ba9df;
+  --brand-strong: #2e59a7;
+  --btn-fg: #ffffff;
+  --btn-fg-dark: #04130d;
+  --chart-input: #bc313d;
   --chart-output: #ecd452;
-  --chart-cache-create: #4a4b9d;
-  --chart-cache-read: #68945c;
-  --metric-cost: #d24735;
-  --brand: #003e74;
-  --brand-strong: #3a77b5;
+  --chart-cache-create: #c0d09d;
+  --chart-cache-read: #2e59a7;
+  --metric-cost: #2e59a7;
 }
 
-/* 胭脂 — 淡·粉彩。brand = 天蓝（让出红给 cost）。 */
-[data-skin="yanzhi"] {
+/* Crimson — carmine red accent. Red wants white text in BOTH modes. */
+[data-skin="crimson"] {
+  --brand: #bc313d;
+  --brand-strong: #9d2932;
+  --btn-fg: #ffffff;
+  --btn-fg-dark: #ffffff; /* dark: red button still wants white text */
   --chart-input: #5b9953;
   --chart-output: #ffe941;
   --chart-cache-create: #abcce0;
   --chart-cache-read: #9d2932;
   --metric-cost: #9d2932;
-  --brand: #cf4551;
-  --brand-strong: #9d2932;
 }
 
-/* 紫紫 — 艳·高对比。brand = 宝蓝。 */
-[data-skin="zizi"] {
-  --chart-input: #1e7fa0;
-  --chart-output: #ffee6f;
-  --chart-cache-create: #494166;
-  --chart-cache-read: #4c8045;
-  --metric-cost: #ea5414;
-  --brand: #2e59a7;
-  --brand-strong: #6a8dd4;
+/* Mauve — smoky violet accent, deep-violet button. */
+[data-skin="mauve"] {
+  --brand: #b7b0cd;
+  --brand-strong: #494166;
+  --btn-fg: #ffffff;
+  --btn-fg-dark: #04130d;
+  --chart-input: #ce93bf;
+  --chart-output: #68945c;
+  --chart-cache-create: #e5ca00;
+  --chart-cache-read: #494166;
+  --metric-cost: #494166;
 }
 
 @layer base {
@@ -298,9 +326,10 @@
 }
 
 /*
- * stop_reason semantic chip — reuses the data-palette vars so it recolors with
- * the theme. Tinted via color-mix (Chromium 111+ / Safari 16.2+, both within
- * Tauri's webview floor). Used by the request-log table (ADR-0011).
+ * stop_reason semantic chip — recolors with the theme via the --sr-* aliases
+ * (which default to the chart palette in :root). Tinted via color-mix
+ * (Chromium 111+ / Safari 16.2+, both within Tauri's webview floor). Used by
+ * the request-log table (ADR-0011).
  */
 .sr-chip {
   display: inline-flex;
@@ -313,20 +342,20 @@
   white-space: nowrap;
 }
 .sr-success {
-  color: var(--chart-cache-read);
-  background: color-mix(in srgb, var(--chart-cache-read) 16%, transparent);
+  color: var(--sr-success);
+  background: color-mix(in srgb, var(--sr-success) 16%, transparent);
 }
 .sr-tool {
-  color: var(--chart-input);
-  background: color-mix(in srgb, var(--chart-input) 16%, transparent);
+  color: var(--sr-tool);
+  background: color-mix(in srgb, var(--sr-tool) 16%, transparent);
 }
 .sr-warn {
-  color: var(--chart-output);
-  background: color-mix(in srgb, var(--chart-output) 16%, transparent);
+  color: var(--sr-warn);
+  background: color-mix(in srgb, var(--sr-warn) 16%, transparent);
 }
 .sr-error {
-  color: var(--destructive);
-  background: color-mix(in srgb, var(--destructive) 16%, transparent);
+  color: var(--sr-error);
+  background: color-mix(in srgb, var(--sr-error) 16%, transparent);
 }
 
 /*

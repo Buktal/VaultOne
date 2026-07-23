@@ -12,8 +12,8 @@ export type Language = "en" | "zh" | "ja"
 export type LightweightExpand = "click" | "hover"
 
 /** Color skin (multi-skin theming). Matches Rust `Skin` (serde snake_case).
- *  `pixso` is the default and needs no data-skin attribute on <html>. */
-export type Skin = "pixso" | "cuiwei" | "tingwu" | "yanzhi" | "zizi"
+ *  `neutral` is the default and needs no data-skin attribute on <html>. */
+export type Skin = "neutral" | "sage" | "azure" | "crimson" | "mauve"
 
 /** User-tunable preferences surfaced in the Settings「通用」card. */
 export interface Preferences {
@@ -25,6 +25,6 @@ export interface Preferences {
   language: Language
   /** How the lightweight half-icon expands (ADR-0015). Default `click`. */
   lightweight_expand: LightweightExpand
-  /** Color skin (multi-skin theming). Default `pixso`; per-device, not synced. */
+  /** Color skin (multi-skin theming). Default `neutral`; per-device, not synced. */
   skin: Skin
 }

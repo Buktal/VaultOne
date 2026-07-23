@@ -78,29 +78,30 @@ const COLLECT_OPTIONS: ReadonlyArray<number> = [10, 30, 60]
 const PUSH_OPTIONS: ReadonlyArray<number> = [300, 600, 900, 1800, 3600]
 
 /**
- * Color skins (multi-skin theming). `brand` is the skin's accent hex, shown as
- * a solid swatch — these are skin identity colors for the picker, NOT theme
- * tokens (the live values live in the index.css [data-skin] blocks). pixso
- * first as the default.
+ * Color skins (multi-skin theming). Chromatic swatches read straight from CSS
+ * — each carries `data-skin={value}` and uses `var(--brand)`, so the swatch IS
+ * the live accent from index.css (single source: edit a [data-skin] block and
+ * the swatch follows, no TS sync). `neutral` is the exception: its grey is the
+ * :root/.dark default with NO [data-skin] block, so var(--brand) would inherit
+ * the active skin's brand on <html> — it uses a literal `brand` fill instead.
+ * The selection check follows the MODE, not the skin: black in light, white in
+ * dark, with a dark drop-shadow so it reads on any swatch fill. Names are
+ * English literals (no i18n); `neutral` first as the default.
  */
-const SKINS: ReadonlyArray<{ value: Skin; brand: string; labelKey: string }> = [
-  { value: "pixso", brand: "#14c393", labelKey: "settings.general.skinPixso" },
+const SKINS: ReadonlyArray<{
+  value: Skin
+  label: string
+  brand?: string
+}> = [
   {
-    value: "cuiwei",
-    brand: "#1a2847",
-    labelKey: "settings.general.skinCuiwei",
+    value: "neutral",
+    label: "Neutral",
+    brand: "#6b7280",
   },
-  {
-    value: "tingwu",
-    brand: "#003e74",
-    labelKey: "settings.general.skinTingwu",
-  },
-  {
-    value: "yanzhi",
-    brand: "#4994c4",
-    labelKey: "settings.general.skinYanzhi",
-  },
-  { value: "zizi", brand: "#2e59a7", labelKey: "settings.general.skinZizi" },
+  { value: "sage", label: "Sage" },
+  { value: "azure", label: "Azure" },
+  { value: "crimson", label: "Crimson" },
+  { value: "mauve", label: "Mauve" },
 ]
 
 export function GeneralCard() {
@@ -140,9 +141,10 @@ export function GeneralCard() {
               <button
                 key={s.value}
                 type="button"
-                title={t(s.labelKey)}
-                aria-label={t(s.labelKey)}
+                title={s.label}
+                aria-label={s.label}
                 aria-pressed={selected}
+                data-skin={s.brand ? undefined : s.value}
                 disabled={savingSkin}
                 onClick={async () => {
                   const r = await setSkin(s.value)
@@ -160,9 +162,16 @@ export function GeneralCard() {
                     ? "border-foreground"
                     : "border-transparent hover:border-border",
                 )}
-                style={{ background: s.brand }}
+                style={{ background: s.brand ?? "var(--brand)" }}
               >
-                {selected ? <Check className="size-3.5 text-white" /> : null}
+                {selected ? (
+                  <Check
+                    className="size-3.5 text-black dark:text-white"
+                    style={{
+                      filter: "drop-shadow(0 0 1px rgba(0, 0, 0, 0.55))",
+                    }}
+                  />
+                ) : null}
               </button>
             )
           })}

@@ -97,26 +97,33 @@ pub enum LightweightExpand {
 }
 
 /// Color skin for multi-skin theming (ADR-0013 token-first). Serialized
-/// snake_case; `pixso` is the default and maps to NO `data-skin` attribute on
-/// `<html>` (the :root/.dark values in src/index.css ARE the Pixso palette).
-/// Per-device, not synced (config.json never enters the repo). Hue-family
-/// anchored — each data bucket keeps its hue family across skins, so a swap
-/// changes the mood, never the meaning. The frontend applies it; Rust stores.
+/// snake_case; `neutral` is the default and maps to NO `data-skin` attribute on
+/// `<html>` (the :root/.dark values in src/index.css ARE the Neutral palette —
+/// pure greyscale chrome over a default multi-hue chart). Per-device, not synced
+/// (config.json never enters the repo). The four chromatic skins each override
+/// `--brand` (+ `--brand-strong`) and the button-foreground vars in index.css;
+/// everything else holds. The frontend applies it; Rust only stores it.
+///
+/// Back-compat: the legacy snake_case names (`pixso`/`cuiwei`/`tingwu`/
+/// `yanzhi`/`zizi`) are accepted as aliases, so an older config.json lands on
+/// the closest new skin instead of failing to deserialize — `pixso` (the old
+/// default) → `Neutral` (the new default); the rest map by hue family.
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum Skin {
     #[default]
-    Pixso,
-    /// 翠微 — dark, classical tones.
-    Cuiwei,
-    /// 听乌 — full hue range, neutral.
-    Tingwu,
-    /// 胭脂 — pale, pastel.
-    Yanzhi,
-    /// 紫紫 — vivid, high-contrast.
-    Zizi,
+    #[serde(alias = "pixso")]
+    Neutral,
+    #[serde(alias = "cuiwei")]
+    Sage,
+    #[serde(alias = "tingwu")]
+    Azure,
+    #[serde(alias = "yanzhi")]
+    Crimson,
+    #[serde(alias = "zizi")]
+    Mauve,
 }
 
 /// Default background-collect interval in seconds (ADR-0014: 30 s — decoupled
@@ -209,7 +216,7 @@ impl Default for ConfigData {
             push_interval_secs: default_push_interval_secs(),
             language: Language::En,
             lightweight_expand: LightweightExpand::Click,
-            skin: Skin::Pixso,
+            skin: Skin::Neutral,
         }
     }
 }
