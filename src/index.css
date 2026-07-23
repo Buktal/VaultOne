@@ -270,3 +270,42 @@
   color: var(--destructive);
   background: color-mix(in srgb, var(--destructive) 16%, transparent);
 }
+
+/*
+ * Lightweight glance card reveal (ADR-0015). The window has no native resize
+ * animation (Tauri/WebView2), so the size jump is hidden behind a content-layer
+ * clip-path wipe: content reveals from the TOP-RIGHT corner toward the
+ * BOTTOM-LEFT — the card grows left/down from its right-edge dock, so this is
+ * the natural direction (the focal corner appears first). Opaque window ⇒ the
+ * body background fills the new size instantly; the clip then progressively
+ * renders the card content over that same-color fill. prefers-reduced-motion ⇒
+ * instant (no clip animation).
+ */
+.lw-reveal-in {
+  animation: lw-reveal-in 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.lw-reveal-out {
+  animation: lw-reveal-out 200ms ease-in both;
+}
+@keyframes lw-reveal-in {
+  from {
+    clip-path: inset(0 0 92% 92%);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+@keyframes lw-reveal-out {
+  from {
+    clip-path: inset(0 0 0 0);
+  }
+  to {
+    clip-path: inset(0 0 92% 92%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lw-reveal-in,
+  .lw-reveal-out {
+    animation: none;
+  }
+}

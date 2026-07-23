@@ -9,7 +9,8 @@
 // icon in the drag bar (mirrors the title-bar CtrlButton treatment); the
 // full-mode title bar is unchanged.
 //
-// Expand/collapse is eased with a fade driven by useLightweightTuck's phase.
+// Expand/collapse is a top-right → bottom-left clip-path reveal driven by
+// useLightweightTuck's phase (.lw-reveal-in / .lw-reveal-out in index.css).
 // Refresh is free: providers.tsx invalidates the Usage tags on every
 // `usage_changed`, and TokenHero's query matches the dashboard's "today".
 
@@ -92,10 +93,10 @@ export function LightweightCard() {
   const leaving = phase === "leaving"
   return (
     <div
-      // key changes between enter/leave so the fade animation replays even when
-      // the same card instance would otherwise stay mounted (e.g. a re-enter
-      // mid-collapse). No h-screen: the root sizes to its content and the hook
-      // matches the window height to it.
+      // key changes between enter/leave so the reveal animation replays even
+      // when the same card instance would otherwise stay mounted (e.g. a re-
+      // enter mid-collapse). No h-screen: the root sizes to its content and the
+      // hook matches the window height to it.
       key={leaving ? "leave" : "in"}
       ref={rootRef}
       role="dialog"
@@ -104,10 +105,10 @@ export function LightweightCard() {
       onMouseLeave={scheduleTuck}
       className={cn(
         "bg-background text-foreground flex w-screen flex-col overflow-hidden",
-        leaving
-          ? "animate-out fade-out slide-out-to-right-1 duration-120"
-          : "animate-in fade-in slide-in-from-right-1 duration-150",
-        "motion-reduce:animate-none",
+        // Content wipes in from the top-right toward the bottom-left (the card
+        // grows left/down from the right-edge dock). Opaque window ⇒ the body
+        // bg fills the new size instantly; the clip then renders content over it.
+        leaving ? "lw-reveal-out" : "lw-reveal-in",
       )}
     >
       {/* Drag region + a single expand-to-full icon. The button has no

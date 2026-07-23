@@ -27,6 +27,8 @@ import {
   dockRight,
   EDGE_THRESHOLD,
   ENTRY_DOCK_Y,
+  INSET_EXPANDED,
+  INSET_TUCKED,
   monitorForWindow,
   rightEdgeLogical,
   TUCKED_HEIGHT,
@@ -37,8 +39,8 @@ const appWindow = getCurrentWindow()
 
 /** Hover-leave debounce before the card starts collapsing. */
 const LEAVE_DEBOUNCE_MS = 250
-/** Duration of the collapse fade; the shrink to the half-icon runs after it. */
-const LEAVE_FADE_MS = 120
+/** Duration of the collapse reveal-out; the shrink to the half-icon runs after. */
+const LEAVE_FADE_MS = 200
 
 export type TuckPhase = "tucked" | "expanded" | "leaving"
 
@@ -81,9 +83,11 @@ export function useLightweightTuck() {
     programmatic.current = true
     const logicalW = wantTucked ? TUCKED_WIDTH : CARD_WIDTH
     const logicalH = wantTucked ? TUCKED_HEIGHT : cardHeight.current
+    // Tucked flush-edges (inset 0); expanded keeps a small breathing gap (2).
+    const inset = wantTucked ? INSET_TUCKED : INSET_EXPANDED
     // Atomic Rust dock: sets the OUTER rect (shadow included) on the monitor
     // Windows considers the window to be on, in one SetWindowPos.
-    const y = await dockRight(logicalW, logicalH, lastY.current)
+    const y = await dockRight(logicalW, logicalH, lastY.current, inset)
     if (y != null) lastY.current = y
     window.setTimeout(() => {
       programmatic.current = false
@@ -96,8 +100,9 @@ export function useLightweightTuck() {
   }, [applyShape])
 
   const tuck = useCallback(() => {
-    // Fade the card out first; only after the fade does the window shrink to
-    // the half-icon, so the size jump is hidden behind the invisible content.
+    // Reveal the card out (clip wipes back to the top-right) first; only after
+    // it does the window shrink to the half-icon, so the size jump is hidden
+    // behind the already-invisible content.
     setPhase("leaving")
     if (leaveEnd.current != null) window.clearTimeout(leaveEnd.current)
     leaveEnd.current = window.setTimeout(() => {

@@ -31,8 +31,11 @@ export const EDGE_THRESHOLD = 12
 /** Logical px from the top where the glance card docks on entry. */
 export const ENTRY_DOCK_Y = 48
 /** How far the OUTER rect is kept inside the monitor edge (passed to the Rust
- * dock so the full outer rect — shadow included — never touches the A/B edge). */
-export const INSET = 2
+ * dock so the full outer rect — shadow included — never crosses the A/B edge).
+ * Tucked flush-edges (the half-icon kisses the right edge); expanded keeps a
+ * small breathing gap so the card doesn't visually merge with the bezel. */
+export const INSET_TUCKED = 0
+export const INSET_EXPANDED = 2
 
 /** The monitor the window's CENTER is on (best-effort, for the drag-to-edge
  *  test). The authoritative pick for docking lives in Rust (MonitorFromWindow). */
@@ -67,19 +70,21 @@ export async function rightEdgeLogical(): Promise<number | null> {
 }
 
 /** Dock the window flush-right via the Rust command (one atomic SetWindowPos of
- *  the OUTER rect, monitor picked by Windows' largest-intersection rule). Passes
- *  INSET so the full outer rect (shadow included) stays inside one monitor.
+ *  the OUTER rect, monitor picked by Windows' largest-intersection rule). The
+ *  caller picks the inset: tucked flush-edges (0), expanded keeps a gap (2) so
+ *  the full outer rect (shadow included) stays inside one monitor.
  *  Returns the clamped logical y to remember, or null on failure. */
 export async function dockRight(
   clientLogicalW: number,
   clientLogicalH: number,
   logicalY: number,
+  inset: number,
 ): Promise<number | null> {
   const r = await commands.dockWindowRight(
     clientLogicalW,
     clientLogicalH,
     logicalY,
-    INSET,
+    inset,
   )
   if ("error" in r) return null
   return r.data
