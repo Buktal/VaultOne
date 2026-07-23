@@ -73,7 +73,11 @@ jobs:
           printf '\nCHANGELOG_EOF\n' >> "$GITHUB_ENV"
 
       - name: Build and publish
-        uses: tauri-apps/tauri-action@v0
+        # Pinned: v0.5.21+ has a regression that skips uploading latest.json
+        # and .sig ("Signature not found for the updater JSON", tauri-action
+        # #1098), which silently breaks auto-update. v0.5.20 is the last
+        # verified-good release. Re-evaluate on a future dependency bump.
+        uses: tauri-apps/tauri-action@v0.5.20
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Ed25519 signing key (ADR-0017): tauri-action signs each installer
