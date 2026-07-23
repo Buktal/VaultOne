@@ -39,3 +39,4 @@ yarn.lock
 
 # MCP servers
 .mcp.json
+/.tauri/
