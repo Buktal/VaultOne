@@ -171,7 +171,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         <aside
           className={cn(
             "bg-card border-border flex shrink-0 flex-col rounded-2xl border transition-[width] duration-200",
-            collapsed ? "w-16" : "w-52",
+            collapsed ? "w-16" : "w-48",
           )}
         >
           <div
