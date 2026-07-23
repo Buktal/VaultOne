@@ -3,6 +3,7 @@
 
 import { Monitor, Moon, Sun } from "lucide-react"
 import { useTheme } from "next-themes"
+import { useTranslation } from "react-i18next"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -17,15 +18,17 @@ const NEXT: Record<string, "light" | "dark" | "system"> = {
   system: "light",
 }
 
-const META: Record<string, { Icon: typeof Sun; label: string }> = {
-  light: { Icon: Sun, label: "浅色" },
-  dark: { Icon: Moon, label: "深色" },
-  system: { Icon: Monitor, label: "跟随系统" },
+const META: Record<string, { Icon: typeof Sun; key: string }> = {
+  light: { Icon: Sun, key: "theme.light" },
+  dark: { Icon: Moon, key: "theme.dark" },
+  system: { Icon: Monitor, key: "theme.system" },
 }
 
 export function ThemeToggle() {
+  const { t } = useTranslation()
   const { theme = "system", setTheme } = useTheme()
-  const { Icon, label } = META[theme] ?? META.system
+  const { Icon, key } = META[theme] ?? META.system
+  const label = t(key)
 
   return (
     <Tooltip>
@@ -35,14 +38,14 @@ export function ThemeToggle() {
             variant="ghost"
             size="icon-sm"
             className="text-muted-foreground"
-            aria-label={`切换主题（当前：${label}）`}
+            aria-label={t("theme.aria", { current: label })}
             onClick={() => setTheme(NEXT[theme] ?? "dark")}
           />
         }
       >
         <Icon />
       </TooltipTrigger>
-      <TooltipContent>主题 · {label}</TooltipContent>
+      <TooltipContent>{t("theme.tooltip", { current: label })}</TooltipContent>
     </Tooltip>
   )
 }

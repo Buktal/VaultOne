@@ -9,6 +9,7 @@
 // change (extend TrendPoint); tracked in backlog.
 
 import dayjs from "dayjs"
+import { useTranslation } from "react-i18next"
 import {
   Area,
   AreaChart,
@@ -44,16 +45,24 @@ type Bucket = {
 
 // Stack order bottom → top: input (largest) at the base.
 const BUCKETS: Bucket[] = [
-  { key: "input_tokens", name: "输入", color: "var(--chart-input)" },
-  { key: "output_tokens", name: "输出", color: "var(--chart-output)" },
+  {
+    key: "input_tokens",
+    name: "usage.tokens.input",
+    color: "var(--chart-input)",
+  },
+  {
+    key: "output_tokens",
+    name: "usage.tokens.output",
+    color: "var(--chart-output)",
+  },
   {
     key: "cache_creation_tokens",
-    name: "缓存创建",
+    name: "usage.tokens.cacheCreation",
     color: "var(--chart-cache-create)",
   },
   {
     key: "cache_read_tokens",
-    name: "缓存命中",
+    name: "usage.tokens.cacheRead",
     color: "var(--chart-cache-read)",
   },
 ]
@@ -64,6 +73,7 @@ function formatHour(key: string): string {
 }
 
 export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
+  const { t } = useTranslation()
   // A single local-day range collapses per-day resolution to one bar, so zoom
   // to hourly; anything wider stays per-day. A UTC+8 "today" maps to a 24h UTC
   // window that still falls on one local day, so isSame("day") catches it.
@@ -77,14 +87,14 @@ export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
   return (
     <Card interactive>
       <CardHeader>
-        <CardTitle>使用趋势</CardTitle>
+        <CardTitle>{t("usage.trend.title")}</CardTitle>
         <CardAction>
           <span className="text-muted-foreground text-xs tabular-nums">
             {data.length > 0
               ? hourly
-                ? `近 ${data.length} 小时`
-                : `近 ${data.length} 天`
-              : "无数据"}
+                ? t("usage.trend.lastHours", { n: data.length })
+                : t("usage.trend.lastDays", { n: data.length })
+              : t("usage.trend.noData")}
           </span>
         </CardAction>
       </CardHeader>
@@ -93,8 +103,8 @@ export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
           isLoading={isLoading}
           error={error}
           isEmpty={data.length === 0}
-          emptyLabel="无趋势数据"
-          emptyDescription="采集本地日志后，按日聚合的用量将显示在此。"
+          emptyLabel={t("usage.trend.empty")}
+          emptyDescription={t("usage.trend.emptyDesc")}
         >
           <div className="h-72 w-full">
             <ResponsiveContainer width="100%" height="100%">
@@ -123,7 +133,7 @@ export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
                     key={b.key}
                     type="monotone"
                     dataKey={b.key}
-                    name={b.name}
+                    name={t(b.name)}
                     stackId="tokens"
                     stroke={b.color}
                     fill={b.color}
@@ -154,6 +164,7 @@ function TrendTooltip(props: {
   label?: string
   hourly?: boolean
 }) {
+  const { t } = useTranslation()
   const { active, payload, label, hourly } = props
   if (!active || !payload?.length) return null
   const total = payload.reduce((sum, p) => sum + Number(p.value ?? 0), 0)
@@ -178,7 +189,7 @@ function TrendTooltip(props: {
         </div>
       ))}
       <div className="mt-1 flex items-center justify-between gap-4 border-t pt-1 font-medium">
-        <span>合计</span>
+        <span>{t("usage.trend.total")}</span>
         <span className="tabular-nums">{formatTokens(total)}</span>
       </div>
     </div>

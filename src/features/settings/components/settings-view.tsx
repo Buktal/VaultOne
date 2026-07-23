@@ -17,6 +17,7 @@ import {
   XCircle,
 } from "lucide-react"
 import { useState } from "react"
+import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 import {
   useAppInfoQuery,
@@ -39,6 +40,7 @@ import { GeneralCard } from "@/features/settings/components/general-card"
 import type { ConfigConflict, VerifyReport } from "@/types/generated/bindings"
 
 export function SettingsView() {
+  const { t } = useTranslation()
   const { data: info } = useAppInfoQuery()
   const [setRepo, { isLoading: binding }] = useSetSyncRepoMutation()
   const [clearRepo, { isLoading: clearing }] = useClearSyncRepoMutation()
@@ -55,22 +57,27 @@ export function SettingsView() {
   const [verifyResult, setVerifyResult] = useState<VerifyReport | null>(null)
 
   const synced = info?.mode === "synced"
+  const unknown = t("common.unknownReason")
 
   const onSyncConfig = async () => {
     setConflicts(null)
     const r = await syncConfig()
     if ("error" in r) {
-      toast.error("云配置同步失败")
+      toast.error(t("settings.toast.configSyncFailed"))
       return
     }
     const o = r.data
     if (o?.has_conflict && o.conflicts.length > 0) {
       setConflicts(o.conflicts)
-      toast.warning(`检测到 ${o.conflicts.length} 个冲突，请逐个选择保留版本`)
+      toast.warning(
+        t("settings.toast.conflictsDetected", { count: o.conflicts.length }),
+      )
       return
     }
     toast.success(
-      `云配置已同步${o?.pushed ? "（已推送本地改动）" : ""}${o?.pricing_changed ? "，定价已更新" : ""}`,
+      t("settings.toast.configSynced") +
+        (o?.pushed ? t("settings.toast.configSyncedPushed") : "") +
+        (o?.pricing_changed ? t("settings.toast.configSyncedPricing") : ""),
     )
   }
 
@@ -87,7 +94,7 @@ export function SettingsView() {
       // 只有 spawn_blocking join 失败才会走到这（罕见）；正常探活失败在 r.data.ok。
       setVerifyResult({
         ok: false,
-        message: "校验请求失败，请稍后重试",
+        message: t("settings.sync.verifyRequestFailed"),
       })
       return
     }
@@ -96,37 +103,39 @@ export function SettingsView() {
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-6">
-      {/* 通用 — tray / ADR-0012 */}
+      {/* 通用 — tray / ADR-0012 / language / update ADR-0016-0017 */}
       <Section
-        eyebrow="通用"
-        description="应用常驻系统托盘。关窗后默认最小化到托盘、继续在后台定时读取使用记录。"
+        eyebrow={t("settings.section.general")}
+        description={t("settings.sectionDesc.general")}
       >
         <GeneralCard />
       </Section>
 
       {/* 本机 */}
       <Section
-        eyebrow="本机"
-        description="设备 ID 用于在多台设备间区分这台机器，显示名只是方便你辨认。"
+        eyebrow={t("settings.section.local")}
+        description={t("settings.sectionDesc.local")}
       >
-        <Row label="设备 ID">
+        <Row label={t("settings.local.deviceId")}>
           <code className="bg-muted rounded px-2 py-1 font-mono text-xs">
             {info?.device_id ?? "—"}
           </code>
         </Row>
-        <Row label="运行模式">
+        <Row label={t("settings.local.runMode")}>
           <Badge variant={synced ? "default" : "secondary"}>
-            {synced ? "已同步（多设备）" : "单机"}
+            {synced ? t("settings.local.modeSynced") : t("shell.standalone")}
           </Badge>
         </Row>
-        <Row label="Claude 日志目录">
+        <Row label={t("settings.local.claudeLogDir")}>
           <span className="text-muted-foreground truncate font-mono text-xs">
             {info?.claude_projects_dir ?? "—"}
           </span>
         </Row>
         <div className="bg-border h-px" />
         <div className="flex flex-col gap-2">
-          <Label className="text-muted-foreground text-xs">设备显示名</Label>
+          <Label className="text-muted-foreground text-xs">
+            {t("settings.local.displayName")}
+          </Label>
           <div className="flex items-center gap-2">
             <Input
               className="flex-1"
@@ -139,14 +148,14 @@ export function SettingsView() {
               disabled={naming || !displayName.trim()}
               onClick={async () => {
                 const r = await setName(displayName.trim())
-                if ("error" in r) toast.error("重命名失败")
+                if ("error" in r) toast.error(t("settings.toast.renameFailed"))
                 else {
-                  toast.success("已更新显示名")
+                  toast.success(t("settings.toast.displayNameUpdated"))
                   setDisplayName("")
                 }
               }}
             >
-              保存
+              {t("common.save")}
             </Button>
           </div>
         </div>
@@ -154,23 +163,23 @@ export function SettingsView() {
 
       {/* 同步 */}
       <Section
-        eyebrow="同步"
-        description="绑定一个私有 Git 仓库来开启多设备同步。访问令牌只存在本机，不会写入仓库。"
+        eyebrow={t("settings.section.sync")}
+        description={t("settings.sectionDesc.sync")}
       >
-        <Row label="当前仓库">
+        <Row label={t("settings.sync.currentRepo")}>
           <span className="text-muted-foreground font-mono text-xs">
-            {info?.repo_url ?? "（未配置）"}
+            {info?.repo_url ?? t("settings.sync.notConfigured")}
           </span>
         </Row>
         <Row label="Token">
           <span className="text-muted-foreground font-mono text-xs">
-            {info?.masked_token ?? "（未配置）"}
+            {info?.masked_token ?? t("settings.sync.notConfigured")}
           </span>
         </Row>
         <div className="bg-border h-px" />
         <div className="flex flex-col gap-2">
           <Label className="text-muted-foreground text-xs">
-            仓库 URL（HTTPS）
+            {t("settings.sync.repoUrl")}
           </Label>
           <Input
             placeholder="https://github.com/<owner>/<repo>.git"
@@ -182,7 +191,7 @@ export function SettingsView() {
             disabled={synced}
           />
           <Label className="text-muted-foreground text-xs">
-            GitHub 访问令牌（需 Contents 读写权限）
+            {t("settings.sync.githubToken")}
           </Label>
           <Input
             type="password"
@@ -205,7 +214,9 @@ export function SettingsView() {
             onClick={onVerify}
           >
             <PlugZap className="size-4" />
-            {verifying ? "校验中…" : "测试连接"}
+            {verifying
+              ? t("settings.sync.verifying")
+              : t("settings.sync.testConnection")}
           </Button>
           <Button
             size="sm"
@@ -216,16 +227,18 @@ export function SettingsView() {
                 githubToken: token.trim(),
               })
               if ("error" in r)
-                toast.error("配置失败", { description: describeError(r.error) })
+                toast.error(t("settings.toast.configFailed"), {
+                  description: describeError(r.error, unknown),
+                })
               else {
-                toast.success("已开启多设备同步")
+                toast.success(t("settings.toast.syncEnabled"))
                 setRepoUrl("")
                 setToken("")
               }
             }}
           >
             <CloudUpload className="size-4" />
-            绑定并开启同步
+            {t("settings.sync.bindAndEnable")}
           </Button>
           <Button
             variant="outline"
@@ -234,12 +247,14 @@ export function SettingsView() {
             onClick={async () => {
               const r = await clearRepo()
               if ("error" in r)
-                toast.error("解绑失败", { description: describeError(r.error) })
-              else toast.success("已切回单机（本地数据保留）")
+                toast.error(t("settings.toast.unbindFailed"), {
+                  description: describeError(r.error, unknown),
+                })
+              else toast.success(t("settings.toast.unbound"))
             }}
           >
             <Unplug className="size-4" />
-            解绑（切回单机）
+            {t("settings.sync.unbind")}
           </Button>
           {synced && (
             <Button
@@ -249,17 +264,22 @@ export function SettingsView() {
               onClick={async () => {
                 const r = await syncNow()
                 if ("error" in r)
-                  toast.error("同步失败", {
-                    description: describeError(r.error),
+                  toast.error(t("settings.toast.syncFailed"), {
+                    description: describeError(r.error, unknown),
                   })
                 else
                   toast.success(
-                    `已同步（导入 ${r.data?.imported ?? 0} 行${r.data?.pushed ? "，已推送" : ""}）`,
+                    t("settings.toast.synced", {
+                      count: r.data?.imported ?? 0,
+                    }) +
+                      (r.data?.pushed ? t("settings.toast.syncedPushed") : ""),
                   )
               }}
             >
               <RefreshCw className="size-4" />
-              {syncing ? "同步中…" : "立即同步"}
+              {syncing
+                ? t("settings.sync.syncing")
+                : t("settings.sync.syncNow")}
             </Button>
           )}
         </div>
@@ -270,14 +290,14 @@ export function SettingsView() {
 
       {/* 云配置 — split out of the sync card (ADR-0005 / #6) */}
       <Section
-        eyebrow="云配置"
-        description="手动拉取或推送云端的应用、用户、定价三类配置。仅在多设备同步模式下可用。"
+        eyebrow={t("settings.section.cloudConfig")}
+        description={t("settings.sectionDesc.cloudConfig")}
       >
         <div className="flex items-center justify-between gap-3">
           <span className="text-muted-foreground text-sm">
             {synced
-              ? "应用 / 用户 / 定价 三类配置"
-              : "需先在上方开启多设备同步"}
+              ? t("settings.cloudConfig.threeKinds")
+              : t("settings.cloudConfig.needsSync")}
           </span>
           {synced && (
             <Button
@@ -287,7 +307,9 @@ export function SettingsView() {
               onClick={onSyncConfig}
             >
               <RefreshCw className="size-4" />
-              {syncingConfig ? "同步中…" : "同步云配置"}
+              {syncingConfig
+                ? t("settings.sync.syncing")
+                : t("settings.cloudConfig.syncButton")}
             </Button>
           )}
         </div>
@@ -298,30 +320,35 @@ export function SettingsView() {
 
       {/* 设备 */}
       <Section
-        eyebrow="设备"
-        description="所有同步过的设备。可以给其他设备起个好认的名字。"
+        eyebrow={t("settings.section.devices")}
+        description={t("settings.sectionDesc.devices")}
       >
         <DeviceList />
       </Section>
 
       {/* 维护 */}
       <Section
-        eyebrow="维护"
-        description="为早期缺少定价、记为 0 成本的历史记录，用当前定价补上金额。"
+        eyebrow={t("settings.section.maintenance")}
+        description={t("settings.sectionDesc.maintenance")}
       >
-        <Row label="补算缺失成本">
+        <Row label={t("settings.maintenance.rebillLabel")}>
           <Button
             variant="outline"
             size="sm"
             disabled={rebilling}
             onClick={async () => {
               const r = await rebill()
-              if ("error" in r) toast.error("补算失败")
-              else toast.success(`已补算 ${r.data ?? 0} 条`)
+              if ("error" in r) toast.error(t("settings.toast.rebillFailed"))
+              else
+                toast.success(
+                  t("settings.toast.rebilled", { count: r.data ?? 0 }),
+                )
             }}
           >
             <Calculator className="size-4" />
-            {rebilling ? "补算中…" : "补算"}
+            {rebilling
+              ? t("settings.maintenance.rebilling")
+              : t("settings.maintenance.rebillButton")}
           </Button>
         </Row>
       </Section>
@@ -372,7 +399,8 @@ function Row({
   )
 }
 
-/** 测试连接结果 banner（诊断型操作，结果需持久可见，故用 inline 而非 toast）。 */
+/** 测试连接结果 banner（诊断型操作，结果需持久可见，故用 inline 而非 toast）。
+ *  `result.message` 来自 Rust 后端，按 ADR-0016 保持英文不本地化。 */
 function VerifyBanner({
   verifying,
   result,
@@ -380,11 +408,12 @@ function VerifyBanner({
   verifying: boolean
   result: VerifyReport | null
 }) {
+  const { t } = useTranslation()
   if (verifying) {
     return (
       <div className="bg-muted/50 text-muted-foreground flex items-center gap-2 rounded-md border border-dashed p-2 text-xs">
         <Loader2 className="size-3.5 animate-spin" />
-        正在校验连接…（可能需要数秒）
+        {t("settings.sync.verifyingBanner")}
       </div>
     )
   }
@@ -397,7 +426,7 @@ function VerifyBanner({
           {result.message}
         </span>
         <span className="text-muted-foreground pl-5">
-          仅校验读权限；推送同步另需令牌的 Contents 写权限。
+          {t("settings.sync.verifyReadPermNote")}
         </span>
       </div>
     )
@@ -412,11 +441,11 @@ function VerifyBanner({
 
 /** 从 RTK Query 错误里抽出可读文案。run() 把 AppError 拼成 "Type: detail"，
  * 取 message 字段即可——同步失败的根因就在 detail 里（如 push 的 401/403）。 */
-function describeError(e: unknown): string {
+function describeError(e: unknown, fallback: string): string {
   if (e && typeof e === "object") {
     const m = e as Record<string, unknown>
     if (typeof m.message === "string") return m.message
     if (typeof m.data === "string") return m.data
   }
-  return "未知原因"
+  return fallback
 }

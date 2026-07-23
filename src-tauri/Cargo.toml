@@ -18,6 +18,10 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["specta", "tray-icon"] }
 tauri-plugin-opener = "2"
+# Auto-update (ADR-0017): Ed25519-signed installs fetched from GitHub Releases.
+tauri-plugin-updater = "2"
+# Relaunch the app after an auto-update install (ADR-0017).
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # tauri-specta v2 (ADR-0008): pin exact RC — specta v2 not yet stable.
@@ -43,6 +47,17 @@ ureq = "2"
 # GitHub-repo sync over libgit2 (ADR-0005). HTTPS-only (PAT); no SSH feature to
 # keep the dependency surface small. Windows TLS uses Schannel via libgit2.
 git2 = { version = "0.19", default-features = false, features = ["https"] }
+
+# Win32 window geometry for the lightweight glance dock (ADR-0015): one atomic
+# SetWindowPos that sets the OUTER rect (shadow included) so the window can't
+# straddle two monitors of different DPI. Windows-only; reuses the `windows`
+# crate tauri/tao already resolve (0.61.x), no new version introduced.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+] }
 
 [dev-dependencies]
 # Test-only temp dirs for db / config / ingest / providers tests (S1).

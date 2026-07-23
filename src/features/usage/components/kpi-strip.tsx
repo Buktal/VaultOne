@@ -4,6 +4,7 @@
 //
 // 右栏窄布局 (ADR-0013): 单列 label+value 行，替代旧 2×4 卡片网格。
 
+import { useTranslation } from "react-i18next"
 import { useStatsQuery, ZERO_STATS } from "@/app/store/api"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { formatCost, formatInt } from "@/lib/format"
@@ -22,6 +23,7 @@ function formatDuration(ms: number | null | undefined): string {
 }
 
 export function KpiStrip({ filter }: { filter: UsageFilter }) {
+  const { t } = useTranslation()
   const { data: stats } = useStatsQuery(filter)
   const s = stats ?? ZERO_STATS
 
@@ -29,11 +31,14 @@ export function KpiStrip({ filter }: { filter: UsageFilter }) {
     s.turn_count > 0 ? (s.request_count / s.turn_count).toFixed(1) : "—"
 
   const rows: Array<{ label: string; value: string; accent?: string }> = [
-    { label: "平均时长", value: formatDuration(s.avg_turn_duration_ms) },
-    { label: "请求 / 轮", value: perTurn },
-    { label: "总请求数", value: formatInt(s.request_count) },
     {
-      label: "总成本",
+      label: t("usage.kpi.avgDuration"),
+      value: formatDuration(s.avg_turn_duration_ms),
+    },
+    { label: t("usage.kpi.perTurn"), value: perTurn },
+    { label: t("usage.kpi.totalRequests"), value: formatInt(s.request_count) },
+    {
+      label: t("usage.kpi.totalCost"),
       value: formatCost(s.total_cost_usd),
       accent: "var(--metric-cost)",
     },
@@ -42,7 +47,7 @@ export function KpiStrip({ filter }: { filter: UsageFilter }) {
   return (
     <Card size="sm" interactive>
       <CardHeader>
-        <CardTitle>概览</CardTitle>
+        <CardTitle>{t("usage.kpi.title")}</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col">
         {rows.map((r, i) => (

@@ -97,6 +97,20 @@ fn default_push_interval_secs() -> u32 {
     600
 }
 
+/// Display language (ADR-0016). Serialized lowercase (`en`/`zh`/`ja`), matching
+/// the frontend locale codes. The tray "Quit" item — the only user-facing Rust
+/// string — is localized from this; all other UI text is frontend i18n.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum Language {
+    #[default]
+    En,
+    Zh,
+    Ja,
+}
+
 /// The local `config.json` content (ADR-0004). Never uploaded to the repo.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ConfigData {
@@ -126,6 +140,10 @@ pub struct ConfigData {
     /// independent of the (shorter) collect cadence.
     #[serde(default = "default_push_interval_secs")]
     pub push_interval_secs: u32,
+    /// Display language (ADR-0016). Default English; per-device, not synced
+    /// (config.json never enters the repo).
+    #[serde(default)]
+    pub language: Language,
 }
 
 impl Default for ConfigData {
@@ -142,6 +160,7 @@ impl Default for ConfigData {
             close_behavior: CloseBehavior::Ask,
             collect_interval_secs: default_collect_interval_secs(),
             push_interval_secs: default_push_interval_secs(),
+            language: Language::En,
         }
     }
 }

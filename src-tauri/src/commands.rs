@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use tauri::{Emitter, Manager, State};
 
-use crate::config::{CloseBehavior, ConfigStore};
+use crate::config::{CloseBehavior, ConfigStore, Language};
 use crate::db::Store;
 use crate::error::{AppError, AppResult};
 use crate::ingest::{self, IngestReport};
@@ -446,6 +446,7 @@ pub struct Preferences {
     pub close_behavior: CloseBehavior,
     pub collect_interval_secs: u32,
     pub push_interval_secs: u32,
+    pub language: Language,
 }
 
 fn to_preferences(cfg: &crate::config::ConfigData) -> Preferences {
@@ -453,6 +454,7 @@ fn to_preferences(cfg: &crate::config::ConfigData) -> Preferences {
         close_behavior: cfg.close_behavior,
         collect_interval_secs: cfg.collect_interval_secs,
         push_interval_secs: cfg.push_interval_secs,
+        language: cfg.language,
     }
 }
 
@@ -492,6 +494,26 @@ pub fn set_collect_interval(state: State<'_, AppState>, seconds: u32) -> AppResu
 pub fn set_push_interval(state: State<'_, AppState>, seconds: u32) -> AppResult<Preferences> {
     let clamped = seconds.clamp(60, 7200);
     let cfg = state.config.update(|c| c.push_interval_secs = clamped)?;
+    Ok(to_preferences(&cfg))
+}
+
+/// Persist the display language (ADR-0016) and rebuild the tray menu so the
+/// "Quit" item follows the new language immediately. The tray item is the only
+/// user-facing Rust string; all other UI text is frontend i18n driven by this
+/// same preference.
+#[tauri::command]
+#[specta::specta]
+pub fn set_language(
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+    language: Language,
+) -> AppResult<Preferences> {
+    let cfg = state.config.update(|c| c.language = language)?;
+    if let Some(tray) = app_handle.tray_by_id("main") {
+        if let Ok(menu) = crate::tray_menu_for(&app_handle, language) {
+            let _ = tray.set_menu(Some(menu));
+        }
+    }
     Ok(to_preferences(&cfg))
 }
 

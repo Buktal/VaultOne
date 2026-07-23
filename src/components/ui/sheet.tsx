@@ -56,7 +56,7 @@ function SheetContent({
             render={
               <button
                 type="button"
-                aria-label="关闭"
+                aria-label="Close"
                 className="absolute top-4 right-4 rounded-md p-1 text-muted-foreground opacity-70 transition-opacity duration-150 hover:bg-muted hover:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none [&_svg]:pointer-events-none [&_svg]:size-4"
               />
             }

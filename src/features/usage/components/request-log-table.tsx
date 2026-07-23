@@ -7,6 +7,7 @@
 
 import { FileText } from "lucide-react"
 import { useState } from "react"
+import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 
 import {
@@ -42,6 +43,7 @@ function tokenTotal(r: UsageLogRow): number {
 }
 
 export function RequestLogTable({ filter }: { filter: UsageFilter }) {
+  const { t } = useTranslation()
   const [offset, setOffset] = useState(0)
   const {
     data: rows = [],
@@ -61,16 +63,18 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
   async function onCollect() {
     const res = await collect()
     if ("error" in res) {
-      toast.error("采集失败")
+      toast.error(t("usage.collect.failed"))
       return
     }
-    toast.success(`采集完成：新增 ${res.data?.rows_inserted ?? 0} 条`)
+    toast.success(
+      t("usage.collect.doneShort", { count: res.data?.rows_inserted ?? 0 }),
+    )
   }
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>请求日志</CardTitle>
+        <CardTitle>{t("usage.logs.title")}</CardTitle>
       </CardHeader>
       <CardContent>
         <QueryState
@@ -78,9 +82,11 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
           error={error}
           isEmpty={!isLoading && rows.length === 0}
           emptyIcon={FileText}
-          emptyLabel="暂无请求记录"
+          emptyLabel={t("usage.logs.empty")}
           emptyAction={{
-            label: collecting ? "采集中…" : "采集本地日志",
+            label: collecting
+              ? t("usage.collect.collecting")
+              : t("usage.collect.collectLocal"),
             onClick: onCollect,
             disabled: collecting,
           }}
@@ -89,18 +95,30 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>时间</TableHead>
-                  <TableHead>供应商</TableHead>
-                  <TableHead>计费模型</TableHead>
-                  <TableHead className="text-right">输入</TableHead>
-                  <TableHead className="text-right">输出</TableHead>
-                  <TableHead className="text-right">缓存创建</TableHead>
-                  <TableHead className="text-right">缓存命中</TableHead>
-                  <TableHead className="text-right">总 Token</TableHead>
-                  <TableHead className="text-right">成本</TableHead>
-                  <TableHead>停止原因</TableHead>
-                  <TableHead>来源</TableHead>
-                  <TableHead>设备</TableHead>
+                  <TableHead>{t("usage.logs.col.time")}</TableHead>
+                  <TableHead>{t("usage.logs.col.provider")}</TableHead>
+                  <TableHead>{t("usage.logs.col.billedModel")}</TableHead>
+                  <TableHead className="text-right">
+                    {t("usage.tokens.input")}
+                  </TableHead>
+                  <TableHead className="text-right">
+                    {t("usage.tokens.output")}
+                  </TableHead>
+                  <TableHead className="text-right">
+                    {t("usage.tokens.cacheCreation")}
+                  </TableHead>
+                  <TableHead className="text-right">
+                    {t("usage.tokens.cacheRead")}
+                  </TableHead>
+                  <TableHead className="text-right">
+                    {t("usage.logs.col.totalToken")}
+                  </TableHead>
+                  <TableHead className="text-right">
+                    {t("usage.logs.col.cost")}
+                  </TableHead>
+                  <TableHead>{t("usage.logs.col.stopReason")}</TableHead>
+                  <TableHead>{t("usage.logs.col.source")}</TableHead>
+                  <TableHead>{t("usage.logs.col.device")}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -152,7 +170,11 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
 
         <div className="text-muted-foreground mt-3 flex items-center justify-between text-xs">
           <span>
-            第 {page} / {totalPages} 页 · 共 {formatInt(total)} 条
+            {t("usage.logs.pageInfo", {
+              page,
+              totalPages,
+              total: formatInt(total),
+            })}
           </span>
           <div className="flex gap-2">
             <Button
@@ -161,7 +183,7 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
               disabled={offset === 0}
               onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
             >
-              上一页
+              {t("usage.logs.prevPage")}
             </Button>
             <Button
               variant="outline"
@@ -169,7 +191,7 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
               disabled={offset + PAGE_SIZE >= total}
               onClick={() => setOffset(offset + PAGE_SIZE)}
             >
-              下一页
+              {t("usage.logs.nextPage")}
             </Button>
           </div>
         </div>

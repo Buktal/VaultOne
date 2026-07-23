@@ -8,6 +8,7 @@
 // 在宽屏铺满贴边 (窄内容如 settings 各自内部 max-w 居中)。
 
 import {
+  BookText,
   Gauge,
   List,
   PanelLeftClose,
@@ -16,6 +17,7 @@ import {
   Tags,
 } from "lucide-react"
 import { useEffect, useState } from "react"
+import { useTranslation } from "react-i18next"
 import { useAppInfoQuery } from "@/app/store/api"
 import { useAppDispatch, useAppSelector } from "@/app/store/hooks"
 import { setView, type ViewId } from "@/app/store/slices/viewSlice"
@@ -29,12 +31,14 @@ import {
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { TitleBar } from "./title-bar"
+import { UpdateIndicator } from "./update-card"
+import { useUpdateCheck } from "./use-update-check"
 
-const NAV: Array<{ id: ViewId; label: string; icon: typeof Gauge }> = [
-  { id: "dashboard", label: "数据看板", icon: Gauge },
-  { id: "logs", label: "请求日志", icon: List },
-  { id: "pricing", label: "成本定价", icon: Tags },
-  { id: "settings", label: "设置", icon: Settings },
+const NAV: Array<{ id: ViewId; key: string; icon: typeof Gauge }> = [
+  { id: "dashboard", key: "nav.dashboard", icon: Gauge },
+  { id: "logs", key: "nav.logs", icon: List },
+  { id: "pricing", key: "nav.pricing", icon: Tags },
+  { id: "settings", key: "nav.settings", icon: Settings },
 ]
 
 const COLLAPSE_KEY = "vaultone:sidebar-collapsed"
@@ -43,6 +47,7 @@ const COLLAPSE_KEY = "vaultone:sidebar-collapsed"
 // sidebar gets the ink badge, so the mark always stands off its surface.
 // Same radial mark as the app/tray icon (vaultone-cream / vaultone-ink).
 function Logo({ collapsed }: { collapsed: boolean }) {
+  const { t } = useTranslation()
   return (
     <div className="flex items-center gap-2.5">
       <img
@@ -58,7 +63,9 @@ function Logo({ collapsed }: { collapsed: boolean }) {
       {collapsed ? null : (
         <div className="flex flex-col leading-tight">
           <span className="text-sm font-semibold">VaultOne</span>
-          <span className="text-muted-foreground text-[10px]">用量监控</span>
+          <span className="text-muted-foreground text-[10px]">
+            {t("shell.logoSubtitle")}
+          </span>
         </div>
       )}
     </div>
@@ -71,12 +78,14 @@ function NavItem({
   collapsed,
   onClick,
 }: {
-  item: { id: ViewId; label: string; icon: typeof Gauge }
+  item: { id: ViewId; key: string; icon: typeof Gauge }
   active: boolean
   collapsed: boolean
   onClick: () => void
 }) {
+  const { t } = useTranslation()
   const Icon = item.icon
+  const label = t(item.key)
   const button = (
     <button
       type="button"
@@ -91,14 +100,14 @@ function NavItem({
       )}
     >
       <Icon className={cn("shrink-0", collapsed ? "size-5" : "size-4")} />
-      {collapsed ? null : item.label}
+      {collapsed ? null : label}
     </button>
   )
   if (!collapsed) return button
   return (
     <Tooltip>
       <TooltipTrigger render={button} />
-      <TooltipContent side="right">{item.label}</TooltipContent>
+      <TooltipContent side="right">{label}</TooltipContent>
     </Tooltip>
   )
 }
@@ -113,8 +122,9 @@ function CollapseButton({
   collapsed: boolean
   onClick: () => void
 }) {
+  const { t } = useTranslation()
   const Icon = collapsed ? PanelLeftOpen : PanelLeftClose
-  const label = collapsed ? "展开菜单" : "收起菜单"
+  const label = collapsed ? t("shell.expandMenu") : t("shell.collapseMenu")
   return (
     <Tooltip>
       <TooltipTrigger
@@ -136,10 +146,12 @@ function CollapseButton({
 }
 
 export function Shell({ children }: { children: React.ReactNode }) {
+  const { t } = useTranslation()
   const dispatch = useAppDispatch()
   const view = useAppSelector((s) => s.view.view)
   const { data: info } = useAppInfoQuery(undefined, { pollingInterval: 0 })
   const synced = info?.mode === "synced"
+  const { openReleases } = useUpdateCheck()
 
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     if (typeof localStorage === "undefined") return false
@@ -148,6 +160,9 @@ export function Shell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     localStorage.setItem(COLLAPSE_KEY, collapsed ? "1" : "0")
   }, [collapsed])
+
+  const modeLabel = t(synced ? "shell.synced" : "shell.standalone")
+  const deviceName = info?.display_name || t("common.unnamed")
 
   return (
     <div className="bg-background text-foreground flex h-screen w-screen flex-col overflow-hidden">
@@ -172,7 +187,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
           {collapsed ? null : (
             <div className="text-muted-foreground/60 px-5 pt-3 pb-1 text-[10px] font-medium tracking-wide">
-              导航
+              {t("nav.heading")}
             </div>
           )}
           <nav
@@ -201,7 +216,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
                     "mb-5 size-2 rounded-full",
                     synced ? "bg-primary" : "bg-muted-foreground/40",
                   )}
-                  title={`${synced ? "已同步" : "单机"} · ${info?.display_name || "未命名"}`}
+                  title={`${modeLabel} · ${deviceName}`}
                 />
                 <div className="flex flex-col items-center gap-2">
                   <ThemeToggle />
@@ -214,16 +229,16 @@ export function Shell({ children }: { children: React.ReactNode }) {
             ) : (
               <div className="flex flex-col gap-1 px-1 text-xs">
                 <div className="text-muted-foreground/60 text-[10px] tracking-wide">
-                  本机设备
+                  {t("shell.thisDevice")}
                 </div>
                 <div className="truncate">
-                  <span className="text-muted-foreground">设备名：</span>
-                  <span className="font-medium">
-                    {info?.display_name || "未命名"}
+                  <span className="text-muted-foreground">
+                    {t("shell.deviceName")}
                   </span>
+                  <span className="font-medium">{deviceName}</span>
                 </div>
                 <div className="text-muted-foreground truncate">
-                  <span>设备号：</span>
+                  <span>{t("shell.deviceId")}</span>
                   <span className="font-mono text-[11px]">
                     {info?.device_id ?? "—"}
                   </span>
@@ -237,13 +252,31 @@ export function Shell({ children }: { children: React.ReactNode }) {
                         : "bg-muted text-muted-foreground",
                     )}
                   >
-                    {synced ? "已同步" : "单机"}
+                    {modeLabel}
                   </span>
                   {info?.version ? (
                     <span className="text-muted-foreground text-[10px]">
                       v{info.version}
                     </span>
                   ) : null}
+                  <UpdateIndicator />
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <button
+                          type="button"
+                          onClick={() => void openReleases()}
+                          aria-label={t("shell.changelog")}
+                          className="text-muted-foreground hover:text-foreground inline-flex size-3.5 items-center justify-center transition-colors"
+                        />
+                      }
+                    >
+                      <BookText className="size-3.5" />
+                    </TooltipTrigger>
+                    <TooltipContent side="right">
+                      {t("shell.changelogGithub")}
+                    </TooltipContent>
+                  </Tooltip>
                 </div>
                 <div className="mt-2 flex items-center justify-between border-border/60 border-t pt-2">
                   <ThemeToggle />

@@ -2,8 +2,10 @@
 // Empty renders <EmptyState> so callers can attach an icon, description and
 // next-step action instead of a bare string.
 
+import i18n from "i18next"
 import type { LucideIcon } from "lucide-react"
 import type { ReactNode } from "react"
+import { useTranslation } from "react-i18next"
 
 import { EmptyState } from "@/components/empty-state"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -12,7 +14,7 @@ export function QueryState({
   isLoading,
   error,
   isEmpty,
-  emptyLabel = "暂无数据",
+  emptyLabel,
   emptyIcon,
   emptyDescription,
   emptyAction,
@@ -27,13 +29,14 @@ export function QueryState({
   emptyAction?: { label: string; onClick: () => void; disabled?: boolean }
   children: ReactNode
 }) {
+  const { t } = useTranslation()
   if (isLoading) {
     return <Skeleton className="h-24 w-full rounded-md" />
   }
   if (error) {
     return (
       <div className="text-destructive text-sm">
-        加载失败：{describeError(error)}
+        {t("common.loadFailed", { detail: describeError(error) })}
       </div>
     )
   }
@@ -41,7 +44,7 @@ export function QueryState({
     return (
       <EmptyState
         icon={emptyIcon}
-        title={emptyLabel}
+        title={emptyLabel ?? t("common.empty")}
         description={emptyDescription}
         action={emptyAction}
       />
@@ -51,7 +54,7 @@ export function QueryState({
 }
 
 export function describeError(e: unknown): string {
-  if (!e) return "未知错误"
+  if (!e) return i18n.t("common.unknownError")
   if (
     typeof e === "object" &&
     "data" in e &&

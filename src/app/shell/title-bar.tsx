@@ -7,11 +7,13 @@
 import { getCurrentWindow } from "@tauri-apps/api/window"
 import { Copy, Minus, PictureInPicture2, Square, X } from "lucide-react"
 import { type ReactNode, useEffect, useState } from "react"
+import { useTranslation } from "react-i18next"
 import { useAppDispatch } from "@/app/store/hooks"
 import { setMode } from "@/app/store/slices/viewSlice"
 import { cn } from "@/lib/utils"
 
 export function TitleBar() {
+  const { t } = useTranslation()
   const appWindow = getCurrentWindow()
   const dispatch = useAppDispatch()
   const [maximized, setMaximized] = useState(false)
@@ -36,15 +38,21 @@ export function TitleBar() {
           window. Sits at the left of the cluster (me-1 sets it apart). */}
       <CtrlButton
         onClick={() => dispatch(setMode("lightweight"))}
-        label="轻量模式"
+        label={t("titlebar.lightweight")}
         className="me-1"
       >
         <PictureInPicture2 className="size-3.5" />
       </CtrlButton>
-      <CtrlButton onClick={() => appWindow.minimize()} label="最小化">
+      <CtrlButton
+        onClick={() => appWindow.minimize()}
+        label={t("titlebar.minimize")}
+      >
         <Minus className="size-3.5" />
       </CtrlButton>
-      <CtrlButton onClick={() => appWindow.toggleMaximize()} label="最大化">
+      <CtrlButton
+        onClick={() => appWindow.toggleMaximize()}
+        label={t("titlebar.maximize")}
+      >
         {maximized ? (
           <Copy className="size-3.5" />
         ) : (
@@ -53,7 +61,7 @@ export function TitleBar() {
       </CtrlButton>
       <CtrlButton
         onClick={() => appWindow.close()}
-        label="关闭"
+        label={t("titlebar.close")}
         className="hover:bg-destructive hover:text-white"
       >
         <X className="size-3.5" />

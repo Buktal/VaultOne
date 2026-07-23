@@ -3,6 +3,7 @@
 // the user picks which version wins per file (never last-write-wins).
 
 import { useState } from "react"
+import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 import { useResolveConfigConflictMutation } from "@/app/store/api"
 import { Button } from "@/components/ui/button"
@@ -16,6 +17,7 @@ export function ConflictResolver({
 }: {
   conflicts: ConfigConflict[]
 }) {
+  const { t } = useTranslation()
   const [resolve, { isLoading }] = useResolveConfigConflictMutation()
   // Default every conflict to keep-local; the user flips to keep-remote per file.
   const [choices, setChoices] = useState<Record<string, ConfigSyncChoice>>(() =>
@@ -31,19 +33,18 @@ export function ConflictResolver({
     }))
     const r = await resolve(payload)
     if ("error" in r) {
-      toast.error("冲突解决失败")
+      toast.error(t("conflict.resolveFailed"))
       return
     }
     toast.success(
-      `已解决 ${conflicts.length} 个冲突${r.data?.pricing_changed ? "（定价已更新）" : ""}`,
+      t("conflict.resolved", { count: conflicts.length }) +
+        (r.data?.pricing_changed ? t("conflict.resolvedPricing") : ""),
     )
   }
 
   return (
     <div className="border-destructive/40 bg-destructive/5 flex flex-col gap-2 rounded-md border p-3">
-      <p className="text-muted-foreground text-xs">
-        本地和远端都改了下列配置文件，请逐个选择保留哪个版本。
-      </p>
+      <p className="text-muted-foreground text-xs">{t("conflict.intro")}</p>
       {conflicts.map((c) => {
         const choice = choices[c.path] ?? "keep_local"
         return (
@@ -51,7 +52,7 @@ export function ConflictResolver({
             <code className="font-mono text-xs">{c.path}</code>
             <div className="grid grid-cols-2 gap-2">
               <PreviewColumn
-                label="本地"
+                label={t("conflict.local")}
                 active={choice === "keep_local"}
                 content={c.local_preview}
                 onSelect={() =>
@@ -59,7 +60,7 @@ export function ConflictResolver({
                 }
               />
               <PreviewColumn
-                label="远端"
+                label={t("conflict.remote")}
                 active={choice === "keep_remote"}
                 content={c.remote_preview}
                 onSelect={() =>
@@ -71,7 +72,7 @@ export function ConflictResolver({
         )
       })}
       <Button size="sm" disabled={isLoading} onClick={apply}>
-        {isLoading ? "应用中…" : "应用所选并同步"}
+        {isLoading ? t("conflict.applying") : t("conflict.applyButton")}
       </Button>
     </div>
   )
@@ -88,6 +89,7 @@ function PreviewColumn({
   content: string
   onSelect: () => void
 }) {
+  const { t } = useTranslation()
   return (
     <button
       type="button"
@@ -101,7 +103,7 @@ function PreviewColumn({
         {active ? " ✓" : ""}
       </span>
       <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-muted-foreground">
-        {content || "（空）"}
+        {content || t("conflict.empty")}
       </pre>
     </button>
   )

@@ -84,6 +84,13 @@ export const commands = {
 	 */
 	setPushInterval: (seconds: number) => typedError<Preferences, AppError>(__TAURI_INVOKE("set_push_interval", { seconds })),
 	/**
+	 *  Persist the display language (ADR-0016) and rebuild the tray menu so the
+	 *  "Quit" item follows the new language immediately. The tray item is the only
+	 *  user-facing Rust string; all other UI text is frontend i18n driven by this
+	 *  same preference.
+	 */
+	setLanguage: (language: Language) => typedError<Preferences, AppError>(__TAURI_INVOKE("set_language", { language })),
+	/**
 	 *  Probe a sync repo + PAT for reachability (ADR-0005「测试连接」). Pass explicit
 	 *  values to validate BEFORE binding, or `None`/`None` to re-check the already-
 	 *  configured repo. Pure ls-remote — never mutates config or the real sync repo.
@@ -98,6 +105,18 @@ export const commands = {
 	 *  `Minimize`/`Ask` hide the window (scheduler keeps running); `Quit` exits.
 	 */
 	confirmClose: (choice: CloseBehavior, remember: boolean) => typedError<null, AppError>(__TAURI_INVOKE("confirm_close", { choice, remember })),
+	/**
+	 *  Dock the given window against the right edge of its current monitor.
+	 * 
+	 *  `client_logical_w/h` is the desired CLIENT (visible content) size in logical
+	 *  px; `logical_y` is the desired client top in logical px relative to the
+	 *  monitor top; `inset_logical` is how far the OUTER rect is kept inside the
+	 *  monitor edge. Returns the clamped logical y so callers can remember it.
+	 * 
+	 *  Windows-only; on other targets it returns an error (the app only ships on
+	 *  Windows, but the crate still has to compile elsewhere for dev/CI).
+	 */
+	dockWindowRight: (clientLogicalW: number | null, clientLogicalH: number | null, logicalY: number | null, insetLogical: number | null) => typedError<number | null, string>(__TAURI_INVOKE("dock_window_right", { clientLogicalW, clientLogicalH, logicalY, insetLogical })),
 };
 
 /* Types */
@@ -214,6 +233,13 @@ export type IngestReport = {
 	lines_skipped: number,
 };
 
+/**
+ *  Display language (ADR-0016). Serialized lowercase (`en`/`zh`/`ja`), matching
+ *  the frontend locale codes. The tray "Quit" item — the only user-facing Rust
+ *  string — is localized from this; all other UI text is frontend i18n.
+ */
+export type Language = "en" | "zh" | "ja";
+
 /**  Query params for the request-log endpoint (adds paging to `UsageFilter`). */
 export type LogsQuery = {
 	filter: UsageFilter,
@@ -234,6 +260,7 @@ export type Preferences = {
 	close_behavior: CloseBehavior,
 	collect_interval_secs: number,
 	push_interval_secs: number,
+	language: Language,
 };
 
 /**

@@ -1,17 +1,21 @@
 // Display formatting helpers (ADR-0007 shared lib). The JS layer never computes
 // cost (ADR-0009) — these are display-only shapers for numbers, currency, dates.
+//
+// Locale policy (ADR-0016): token counts are ALWAYS K/M/B (international-neutral,
+// language-independent); cost is always USD `$`; dates are always the compact
+// numeric `MM/DD HH:mm`. Only the relative-time words (`fromNow`) follow the
+// language — driven by the dayjs locale set in `@/i18n/languages`. So nothing
+// here hard-codes a dayjs locale.
 
 import dayjs from "dayjs"
-import "dayjs/locale/zh-cn"
 
-dayjs.locale("zh-cn")
-
-/** Compact a token count to the BLUEPRINT style: `360.86万`, `1.23亿`. */
+/** Compact a token count to K/M/B: `3.61M`, `1.2B`, `856`. Language-independent. */
 export function formatTokens(n: number | null | undefined): string {
   const v = Number(n ?? 0)
   if (!Number.isFinite(v)) return "0"
-  if (v >= 1e8) return `${trim(v / 1e8)}亿`
-  if (v >= 1e4) return `${trim(v / 1e4)}万`
+  if (v >= 1e9) return `${trim(v / 1e9)}B`
+  if (v >= 1e6) return `${trim(v / 1e6)}M`
+  if (v >= 1e3) return `${trim(v / 1e3)}K`
   return v.toLocaleString("en-US")
 }
 

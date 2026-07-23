@@ -19,7 +19,7 @@ import type {
   VerifyReport,
 } from "@/types/generated/bindings"
 import { commands } from "@/types/generated/bindings"
-import type { CloseBehavior, Preferences } from "@/types/preferences"
+import type { CloseBehavior, Language, Preferences } from "@/types/preferences"
 
 /**
  * RTK Query data layer over the typed Tauri command contract.
@@ -254,6 +254,12 @@ export const vaultApi = createApi({
       }),
       invalidatesTags: ["App"],
     }),
+    setLanguage: b.mutation<Preferences, Language>({
+      queryFn: async (language) => ({
+        data: await run(commands.setLanguage(language)),
+      }),
+      invalidatesTags: ["App"],
+    }),
   }),
 })
 
@@ -287,6 +293,7 @@ export const {
   useSetCloseBehaviorMutation,
   useSetCollectIntervalMutation,
   useSetPushIntervalMutation,
+  useSetLanguageMutation,
 } = vaultApi
 
 export type VaultApi = typeof vaultApi

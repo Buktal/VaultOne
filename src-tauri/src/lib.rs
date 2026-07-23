@@ -1,7 +1,7 @@
 //! VaultOne Tauri backend library.
 //!
 //! Module tree: config / db / providers / ingest / pricing /
-//! commands, behind a tauri-specta typed contract (ADR-0008). First start
+//! commands / window_geom, behind a tauri-specta typed contract (ADR-0008). First start
 //! bootstraps the local data dir + deviceId and defaults to Standalone
 //! (ADR-0006).
 
@@ -22,6 +22,7 @@ mod model;
 mod pricing;
 mod providers;
 mod sync;
+mod window_geom;
 
 use commands::AppState;
 use config::ConfigStore;
@@ -58,9 +59,32 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::set_close_behavior,
         commands::set_collect_interval,
         commands::set_push_interval,
+        commands::set_language,
         commands::verify_sync_repo,
         commands::confirm_close,
+        window_geom::dock_window_right,
     ])
+}
+
+/// Tray "Quit" label for the active display language (ADR-0016). The tray item
+/// is the ONLY user-facing Rust string — all other UI text is frontend i18n.
+pub(crate) fn quit_label(lang: config::Language) -> &'static str {
+    match lang {
+        config::Language::En => "Quit",
+        config::Language::Zh => "退出",
+        config::Language::Ja => "終了",
+    }
+}
+
+/// (Re)build the tray menu (Quit only, ADR-0012) localized to `lang`
+/// (ADR-0016). Called at setup and from `set_language` on a language change so
+/// the single tray item tracks the language without an app restart.
+pub(crate) fn tray_menu_for(
+    app: &tauri::AppHandle,
+    lang: config::Language,
+) -> tauri::Result<Menu<tauri::Wry>> {
+    let quit = MenuItem::with_id(app, "quit", quit_label(lang), true, None::<&str>)?;
+    Menu::with_items(app, &[&quit])
 }
 
 /// Export TypeScript bindings to the frontend `src/types/generated/`
@@ -126,6 +150,12 @@ pub fn run() {
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // Auto-update (ADR-0017): check / download / install signed packages
+        // from GitHub Releases. Endpoint + pubkey live in tauri.conf.json
+        // (plugins.updater); capability grants updater:default.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // Relaunch the app after an auto-update install (ADR-0017).
+        .plugin(tauri_plugin_process::init())
         .manage(state)
         .invoke_handler(builder.invoke_handler())
         .on_window_event(|window, event| {
@@ -167,8 +197,9 @@ pub fn run() {
 
             // System tray (ADR-0012): left-click shows the window; the menu is
             // Quit only — collect / sync live inside the window, not the tray.
-            let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&quit_item])?;
+            // The Quit label follows the persisted display language (ADR-0016);
+            // `set_language` rebuilds this menu on a live language change.
+            let menu = tray_menu_for(app.handle(), state.config.get().language)?;
             let _tray = TrayIconBuilder::with_id("main")
                 .tooltip("VaultOne")
                 .icon(app.default_window_icon().cloned().unwrap())

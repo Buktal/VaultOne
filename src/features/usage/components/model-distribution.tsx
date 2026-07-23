@@ -4,6 +4,7 @@
 // filter-scoped, so the list itself refreshes too).
 
 import { useState } from "react"
+import { useTranslation } from "react-i18next"
 import { useModelsQuery } from "@/app/store/api"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { formatCost, formatTokens } from "@/lib/format"
@@ -19,6 +20,7 @@ export function ModelDistribution({
   filter: UsageFilter
   onPickModel: (model: string) => void
 }) {
+  const { t } = useTranslation()
   const { data: rows = [] } = useModelsQuery(filter)
   const [metric, setMetric] = useState<"cost" | "tokens">("cost")
 
@@ -39,14 +41,20 @@ export function ModelDistribution({
       model: r.model,
     })),
     ...(rest.length > 0
-      ? [{ label: `其他 (${rest.length})`, value: restSum, model: null }]
+      ? [
+          {
+            label: t("usage.models.others", { n: rest.length }),
+            value: restSum,
+            model: null,
+          },
+        ]
       : []),
   ]
 
   return (
     <Card interactive>
       <CardHeader className="flex-row items-center justify-between">
-        <CardTitle>模型分布</CardTitle>
+        <CardTitle>{t("usage.models.title")}</CardTitle>
         <div className="bg-muted/60 inline-flex items-center gap-0.5 rounded-md p-0.5">
           {(["cost", "tokens"] as const).map((m) => (
             <button
@@ -59,14 +67,16 @@ export function ModelDistribution({
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
-              {m === "cost" ? "成本" : "Tokens"}
+              {m === "cost" ? t("usage.models.cost") : t("usage.models.tokens")}
             </button>
           ))}
         </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-2">
         {items.length === 0 ? (
-          <span className="text-muted-foreground text-sm">无模型数据</span>
+          <span className="text-muted-foreground text-sm">
+            {t("usage.models.empty")}
+          </span>
         ) : (
           items.map((it) => {
             const pct = (it.value / total) * 100

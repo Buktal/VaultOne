@@ -13,6 +13,7 @@ import { DashboardView } from "@/features/usage/components/dashboard-view"
 import { LightweightCard } from "@/features/usage/components/lightweight-card"
 import { LogsView } from "@/features/usage/components/logs-view"
 import { Shell } from "./shell/shell"
+import { useUpdateCheck } from "./shell/use-update-check"
 import { useWindowMode } from "./shell/use-window-mode"
 
 const VIEWS: Record<ViewId, ComponentType> = {
@@ -26,6 +27,10 @@ export default function App() {
   // Morph the OS window to match the mode (ADR-0015). Mounted in App so it is
   // always under the Redux store, regardless of which skin renders below.
   useWindowMode()
+  // Startup update probe (ADR-0017): fires once app-wide via the hook's guard,
+  // regardless of full vs lightweight skin — lightweight just doesn't render
+  // the indicator.
+  useUpdateCheck()
   const mode = useAppSelector((s) => s.view.mode)
   const view = useAppSelector((s) => s.view.view)
 

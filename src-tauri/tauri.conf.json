@@ -34,5 +34,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/Buktal/VaultOne/releases/latest/download/latest.json"
+      ],
+      "pubkey": "REPLACE_WITH_TAURI_UPDATER_PUBKEY",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

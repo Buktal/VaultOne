@@ -5,6 +5,7 @@
 // 右栏窄布局 (ADR-0013): 纵向，无 sparkline — 中栏已有大趋势图，此处只留当前
 // 窗口的数值快照。颜色全部走 CSS 变量，换主题不改本件。
 
+import { useTranslation } from "react-i18next"
 import { useStatsQuery, useTrendQuery, ZERO_STATS } from "@/app/store/api"
 import { Card, CardContent } from "@/components/ui/card"
 import { formatInt, formatPct, formatTokens } from "@/lib/format"
@@ -12,21 +13,30 @@ import { formatInt, formatPct, formatTokens } from "@/lib/format"
 import type { UsageFilter } from "@/types/generated/bindings"
 
 const SEGMENTS = [
-  { key: "input_tokens", label: "输入", color: "var(--chart-input)" },
-  { key: "output_tokens", label: "输出", color: "var(--chart-output)" },
+  {
+    key: "input_tokens",
+    label: "usage.tokens.input",
+    color: "var(--chart-input)",
+  },
+  {
+    key: "output_tokens",
+    label: "usage.tokens.output",
+    color: "var(--chart-output)",
+  },
   {
     key: "cache_creation_tokens",
-    label: "缓存创建",
+    label: "usage.tokens.cacheCreation",
     color: "var(--chart-cache-create)",
   },
   {
     key: "cache_read_tokens",
-    label: "缓存命中",
+    label: "usage.tokens.cacheRead",
     color: "var(--chart-cache-read)",
   },
 ] as const
 
 export function TokenHero({ filter }: { filter: UsageFilter }) {
+  const { t } = useTranslation()
   const { data: stats } = useStatsQuery(filter)
   const { data: trend = [] } = useTrendQuery({ filter, bucket: "Day" })
   const s = stats ?? ZERO_STATS
@@ -47,7 +57,9 @@ export function TokenHero({ filter }: { filter: UsageFilter }) {
     <Card interactive>
       <CardContent className="flex flex-col gap-4">
         <div className="flex flex-col gap-1.5">
-          <span className="text-muted-foreground text-xs">总消耗</span>
+          <span className="text-muted-foreground text-xs">
+            {t("usage.hero.total")}
+          </span>
           <span className="text-4xl font-semibold leading-none tabular-nums">
             {formatTokens(s.total_tokens)}
           </span>
@@ -61,12 +73,12 @@ export function TokenHero({ filter }: { filter: UsageFilter }) {
                 {deltaPct >= 0 ? "↑" : "↓"}{" "}
                 {Math.abs(deltaPct * 100).toFixed(1)}%
                 <span className="text-muted-foreground font-normal">
-                  较起始
+                  {t("usage.hero.vsStart")}
                 </span>
               </span>
             ) : null}
             <span className="text-muted-foreground text-xs tabular-nums">
-              日均 {formatTokens(dailyAvg)}
+              {t("usage.hero.dailyAvg", { avg: formatTokens(dailyAvg) })}
             </span>
           </div>
         </div>
@@ -99,7 +111,7 @@ export function TokenHero({ filter }: { filter: UsageFilter }) {
                     className="inline-block size-2 rounded-sm"
                     style={{ backgroundColor: seg.color }}
                   />
-                  <span className="text-muted-foreground">{seg.label}</span>
+                  <span className="text-muted-foreground">{t(seg.label)}</span>
                 </span>
                 <span className="tabular-nums">
                   {formatTokens(v)} · {pct.toFixed(0)}%
@@ -111,10 +123,12 @@ export function TokenHero({ filter }: { filter: UsageFilter }) {
 
         <div className="text-muted-foreground flex items-center justify-between border-border/60 border-t pt-2.5 text-xs">
           <span className="tabular-nums">
-            {formatInt(s.request_count)} 次请求
+            {t("usage.hero.requests", { n: formatInt(s.request_count) })}
           </span>
           <span className="tabular-nums">
-            缓存命中率 {formatPct(s.cache_hit_rate)}
+            {t("usage.hero.cacheHitRate", {
+              rate: formatPct(s.cache_hit_rate),
+            })}
           </span>
         </div>
       </CardContent>

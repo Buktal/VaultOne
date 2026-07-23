@@ -4,6 +4,7 @@
 
 import { listen } from "@tauri-apps/api/event"
 import { useEffect, useState } from "react"
+import { useTranslation } from "react-i18next"
 import { confirmClose } from "@/app/store/api"
 import { Button } from "@/components/ui/button"
 import {
@@ -16,6 +17,7 @@ import {
 } from "@/components/ui/dialog"
 
 export function CloseRequestedDialog() {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [remember, setRemember] = useState(false)
 
@@ -36,10 +38,8 @@ export function CloseRequestedDialog() {
     <Dialog open={open} onOpenChange={(o) => setOpen(o)}>
       <DialogContent showClose={false}>
         <DialogHeader>
-          <DialogTitle>关闭窗口</DialogTitle>
-          <DialogDescription>
-            VaultOne 可以最小化到托盘继续在后台采集。要最小化还是退出？
-          </DialogDescription>
+          <DialogTitle>{t("closeDialog.title")}</DialogTitle>
+          <DialogDescription>{t("closeDialog.description")}</DialogDescription>
         </DialogHeader>
         <label className="flex items-center gap-2 text-sm">
           <input
@@ -48,13 +48,15 @@ export function CloseRequestedDialog() {
             onChange={(e) => setRemember(e.target.checked)}
             className="size-4"
           />
-          不再提示（记住本次选择）
+          {t("closeDialog.remember")}
         </label>
         <DialogFooter>
           <Button variant="outline" onClick={() => choose("quit")}>
-            退出
+            {t("common.quit")}
           </Button>
-          <Button onClick={() => choose("minimize")}>最小化到托盘</Button>
+          <Button onClick={() => choose("minimize")}>
+            {t("closeDialog.minimizeToTray")}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

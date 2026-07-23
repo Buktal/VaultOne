@@ -14,6 +14,7 @@ import {
   Trash2,
 } from "lucide-react"
 import { useMemo, useState } from "react"
+import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 import {
   useDeletePricingMutation,
@@ -50,6 +51,7 @@ type SortKey = keyof PricingEntry
 const PAGE_SIZE = 50
 
 export function PricingView() {
+  const { t } = useTranslation()
   const { data: entries = [], isLoading } = usePricingQuery()
   const [remove] = useDeletePricingMutation()
   const [fetchLitellm, { isLoading: fetching }] = useFetchLitellmMutation()
@@ -111,18 +113,18 @@ export function PricingView() {
 
   async function onFetchLitellm() {
     const res = await fetchLitellm()
-    if ("error" in res) toast.error("LiteLLM 拉取失败（离线时使用本地定价）")
-    else toast.success(`已从 LiteLLM 合并 ${res.data ?? 0} 条定价`)
+    if ("error" in res) toast.error(t("pricing.toast.fetchFailed"))
+    else toast.success(t("pricing.toast.fetched", { count: res.data ?? 0 }))
   }
   async function onReloadFile() {
     const res = await reloadFile()
-    if ("error" in res) toast.error("读取 pricing.json 失败")
-    else toast.success(`从 pricing.json 载入 ${res.data ?? 0} 条`)
+    if ("error" in res) toast.error(t("pricing.toast.reloadFailed"))
+    else toast.success(t("pricing.toast.reloaded", { count: res.data ?? 0 }))
   }
   async function onSaveFile() {
     const res = await saveFile()
-    if ("error" in res) toast.error("写入 pricing.json 失败")
-    else toast.success("已写入 pricing.json")
+    if ("error" in res) toast.error(t("pricing.toast.saveFileFailed"))
+    else toast.success(t("pricing.toast.savedFile"))
   }
 
   const sortProps = { sortKey, sortDir, onSort }
@@ -138,9 +140,9 @@ export function PricingView() {
               setSearch(e.target.value)
               setOffset(0)
             }}
-            placeholder="搜索模型…"
+            placeholder={t("pricing.searchPlaceholder")}
             className="h-8 w-44 pl-7"
-            aria-label="搜索模型"
+            aria-label={t("pricing.searchAria")}
           />
         </div>
         <div className="flex items-center gap-1">
@@ -152,13 +154,13 @@ export function PricingView() {
                   size="icon-sm"
                   disabled={fetching}
                   onClick={onFetchLitellm}
-                  aria-label="拉取 LiteLLM"
+                  aria-label={t("pricing.fetchLitellm")}
                 />
               }
             >
               <CloudDownload />
             </TooltipTrigger>
-            <TooltipContent>拉取 LiteLLM</TooltipContent>
+            <TooltipContent>{t("pricing.fetchLitellm")}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger
@@ -168,13 +170,13 @@ export function PricingView() {
                   size="icon-sm"
                   disabled={reloading}
                   onClick={onReloadFile}
-                  aria-label="读取 pricing.json"
+                  aria-label={t("pricing.reloadFile")}
                 />
               }
             >
               <FileUp />
             </TooltipTrigger>
-            <TooltipContent>读取 pricing.json</TooltipContent>
+            <TooltipContent>{t("pricing.reloadFile")}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger
@@ -184,76 +186,82 @@ export function PricingView() {
                   size="icon-sm"
                   disabled={savingFile}
                   onClick={onSaveFile}
-                  aria-label="写入 pricing.json"
+                  aria-label={t("pricing.saveFile")}
                 />
               }
             >
               <FileDown />
             </TooltipTrigger>
-            <TooltipContent>写入 pricing.json</TooltipContent>
+            <TooltipContent>{t("pricing.saveFile")}</TooltipContent>
           </Tooltip>
         </div>
         <div className="ml-auto" />
         <Button size="sm" onClick={openNew}>
           <Plus />
-          新增
+          {t("pricing.add")}
         </Button>
       </div>
       <Card>
         <CardHeader>
-          <CardTitle>成本定价（每百万 Token / USD）</CardTitle>
+          <CardTitle>{t("pricing.title")}</CardTitle>
         </CardHeader>
         <CardContent>
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>
-                  <SortHeader label="模型标识" k="model_key" {...sortProps} />
+                  <SortHeader
+                    label={t("pricing.col.modelKey")}
+                    k="model_key"
+                    {...sortProps}
+                  />
                 </TableHead>
                 <TableHead>
                   <SortHeader
-                    label="显示名称"
+                    label={t("pricing.col.displayName")}
                     k="display_name"
                     {...sortProps}
                   />
                 </TableHead>
                 <TableHead>
                   <SortHeader
-                    label="输入"
+                    label={t("usage.tokens.input")}
                     k="input_per_million"
                     {...sortProps}
                   />
                 </TableHead>
                 <TableHead>
                   <SortHeader
-                    label="输出"
+                    label={t("usage.tokens.output")}
                     k="output_per_million"
                     {...sortProps}
                   />
                 </TableHead>
                 <TableHead>
                   <SortHeader
-                    label="缓存命中"
+                    label={t("usage.tokens.cacheRead")}
                     k="cache_read_per_million"
                     {...sortProps}
                   />
                 </TableHead>
                 <TableHead>
                   <SortHeader
-                    label="缓存创建"
+                    label={t("usage.tokens.cacheCreation")}
                     k="cache_creation_per_million"
                     {...sortProps}
                   />
                 </TableHead>
-                <TableHead>来源</TableHead>
-                <TableHead className="text-right">操作</TableHead>
+                <TableHead>{t("usage.logs.col.source")}</TableHead>
+                <TableHead className="text-right">
+                  {t("pricing.col.actions")}
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {isLoading ? (
                 <TableRow>
                   <TableCell colSpan={8} className="text-muted-foreground">
-                    加载中…
+                    {t("common.loading")}
                   </TableCell>
                 </TableRow>
               ) : filtered.length === 0 ? (
@@ -262,7 +270,7 @@ export function PricingView() {
                     colSpan={8}
                     className="text-muted-foreground py-8 text-center"
                   >
-                    无匹配条目
+                    {t("pricing.noMatch")}
                   </TableCell>
                 </TableRow>
               ) : (
@@ -286,7 +294,9 @@ export function PricingView() {
                     </TableCell>
                     <TableCell>
                       <Badge variant={e.is_builtin ? "secondary" : "default"}>
-                        {e.is_builtin ? "内置" : "自定义"}
+                        {e.is_builtin
+                          ? t("pricing.builtin")
+                          : t("pricing.custom")}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
@@ -298,13 +308,13 @@ export function PricingView() {
                                 variant="ghost"
                                 size="icon-sm"
                                 onClick={() => openEdit(e)}
-                                aria-label="编辑"
+                                aria-label={t("common.edit")}
                               />
                             }
                           >
                             <Pencil />
                           </TooltipTrigger>
-                          <TooltipContent>编辑</TooltipContent>
+                          <TooltipContent>{t("common.edit")}</TooltipContent>
                         </Tooltip>
                         <Tooltip>
                           <TooltipTrigger
@@ -313,13 +323,13 @@ export function PricingView() {
                                 variant="ghost"
                                 size="icon-sm"
                                 onClick={() => remove(e.model_key)}
-                                aria-label="删除"
+                                aria-label={t("common.delete")}
                               />
                             }
                           >
                             <Trash2 />
                           </TooltipTrigger>
-                          <TooltipContent>删除</TooltipContent>
+                          <TooltipContent>{t("common.delete")}</TooltipContent>
                         </Tooltip>
                       </div>
                     </TableCell>
@@ -330,9 +340,7 @@ export function PricingView() {
           </Table>
 
           <div className="text-muted-foreground mt-3 flex items-center justify-between text-xs">
-            <span>
-              第 {page} / {totalPages} 页 · 共 {total} 条
-            </span>
+            <span>{t("usage.logs.pageInfo", { page, totalPages, total })}</span>
             <div className="flex gap-2">
               <Button
                 variant="outline"
@@ -340,7 +348,7 @@ export function PricingView() {
                 disabled={offset === 0}
                 onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
               >
-                上一页
+                {t("usage.logs.prevPage")}
               </Button>
               <Button
                 variant="outline"
@@ -348,7 +356,7 @@ export function PricingView() {
                 disabled={offset + PAGE_SIZE >= total}
                 onClick={() => setOffset(offset + PAGE_SIZE)}
               >
-                下一页
+                {t("usage.logs.nextPage")}
               </Button>
             </div>
           </div>

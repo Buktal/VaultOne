@@ -6,15 +6,17 @@
 
 import dayjs from "dayjs"
 import relativeTime from "dayjs/plugin/relativeTime"
-
-import "dayjs/locale/zh-cn"
+import { useTranslation } from "react-i18next"
 
 import { useFreshness } from "@/hooks/use-freshness"
 
+// relativeTime gives us `fromNow()`; the locale it renders in is set globally by
+// `setDayjsLocale` (driven from the display-language preference, ADR-0016) — not
+// hard-coded here.
 dayjs.extend(relativeTime)
-dayjs.locale("zh-cn")
 
 export function DataFreshness() {
+  const { t } = useTranslation()
   const { state } = useFreshness()
   const collect = state.lastCollectAt
   const sync = state.lastSyncAt
@@ -22,7 +24,7 @@ export function DataFreshness() {
   if (!collect) {
     return (
       <span className="text-muted-foreground text-xs">
-        首次使用 — 点「采集」导入本地日志
+        {t("usage.freshness.firstRun")}
       </span>
     )
   }
@@ -34,13 +36,13 @@ export function DataFreshness() {
         <span className="relative inline-flex size-1.5 rounded-full bg-emerald-400" />
       </span>
       <span className="text-muted-foreground">
-        采集于
-        <span className="text-foreground/80">{dayjs(collect).fromNow()}</span>
+        <span>
+          {t("usage.freshness.collected", { ago: dayjs(collect).fromNow() })}
+        </span>
         {sync ? (
-          <>
-            {" · 同步 "}
-            <span className="text-foreground/80">{dayjs(sync).fromNow()}</span>
-          </>
+          <span>
+            {t("usage.freshness.synced", { ago: dayjs(sync).fromNow() })}
+          </span>
         ) : null}
       </span>
     </div>

@@ -12,6 +12,8 @@ import { useEffect } from "react"
 import { Provider } from "react-redux"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import "@/i18n"
+import { LanguageSync } from "@/i18n/LanguageSync"
 
 import { CloseRequestedDialog } from "./close-requested-dialog"
 import { vaultApi } from "./store/api"
@@ -45,6 +47,7 @@ export function AppProviders({ children }: { children: ReactNode }) {
 
   return (
     <Provider store={store}>
+      <LanguageSync />
       <ThemeProvider
         attribute="class"
         defaultTheme="dark"

@@ -55,13 +55,39 @@ jobs:
       - name: Install frontend dependencies
         run: yarn install
 
+      - name: Extract changelog for this release
+        # Pull this tag's section out of CHANGELOG.md → GitHub Release body.
+        # tauri-action copies the Release body into the updater's latest.json
+        # `notes`, shown in the in-app UpdateCard (ADR-0017). shell: bash so the
+        # heredoc works on the Windows runner too.
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node scripts/extract-changelog.mjs > body.md
+          {
+            echo "RELEASE_BODY<<EOF"
+            cat body.md
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
       - name: Build and publish
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Ed25519 signing key (ADR-0017): tauri-action signs each installer
+          # (.sig), builds the latest.json updater manifest, and attaches both
+          # to this Release. The matching public key lives in
+          # tauri.conf.json (plugins.updater.pubkey); the private key + password
+          # live in repo Secrets — set them before tagging (see docs).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'VaultOne ${{ github.ref_name }}'
-          releaseBody: 'Download the installer for your OS from the assets below. See the [README](https://github.com/Buktal/VaultOne/blob/main/README.md) for setup and usage.'
+          releaseBody: ${{ env.RELEASE_BODY }}
           releaseDraft: false
           prerelease: false
+          # Emit a signed latest.json and prefer NSIS for Windows in-place
+          # updates (ADR-0017).
+          updaterJsonPreferNsis: true

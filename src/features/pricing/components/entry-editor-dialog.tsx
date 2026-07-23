@@ -4,6 +4,7 @@
 // later LiteLLM pull won't clobber them.
 
 import { useEffect, useState } from "react"
+import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 import { useSavePricingMutation } from "@/app/store/api"
 import { Button } from "@/components/ui/button"
@@ -43,6 +44,7 @@ export function EntryEditorDialog({
   entry: PricingEntry | null
   onSaved: () => void
 }) {
+  const { t } = useTranslation()
   const [draft, setDraft] = useState<PricingEntry>(entry ?? emptyEntry())
   const [save, { isLoading: saving }] = useSavePricingMutation()
 
@@ -55,13 +57,13 @@ export function EntryEditorDialog({
 
   async function onSave() {
     if (!draft.model_key.trim()) {
-      toast.error("请填写模型标识 (model_key)")
+      toast.error(t("pricing.toast.modelKeyRequired"))
       return
     }
     const res = await save({ entry: draft, isBuiltin: draft.is_builtin })
-    if ("error" in res) toast.error("保存失败")
+    if ("error" in res) toast.error(t("settings.toast.saveFailed"))
     else {
-      toast.success(`已保存 ${draft.model_key}`)
+      toast.success(t("pricing.toast.saved", { key: draft.model_key }))
       onSaved()
     }
   }
@@ -71,27 +73,29 @@ export function EntryEditorDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>
-            {entry?.model_key ? "编辑模型定价" : "新增模型定价"}
+            {entry?.model_key
+              ? t("pricing.editor.editTitle")
+              : t("pricing.editor.newTitle")}
           </DialogTitle>
           <DialogDescription>
-            每百万 Token / USD。自定义条目（非内置）不会随 LiteLLM 拉取被覆盖。
+            {t("pricing.editor.description")}
           </DialogDescription>
         </DialogHeader>
 
         <div className="grid grid-cols-2 gap-3">
-          <Field label="模型标识">
+          <Field label={t("pricing.col.modelKey")}>
             <Input
               value={draft.model_key}
               onChange={(e) => set({ model_key: e.target.value })}
             />
           </Field>
-          <Field label="显示名称">
+          <Field label={t("pricing.col.displayName")}>
             <Input
               value={draft.display_name}
               onChange={(e) => set({ display_name: e.target.value })}
             />
           </Field>
-          <Field label="输入 / 1M">
+          <Field label={t("pricing.editor.input")}>
             <Input
               type="number"
               step="0.01"
@@ -101,7 +105,7 @@ export function EntryEditorDialog({
               }
             />
           </Field>
-          <Field label="输出 / 1M">
+          <Field label={t("pricing.editor.output")}>
             <Input
               type="number"
               step="0.01"
@@ -111,7 +115,7 @@ export function EntryEditorDialog({
               }
             />
           </Field>
-          <Field label="缓存命中 / 1M">
+          <Field label={t("pricing.editor.cacheRead")}>
             <Input
               type="number"
               step="0.01"
@@ -121,7 +125,7 @@ export function EntryEditorDialog({
               }
             />
           </Field>
-          <Field label="缓存创建 / 1M">
+          <Field label={t("pricing.editor.cacheCreation")}>
             <Input
               type="number"
               step="0.01"
@@ -135,10 +139,10 @@ export function EntryEditorDialog({
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
-            取消
+            {t("common.cancel")}
           </Button>
           <Button disabled={saving} onClick={onSave}>
-            {saving ? "保存中…" : "保存"}
+            {saving ? t("common.saving") : t("common.save")}
           </Button>
         </DialogFooter>
       </DialogContent>

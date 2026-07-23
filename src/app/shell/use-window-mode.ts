@@ -1,33 +1,35 @@
 // Morph the OS main window between full dashboard and lightweight glance card
-// (ADR-0015). Owns the coarse full ⇄ lightweight transition only:
-//   - full → lightweight: save the prior geometry, un-maximize, set
-//     always-on-top, shrink to the card and dock it at the screen's right edge.
+// (ADR-0015). Coarse full ⇄ lightweight transition only:
+//   - full → lightweight: remember the prior geometry (in LOGICAL units) and
+//     raise always-on-top.
 //   - lightweight → full: clear always-on-top and restore the saved geometry.
-// The in-lightweight tuck/hover (card ⇄ half-icon) is owned by useLightweightTuck.
+//
+// This effect NO LONGER sizes, moves, or docks the window. The lightweight
+// window's geometry is owned entirely by the Rust `dock_window_right` command,
+// invoked from useLightweightTuck (on mount, tuck, expand, and height-resize) —
+// one atomic SetWindowPos of the OUTER rect that keeps the window wholly on one
+// monitor (shadow included), so it can't straddle two monitors of different DPI
+// or lock WebView2 to the wrong rasterization scale.
+//
+// Geometry is saved/restored in LOGICAL units (physical ÷ the monitor's
+// scaleFactor at save time) so the restore shares one coordinate system.
 //
 // This is a dep-change effect in App (not a mount effect), so it is a single
-// invoke per transition. The tuck hook lives in LightweightCard and does no
-// window ops on mount, so the full-geometry read below happens before anything
-// shrinks (no child/parent effect race).
+// invoke per transition.
 
 import {
+  currentMonitor,
   getCurrentWindow,
   LogicalPosition,
-  type PhysicalPosition,
-  type PhysicalSize,
+  LogicalSize,
 } from "@tauri-apps/api/window"
 import { useEffect, useRef } from "react"
 
 import { useAppSelector } from "@/app/store/hooks"
-import {
-  CARD_SIZE,
-  ENTRY_DOCK_Y,
-  rightEdgeLogical,
-} from "./lightweight-geometry"
 
 type SavedGeometry =
   | { maximized: true }
-  | { maximized: false; size: PhysicalSize; position: PhysicalPosition }
+  | { maximized: false; size: LogicalSize; position: LogicalPosition }
 
 export function useWindowMode() {
   const mode = useAppSelector((s) => s.view.mode)
@@ -37,27 +39,23 @@ export function useWindowMode() {
     const appWindow = getCurrentWindow()
     void (async () => {
       if (mode === "lightweight") {
-        // Save the full-mode geometry before shrinking. A maximized window is
-        // restored via maximize() (a size copy would lose the "maximized"
-        // window state).
+        // Remember the full-mode geometry for restore. Docking/sizing is now
+        // done atomically by dock_window_right (from useLightweightTuck).
         const wasMaximized = await appWindow.isMaximized()
-        saved.current = wasMaximized
-          ? { maximized: true }
-          : {
-              maximized: false,
-              size: await appWindow.outerSize(),
-              position: await appWindow.outerPosition(),
-            }
-        if (wasMaximized) await appWindow.unmaximize()
-        await appWindow.setAlwaysOnTop(true)
-        await appWindow.setSize(CARD_SIZE)
-        // Dock to the right edge (v1: right only; multi-monitor choice deferred).
-        const edge = await rightEdgeLogical()
-        if (edge != null) {
-          await appWindow.setPosition(
-            new LogicalPosition(edge - CARD_SIZE.width, ENTRY_DOCK_Y),
-          )
+        if (wasMaximized) {
+          saved.current = { maximized: true }
+        } else {
+          const mon = await currentMonitor()
+          const f = mon?.scaleFactor || 1
+          const outer = await appWindow.outerSize()
+          const pos = await appWindow.outerPosition()
+          saved.current = {
+            maximized: false,
+            size: new LogicalSize(outer.width / f, outer.height / f),
+            position: new LogicalPosition(pos.x / f, pos.y / f),
+          }
         }
+        await appWindow.setAlwaysOnTop(true)
       } else {
         await appWindow.setAlwaysOnTop(false)
         const geo = saved.current

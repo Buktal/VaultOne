@@ -5,6 +5,7 @@
 
 import { ArrowRight } from "lucide-react"
 import { useMemo } from "react"
+import { useTranslation } from "react-i18next"
 import { useCountQuery, useLogsQuery } from "@/app/store/api"
 import { useAppDispatch, useAppSelector } from "@/app/store/hooks"
 import { toFilter } from "@/app/store/slices/filterSlice"
@@ -27,6 +28,7 @@ function tokenTotal(r: UsageLogRow): number {
 }
 
 export function RecentRequests() {
+  const { t } = useTranslation()
   const dispatch = useAppDispatch()
   const filter = useAppSelector((s) => s.filter.filter)
   const usageFilter = useMemo(() => toFilter(filter), [filter])
@@ -40,13 +42,13 @@ export function RecentRequests() {
   return (
     <Card interactive>
       <CardHeader className="flex-row items-center justify-between">
-        <CardTitle>近期请求</CardTitle>
+        <CardTitle>{t("usage.recent.title")}</CardTitle>
         <button
           type="button"
           onClick={() => dispatch(setView("logs"))}
           className="text-primary hover:text-primary/80 inline-flex items-center gap-1 text-xs"
         >
-          全部
+          {t("usage.recent.all")}
           <ArrowRight className="size-3" />
           {total > 0 ? (
             <span className="text-muted-foreground">({formatInt(total)})</span>
@@ -56,7 +58,7 @@ export function RecentRequests() {
       <CardContent className="flex flex-col">
         {rows.length === 0 ? (
           <span className="text-muted-foreground py-6 text-center text-xs">
-            暂无请求记录
+            {t("usage.recent.empty")}
           </span>
         ) : (
           rows.map((r, i) => (
@@ -78,9 +80,13 @@ export function RecentRequests() {
                   </span>
                 </span>
                 <span className="text-muted-foreground flex items-center gap-2 text-[11px] tabular-nums">
-                  <span>入 {formatInt(r.tokens.input)}</span>
+                  <span>
+                    {t("usage.recent.in", { n: formatInt(r.tokens.input) })}
+                  </span>
                   <span aria-hidden="true">·</span>
-                  <span>出 {formatInt(r.tokens.output)}</span>
+                  <span>
+                    {t("usage.recent.out", { n: formatInt(r.tokens.output) })}
+                  </span>
                   <span aria-hidden="true">·</span>
                   <span>{formatCost(r.total_cost_usd)}</span>
                   <span aria-hidden="true">·</span>

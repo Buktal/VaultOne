@@ -11,6 +11,7 @@
 import dayjs from "dayjs"
 import { Activity, CalendarRange, ChevronDown } from "lucide-react"
 import { type ReactNode, useEffect, useState } from "react"
+import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 import { DataFreshness } from "@/app/shell/data-freshness"
 import { useCollectMutation, useDistinctModelsQuery } from "@/app/store/api"
@@ -45,11 +46,11 @@ const CONTROL_COLLAPSE_KEY = "vaultone:control-collapsed"
 
 type Preset = "today" | "7d" | "30d" | "all"
 
-const PRESETS: Array<{ value: Preset; label: string }> = [
-  { value: "today", label: "今天" },
-  { value: "7d", label: "7天" },
-  { value: "30d", label: "30天" },
-  { value: "all", label: "全部" },
+const PRESETS: Array<{ value: Preset; key: string }> = [
+  { value: "today", key: "usage.control.today" },
+  { value: "7d", key: "usage.control.last7d" },
+  { value: "30d", key: "usage.control.last30d" },
+  { value: "all", key: "usage.control.all" },
 ]
 
 function dayStr(offset = 0) {
@@ -80,18 +81,22 @@ function applyPreset(p: Preset): Pick<FilterState, "from_day" | "to_day"> {
 
 /** 采集动作 (触发 collectNow → 失效缓存 → 刷新新鲜度 → toast). */
 function useCollectAction() {
+  const { t } = useTranslation()
   const { markCollected } = useFreshness()
   const [collect, { isLoading: collecting }] = useCollectMutation()
   async function onCollect() {
     const res = await collect()
     if ("error" in res) {
-      toast.error("采集失败")
+      toast.error(t("usage.collect.failed"))
       return
     }
     markCollected()
     const r = res.data
     toast.success(
-      `采集完成：新增 ${r?.rows_inserted ?? 0} 条（扫描 ${r?.files_scanned ?? 0} 文件）`,
+      t("usage.collect.done", {
+        rows: r?.rows_inserted ?? 0,
+        files: r?.files_scanned ?? 0,
+      }),
     )
   }
   return { onCollect, collecting }
@@ -107,14 +112,18 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
 }
 
 function DateRangeChip() {
+  const { t } = useTranslation()
   const dispatch = useAppDispatch()
   const filter = useAppSelector((s) => s.filter.filter)
   const preset = derivePreset(filter)
   const label = preset
-    ? (PRESETS.find((p) => p.value === preset)?.label ?? "时间范围")
+    ? t(
+        PRESETS.find((p) => p.value === preset)?.key ??
+          "usage.control.dateRange",
+      )
     : filter.from_day || filter.to_day
       ? `${filter.from_day || "…"} → ${filter.to_day || "…"}`
-      : "全部时间"
+      : t("usage.control.allTime")
 
   return (
     <Popover>
@@ -143,13 +152,15 @@ function DateRangeChip() {
                   : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
               )}
             >
-              {p.label}
+              {t(p.key)}
             </button>
           ))}
         </div>
         <div className="mt-3 flex flex-col gap-2">
           <label className="flex flex-col gap-1 text-xs">
-            <span className="text-muted-foreground">开始</span>
+            <span className="text-muted-foreground">
+              {t("usage.control.start")}
+            </span>
             <input
               type="date"
               value={filter.from_day}
@@ -160,7 +171,9 @@ function DateRangeChip() {
             />
           </label>
           <label className="flex flex-col gap-1 text-xs">
-            <span className="text-muted-foreground">结束</span>
+            <span className="text-muted-foreground">
+              {t("usage.control.end")}
+            </span>
             <input
               type="date"
               value={filter.to_day}
@@ -177,6 +190,7 @@ function DateRangeChip() {
 }
 
 function ModelChip() {
+  const { t } = useTranslation()
   const dispatch = useAppDispatch()
   const filter = useAppSelector((s) => s.filter.filter)
   const { data: models = [] } = useDistinctModelsQuery()
@@ -189,14 +203,14 @@ function ModelChip() {
     >
       <SelectTrigger
         className="border-border bg-card hover:bg-muted/60 h-8 w-28 rounded-md"
-        aria-label="模型"
+        aria-label={t("usage.control.model")}
       >
         <SelectValue>
-          {(value: string) => (value === ALL ? "全部" : value)}
+          {(value: string) => (value === ALL ? t("usage.control.all") : value)}
         </SelectValue>
       </SelectTrigger>
       <SelectContent>
-        <SelectItem value={ALL}>全部</SelectItem>
+        <SelectItem value={ALL}>{t("usage.control.all")}</SelectItem>
         {models.map((m) => (
           <SelectItem key={m} value={m}>
             {m}
@@ -209,6 +223,7 @@ function ModelChip() {
 
 /** 纵向卡片版 — 看板右栏。标题行带主题切换 + 折叠 (ADR-0013 v2)。 */
 export function ControlCard() {
+  const { t } = useTranslation()
   const { onCollect, collecting } = useCollectAction()
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     if (typeof localStorage === "undefined") return false
@@ -220,12 +235,16 @@ export function ControlCard() {
   return (
     <Card size="sm" interactive>
       <CardHeader>
-        <CardTitle>控制</CardTitle>
+        <CardTitle>{t("usage.control.title")}</CardTitle>
         <CardAction>
           <Button
             variant="ghost"
             size="icon-sm"
-            aria-label={collapsed ? "展开控制" : "收起控制"}
+            aria-label={
+              collapsed
+                ? t("usage.control.expand")
+                : t("usage.control.collapse")
+            }
             onClick={() => setCollapsed((c) => !c)}
           >
             <ChevronDown
@@ -239,16 +258,18 @@ export function ControlCard() {
       </CardHeader>
       {collapsed ? null : (
         <CardContent className="flex flex-col gap-0">
-          <Row label="时间范围">
+          <Row label={t("usage.control.dateRange")}>
             <DateRangeChip />
           </Row>
-          <Row label="模型">
+          <Row label={t("usage.control.model")}>
             <ModelChip />
           </Row>
           <div className="bg-border my-2 h-px" />
           <Button className="w-full" disabled={collecting} onClick={onCollect}>
             <Activity />
-            {collecting ? "采集中…" : "采集"}
+            {collecting
+              ? t("usage.collect.collecting")
+              : t("usage.collect.collect")}
           </Button>
           <div className="mt-3">
             <DataFreshness />
@@ -261,6 +282,7 @@ export function ControlCard() {
 
 /** 横向条版 — 日志页顶部。 */
 export function ControlBar() {
+  const { t } = useTranslation()
   const { onCollect, collecting } = useCollectAction()
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -270,7 +292,9 @@ export function ControlBar() {
       <DataFreshness />
       <Button size="sm" disabled={collecting} onClick={onCollect}>
         <Activity />
-        {collecting ? "采集中…" : "采集"}
+        {collecting
+          ? t("usage.collect.collecting")
+          : t("usage.collect.collect")}
       </Button>
     </div>
   )
