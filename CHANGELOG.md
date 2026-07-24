@@ -5,6 +5,12 @@ All notable changes to VaultOne are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Tray menu** — added a "Show" entry so the window can be restored from the tray on Linux, where libappindicator does not emit tray click events and left-clicking the icon was a no-op (the only workaround was Quit → reopen). Windows/macOS left-click restore is unchanged; the menu item is a convenience there.
+
 ## [1.2.0] - 2026-07-24
 
 ### Added

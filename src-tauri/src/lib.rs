@@ -69,8 +69,18 @@ fn specta_builder() -> Builder<tauri::Wry> {
     ])
 }
 
-/// Tray "Quit" label for the active display language (ADR-0016). The tray item
-/// is the ONLY user-facing Rust string — all other UI text is frontend i18n.
+/// Tray "Show" label for the active display language (ADR-0016). The tray menu
+/// items are the ONLY user-facing Rust strings — all other UI text is frontend
+/// i18n — so this and [`quit_label`] are rebuilt on a live language change.
+pub(crate) fn show_label(lang: config::Language) -> &'static str {
+    match lang {
+        config::Language::En => "Show",
+        config::Language::Zh => "显示",
+        config::Language::Ja => "表示",
+    }
+}
+
+/// Tray "Quit" label for the active display language (ADR-0016).
 pub(crate) fn quit_label(lang: config::Language) -> &'static str {
     match lang {
         config::Language::En => "Quit",
@@ -79,15 +89,37 @@ pub(crate) fn quit_label(lang: config::Language) -> &'static str {
     }
 }
 
-/// (Re)build the tray menu (Quit only, ADR-0012) localized to `lang`
-/// (ADR-0016). Called at setup and from `set_language` on a language change so
-/// the single tray item tracks the language without an app restart.
+/// (Re)build the tray menu, localized to `lang` (ADR-0016). Called at setup
+/// and from `set_language` on a language change so both items track the
+/// language without an app restart.
+///
+/// Two items (ADR-0012): "Show" surfaces the dashboard; "Quit" exits.
+/// The Show entry is the ONLY reliable restore path on Linux, where
+/// libappindicator does not emit tray click events — so the left-click handler
+/// (`on_tray_icon_event` below) is dead code there and the menu Show item is
+/// the fallback. On Windows/macOS left-click stays the primary path and Show is
+/// a convenience.
 pub(crate) fn tray_menu_for(
     app: &tauri::AppHandle,
     lang: config::Language,
 ) -> tauri::Result<Menu<tauri::Wry>> {
+    let show = MenuItem::with_id(app, "show", show_label(lang), true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", quit_label(lang), true, None::<&str>)?;
-    Menu::with_items(app, &[&quit])
+    Menu::with_items(app, &[&show, &quit])
+}
+
+/// Surface the main window from the tray: show + unminimize + focus, then tell
+/// the frontend to morph out of lightweight mode (ADR-0015) so the FULL
+/// dashboard is shown. Shared by the tray menu "Show" entry and the tray
+/// left-click handler. `unminimize` covers the GNOME/Mutter case where a hidden
+/// window needs both show and unminimize to reliably take focus.
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+        let _ = app.emit("tray-show-main", ());
+    }
 }
 
 /// Export TypeScript bindings to the frontend `src/types/generated/`
@@ -207,30 +239,23 @@ pub fn run() {
                 .tooltip("VaultOne")
                 .icon(app.default_window_icon().cloned().unwrap())
                 .menu(&menu)
-                .on_menu_event(|app, event| {
-                    if event.id.as_ref() == "quit" {
-                        app.exit(0);
-                    }
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => show_main_window(app),
+                    "quit" => app.exit(0),
+                    _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
+                    // No-op on Linux: libappindicator does not emit tray click
+                    // events, so the menu "Show" entry is the restore path there
+                    // (see `tray_menu_for`). On Windows/macOS this left-click is
+                    // the primary path.
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
                         ..
                     } = event
                     {
-                        let app = tray.app_handle();
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                            // ADR-0015: tray left-click always surfaces the FULL
-                            // dashboard (ADR-0012), so if the window is tucked
-                            // into the lightweight glance card, tell the frontend
-                            // to morph back. No-op when already full; the window
-                            // geometry is restored by useWindowMode on the mode
-                            // change.
-                            let _ = app.emit("tray-show-main", ());
-                        }
+                        show_main_window(tray.app_handle());
                     }
                 })
                 .build(app)?;
