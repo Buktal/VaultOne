@@ -1,4 +1,4 @@
-// RecentRequests (ADR-0011) — dashboard middle-column footer. Latest N request
+// RecentRequests — dashboard middle-column footer. Latest N request
 // rows as a compact list + a "全部 →" link into the logs view. Doubles as a
 // height-filler so the middle column tracks the right column, and as a quick
 // path from the dashboard into the full ledger. Polls with the shared interval.
@@ -12,21 +12,12 @@ import { toFilter } from "@/app/store/slices/filterSlice"
 import { setView } from "@/app/store/slices/viewSlice"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { formatCost, formatInt, formatTime } from "@/lib/format"
+import { tokenTotal } from "@/lib/usage"
 import { cn } from "@/lib/utils"
 
-import type { UsageLogRow } from "@/types/generated/bindings"
 import { useDeviceLabelMap } from "../use-device-options"
 
 const LIMIT = 5
-
-function tokenTotal(r: UsageLogRow): number {
-  return (
-    r.tokens.input +
-    r.tokens.output +
-    r.tokens.cache_creation +
-    r.tokens.cache_read
-  )
-}
 
 export function RecentRequests() {
   const { t } = useTranslation()

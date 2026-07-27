@@ -1,7 +1,7 @@
 // Request log table — per-API-call ledger. Columns: Time / Provider / Billed
 // Model / 输入 / 输出 / 缓存创建 / 缓存命中 / 总 Token / Cost / 停止原因 /
 // Source / Device. `stop_reason` (end_turn / tool_use / max_tokens …) is the
-// per-call end semantic. No latency / TTFT / HTTP-status columns (ADR-0003).
+// per-call end semantic. No latency / TTFT / HTTP-status columns.
 // Fixed time-desc (no sort UI); paginated; empty state offers an inline 采集
 // CTA so the user isn't bounced to the command bar to seed the first rows.
 
@@ -27,21 +27,12 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { formatCost, formatInt, formatTime } from "@/lib/format"
+import { tokenTotal } from "@/lib/usage"
 import { cn } from "@/lib/utils"
-
-import type { UsageFilter, UsageLogRow } from "@/types/generated/bindings"
+import type { UsageFilter } from "@/types/generated/bindings"
 import { useDeviceLabelMap } from "../use-device-options"
 
 const PAGE_SIZE = 50
-
-function tokenTotal(r: UsageLogRow): number {
-  return (
-    r.tokens.input +
-    r.tokens.output +
-    r.tokens.cache_creation +
-    r.tokens.cache_read
-  )
-}
 
 /**
  * Right-aligned token-column header: label + a muted, language-neutral `tok`
