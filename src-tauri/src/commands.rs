@@ -293,7 +293,7 @@ pub async fn sync_config(state: State<'_, AppState>) -> AppResult<ConfigSyncOutc
         let cfg = config.get();
         if !cfg.is_synced() {
             return Err(AppError::Sync(
-                "not in Synced mode (ADR-0006): cloud config sync unavailable".into(),
+                "not in Synced mode: cloud config sync unavailable".into(),
             ));
         }
         let paths = config.paths();
@@ -318,7 +318,7 @@ pub async fn resolve_config_conflict(
         let cfg = config.get();
         if !cfg.is_synced() {
             return Err(AppError::Sync(
-                "not in Synced mode (ADR-0006): conflict resolve unavailable".into(),
+                "not in Synced mode: conflict resolve unavailable".into(),
             ));
         }
         let paths = config.paths();

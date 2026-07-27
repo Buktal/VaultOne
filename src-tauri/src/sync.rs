@@ -531,7 +531,7 @@ pub fn pull(repo: &Repository, token: &str) -> AppResult<()> {
     }
     if !analysis.is_fast_forward() {
         return Err(AppError::Sync(format!(
-            "pull would diverge on '{branch}'; refusing to auto-merge (ADR-0005 / S3)"
+            "pull would diverge on '{branch}'; refusing to auto-merge"
         )));
     }
     // Fast-forward: move the branch ref to the remote tip, then sync the tree.
@@ -614,7 +614,7 @@ pub fn push(repo: &Repository, token: &str) -> AppResult<()> {
 pub fn require_synced(cfg: &ConfigData) -> AppResult<(String, String)> {
     if !cfg.is_synced() {
         return Err(AppError::Sync(
-            "not in Synced mode (ADR-0006): no repo URL / PAT configured".into(),
+            "not in Synced mode: no repo URL / PAT configured".into(),
         ));
     }
     // `is_synced` guarantees both are present and non-blank.
