@@ -17,6 +17,7 @@
 // change (extend TrendPoint); tracked in backlog.
 
 import dayjs from "dayjs"
+import { useMemo } from "react"
 import { useTranslation } from "react-i18next"
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts"
 import { useTrendQuery } from "@/app/store/api"
@@ -79,6 +80,20 @@ function formatHour(key: string): string {
   return `${key.slice(11, 13)}:00`
 }
 
+/** A zero-valued trend point used to pad empty hour buckets so the today x-axis
+ *  spans 00:00 → current hour, not only the hours that happen to have records. */
+function zeroTrendPoint(day: string): TrendPoint {
+  return {
+    day,
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_creation_tokens: 0,
+    cache_read_tokens: 0,
+    total_tokens: 0,
+    total_cost_usd: 0,
+  }
+}
+
 export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
   const { t } = useTranslation()
   // A single local-day range collapses per-day resolution to one bar, so zoom
@@ -89,7 +104,34 @@ export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
     !!filter.to_ts &&
     dayjs(filter.from_ts).isSame(filter.to_ts, "day")
   const bucket: TrendBucket = hourly ? "Hour" : "Day"
-  const { data = [], isLoading, error } = useTrendQuery({ filter, bucket })
+  const {
+    data: rawData = [],
+    isLoading,
+    error,
+  } = useTrendQuery({
+    filter,
+    bucket,
+  })
+
+  // Hourly (today) zero-fill: pin the x-axis to local 00:00 → current hour
+  // instead of the first→last bucket that has records. The backend GROUP BY
+  // only emits buckets with rows, so without padding the 00:00→first-record
+  // stretch is swallowed and the range looks truncated. Day buckets (7d/30d/
+  // all) are left as-is; an entirely empty today stays empty so QueryState
+  // shows its empty state rather than a flat zero line.
+  const data = useMemo(() => {
+    if (!hourly || rawData.length === 0) return rawData
+    const byKey = new Map(rawData.map((p) => [p.day, p]))
+    const out: TrendPoint[] = []
+    let cur = dayjs().startOf("day")
+    const end = dayjs()
+    while (!cur.isAfter(end, "hour")) {
+      const key = cur.format("YYYY-MM-DDTHH")
+      out.push(byKey.get(key) ?? zeroTrendPoint(key))
+      cur = cur.add(1, "hour")
+    }
+    return out
+  }, [hourly, rawData])
 
   // ChartConfig keys MUST equal the dataKeys (input_tokens …) so the shadcn
   // legend helper resolves label + color from payload.dataKey. stroke / dot
@@ -148,6 +190,7 @@ export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
               />
               <XAxis
                 dataKey="day"
+                interval="preserveStartEnd"
                 tickLine={false}
                 axisLine={false}
                 tickFormatter={(v) =>

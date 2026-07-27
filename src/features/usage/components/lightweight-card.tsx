@@ -347,11 +347,12 @@ export function LightweightCard() {
           square edge so the card's rounded corners don't sit flush against a
           square window border — the full dashboard gives the same card the
           same breathing room via the main-area padding/gap. */}
-      {/* 设备视角切换 — 从 p-3 卡区提出来, 紧贴 drag-bar 下方右对齐。drag-bar 与
-          大窗口 TitleBar 同为 h-8(32), selector 紧贴 → 两窗口 selector 离窗口顶都
-          是 32, 完全对齐。px-3 右缩进与 TokenHero 卡右边平齐。单设备不渲染。 */}
+      {/* 设备视角切换 — drag-bar 下方右对齐。selector 顶部留 mt-4(16) 呼吸, 与
+          大窗口 dashboard selector 行同间距 → 两窗口 selector 离窗口顶都是 32+16
+          =48, 完全对齐, 且与下方使用趋势的 gap-4 节奏一致 (不再紧贴顶部栏显偏
+          上)。px-3 右缩进与 TokenHero 卡右边平齐。单设备不渲染。 */}
       {devices.length > 1 ? (
-        <div className="flex justify-end px-3">
+        <div className="flex justify-end px-3 mt-4">
           <DeviceScopeControl compact />
         </div>
       ) : null}

@@ -58,7 +58,7 @@ export function DeviceScopeControl({ compact = false }: { compact?: boolean }) {
       <SelectTrigger
         className={cn(
           "border-border bg-card hover:bg-muted/60 rounded-md",
-          compact ? "h-8 w-32 text-[11px]" : "h-8 w-36",
+          compact ? "h-8 w-32 text-[11px]" : "h-8 w-36 text-[13px]",
         )}
         aria-label={t("usage.deviceScope.label")}
       >

@@ -31,7 +31,7 @@ export function DashboardView() {
       {/* 设备视角切换 · 顶部右上 (ADR-0011 device_scope)。单设备时控件自渲染为
           null，此行也跳过避免空行；justify-end 呼应 TitleBar 靠右设计语言。 */}
       {devices.length > 1 ? (
-        <div className="flex justify-end">
+        <div className="flex justify-end mt-4">
           <DeviceScopeControl />
         </div>
       ) : null}
