@@ -58,6 +58,12 @@ windows = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",
 ] }
+# Windows system-proxy discovery (ADR-0019): read HKCU's `Internet Settings` to
+# follow the OS proxy on every libgit2 push/fetch. libgit2's own HTTP stack
+# (Schannel TLS) ignores the Windows system proxy, so without this a Synced-mode
+# client behind a system proxy (Clash/Mihomo, corporate gateway) silently times
+# out even though the user's browser works. Light, single-purpose crate.
+winreg = "0.52"
 
 [dev-dependencies]
 # Test-only temp dirs for db / config / ingest / providers tests (S1).
