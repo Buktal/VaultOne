@@ -136,6 +136,23 @@ export const commands = {
 	 *  scale (content renders too small on high-DPI multi-monitor setups).
 	 */
 	centerWindow: (clientLogicalW: number | null, clientLogicalH: number | null) => typedError<null, string>(__TAURI_INVOKE("center_window", { clientLogicalW, clientLogicalH })),
+	/**
+	 *  Place the window at an arbitrary logical rect, in one atomic `SetWindowPos`
+	 *  (size + position together). Restores the full-mode window to the position
+	 *  and size the user last left it at. Like the dock and center commands, the
+	 *  single `SetWindowPos` avoids the `[new size, old pos]` straddle that flips
+	 *  `MonitorFromWindow` to a neighbour of different DPI and locks WebView2 to
+	 *  the wrong rasterization scale.
+	 * 
+	 *  `logical_x/y` is the desired CLIENT top-left in logical px relative to the
+	 *  virtual-screen origin (what `outerPosition() / scaleFactor` produces);
+	 *  `logical_w/h` is the desired CLIENT size. The full OUTER rect (shadow
+	 *  included) is clamped to the monitor Windows considers the window to be on,
+	 *  so a stored position that no longer fits — monitor removed, or the window
+	 *  travelled to another monitor while lightweight — lands on-screen. No return
+	 *  value: the caller tracks position. Windows-only; errors elsewhere.
+	 */
+	setWindowRect: (logicalX: number | null, logicalY: number | null, logicalW: number | null, logicalH: number | null) => typedError<null, string>(__TAURI_INVOKE("set_window_rect", { logicalX, logicalY, logicalW, logicalH })),
 };
 
 /* Types */
@@ -147,15 +164,15 @@ export const commands = {
  *  across the boundary, so the contract stays stable and specta-friendly.
  */
 export type AppError = 
-/**  The local data dir / config could not be created or read (ADR-0004). */
+/**  The local data dir / config could not be created or read. */
 { type: "Config"; data: string } | 
-/**  SQLite Local Store error (ADR-0004). */
+/**  SQLite Local Store error. */
 { type: "Db"; data: string } | 
-/**  Provider failed to discover/parse Source logs (ADR-0001). */
+/**  Provider failed to discover/parse Source logs. */
 { type: "Provider"; data: string } | 
-/**  Pricing lookup / cost calc error (ADR-0007). */
+/**  Pricing lookup / cost calc error. */
 { type: "Pricing"; data: string } | 
-/**  Sync (git2 / network) error — only raised in Synced mode (ADR-0005). */
+/**  Sync (git2 / network) error — only raised in Synced mode. */
 { type: "Sync"; data: string } | 
 /**  Catch-all for anything not covered above. */
 { type: "Internal"; data: string };
@@ -172,7 +189,7 @@ export type AppInfo = {
 	version: string,
 };
 
-/**  Window-close behavior preference (ADR-0012). Crosses the Rust→JS boundary. */
+/**  Window-close behavior preference. Crosses the Rust→JS boundary. */
 export type CloseBehavior = 
 /**  Show the minimize/quit dialog each time (default). */
 "ask" | 
@@ -253,14 +270,14 @@ export type IngestReport = {
 };
 
 /**
- *  Display language (ADR-0016). Serialized lowercase (`en`/`zh`/`ja`), matching
+ *  Display language. Serialized lowercase (`en`/`zh`/`ja`), matching
  *  the frontend locale codes. The tray "Quit" item — the only user-facing Rust
  *  string — is localized from this; all other UI text is frontend i18n.
  */
 export type Language = "en" | "zh" | "ja";
 
 /**
- *  How the lightweight glance card's tucked half-icon expands (ADR-0015).
+ *  How the lightweight glance card's tucked half-icon expands.
  *  Crosses the Rust→JS boundary; Rust itself doesn't act on it (a pure frontend
  *  interaction), but it rides `ConfigData` so every Settings preference lives in
  *  one place.
@@ -331,7 +348,7 @@ export type PricingEntry = {
 export type RunMode = "standalone" | "synced";
 
 /**
- *  Color skin for multi-skin theming (ADR-0013 token-first). Serialized
+ *  Color skin for multi-skin theming (token-first). Serialized
  *  snake_case; `neutral` is the default and maps to NO `data-skin` attribute on
  *  `<html>` (the :root/.dark values in src/index.css ARE the Neutral palette —
  *  pure greyscale chrome over a default multi-hue chart). Per-device, not synced
@@ -347,7 +364,7 @@ export type RunMode = "standalone" | "synced";
 export type Skin = Skin_Serialize | Skin_Deserialize;
 
 /**
- *  Color skin for multi-skin theming (ADR-0013 token-first). Serialized
+ *  Color skin for multi-skin theming (token-first). Serialized
  *  snake_case; `neutral` is the default and maps to NO `data-skin` attribute on
  *  `<html>` (the :root/.dark values in src/index.css ARE the Neutral palette —
  *  pure greyscale chrome over a default multi-hue chart). Per-device, not synced
@@ -363,7 +380,7 @@ export type Skin = Skin_Serialize | Skin_Deserialize;
 export type Skin_Deserialize = "neutral" | "pixso" | "sage" | "cuiwei" | "azure" | "tingwu" | "crimson" | "yanzhi" | "mauve" | "zizi";
 
 /**
- *  Color skin for multi-skin theming (ADR-0013 token-first). Serialized
+ *  Color skin for multi-skin theming (token-first). Serialized
  *  snake_case; `neutral` is the default and maps to NO `data-skin` attribute on
  *  `<html>` (the :root/.dark values in src/index.css ARE the Neutral palette —
  *  pure greyscale chrome over a default multi-hue chart). Per-device, not synced
@@ -396,7 +413,7 @@ export type TokenCounts = {
 
 /**
  *  Trend aggregation granularity. `Day` groups on the UTC `day` column
- *  (ADR-0004, cross-device deterministic); `Hour` groups on local-time hour,
+ *  (cross-device deterministic); `Hour` groups on local-time hour,
  *  used for the single-day zoom where per-day resolution collapses to one bar.
  */
 export type TrendBucket = "Day" | "Hour";
@@ -423,10 +440,10 @@ export type TrendPoint = {
  *  semantic cache-key axis: `None` = all devices.
  * 
  *  Range bounds are ISO8601 **timestamps**, not `day` strings. The `day` column
- *  is a UTC whole-day bucket (ADR-0004 cross-device determinism), so a local
+ *  is a UTC whole-day bucket (cross-device determinism), so a local
  *  "today" in a non-UTC zone (e.g. UTC+8) straddles two UTC days; filtering on
  *  `day` would drop early-morning rows. The frontend converts its local-day
- *  range to UTC timestamps, and we filter on `timestamp` (ADR-0004 amendment:
+ *  range to UTC timestamps, and we filter on `timestamp` (amendment:
  *  `day` stays the UTC bucket for grouping/trend only).
  */
 export type UsageFilter = {

@@ -1,4 +1,4 @@
-//! Lightweight glance window geometry (ADR-0015): a single Tauri command that
+//! Lightweight glance window geometry: a single Tauri command that
 //! docks the main window flush against the right edge of the monitor Windows
 //! considers it to be on, sizing its OUTER rect in one atomic `SetWindowPos`.
 //!
@@ -210,6 +210,99 @@ fn center_window_win(
     // Center the OUTER rect on the monitor.
     let outer_x = mon.left + (mon.right - mon.left - target_outer_w) / 2;
     let outer_y = mon.top + (mon.bottom - mon.top - target_outer_h) / 2;
+
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            None,
+            outer_x,
+            outer_y,
+            target_outer_w,
+            target_outer_h,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+/// Place the window at an arbitrary logical rect, in one atomic `SetWindowPos`
+/// (size + position together). Restores the full-mode window to the position
+/// and size the user last left it at. Like the dock and center commands, the
+/// single `SetWindowPos` avoids the `[new size, old pos]` straddle that flips
+/// `MonitorFromWindow` to a neighbour of different DPI and locks WebView2 to
+/// the wrong rasterization scale.
+///
+/// `logical_x/y` is the desired CLIENT top-left in logical px relative to the
+/// virtual-screen origin (what `outerPosition() / scaleFactor` produces);
+/// `logical_w/h` is the desired CLIENT size. The full OUTER rect (shadow
+/// included) is clamped to the monitor Windows considers the window to be on,
+/// so a stored position that no longer fits — monitor removed, or the window
+/// travelled to another monitor while lightweight — lands on-screen. No return
+/// value: the caller tracks position. Windows-only; errors elsewhere.
+#[tauri::command]
+#[specta::specta]
+pub fn set_window_rect(
+    window: WebviewWindow,
+    logical_x: f64,
+    logical_y: f64,
+    logical_w: f64,
+    logical_h: f64,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        set_window_rect_win(&window, logical_x, logical_y, logical_w, logical_h)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (window, logical_x, logical_y, logical_w, logical_h);
+        Err("set_window_rect is only supported on Windows".into())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn set_window_rect_win(
+    window: &WebviewWindow,
+    logical_x: f64,
+    logical_y: f64,
+    logical_w: f64,
+    logical_h: f64,
+) -> Result<(), String> {
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
+
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let (shadow_lr, shadow_tb) = win_shadow_insets(hwnd)?;
+
+    let target_client_w = (logical_w * scale).round() as i32;
+    let target_client_h = (logical_h * scale).round() as i32;
+    let target_outer_w = target_client_w + shadow_lr;
+    let target_outer_h = target_client_h + shadow_tb;
+
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    let mut mi = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if !unsafe { GetMonitorInfoW(monitor, &mut mi) }.as_bool() {
+        return Err("GetMonitorInfoW failed".into());
+    }
+    let mon = mi.rcMonitor;
+
+    // Desired outer top-left in physical virtual-screen coords, clamped so the
+    // full outer rect (shadow included) stays inside the current monitor.
+    let raw_x = (logical_x * scale).round() as i32;
+    let raw_y = (logical_y * scale).round() as i32;
+    let lo_x = mon.left;
+    let hi_x = mon.right - target_outer_w;
+    let lo_y = mon.top;
+    let hi_y = mon.bottom - target_outer_h;
+    let outer_x = raw_x.clamp(lo_x.min(hi_x), lo_x.max(hi_x));
+    let outer_y = raw_y.clamp(lo_y.min(hi_y), lo_y.max(hi_y));
 
     unsafe {
         SetWindowPos(

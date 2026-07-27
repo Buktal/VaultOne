@@ -66,6 +66,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::confirm_close,
         window_geom::dock_window_right,
         window_geom::center_window,
+        window_geom::set_window_rect,
     ])
 }
 

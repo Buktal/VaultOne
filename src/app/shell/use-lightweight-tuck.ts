@@ -30,17 +30,22 @@ import {
   CARD_HEIGHT_DEFAULT,
   CARD_WIDTH,
   dockRight,
-  ENTRY_DOCK_Y,
   INSET_EXPANDED,
   INSET_TUCKED,
   monitorForWindow,
   TUCKED_HEIGHT,
   TUCKED_WIDTH,
 } from "./lightweight-geometry"
+import { readLwY, saveLwY } from "./window-geometry"
 
 const appWindow = getCurrentWindow()
 
 export type TuckPhase = "tucked" | "expanded"
+
+// Per-phase dock Y lives in the shared window-geometry store (one key for all
+// three shapes) alongside the full-mode rect — see window-geometry.ts. That
+// shared store is what makes the position survive the hook unmounting when the
+// app flips to full mode, and app restarts.
 
 export function useLightweightTuck() {
   const dispatch = useAppDispatch()
@@ -55,8 +60,6 @@ export function useLightweightTuck() {
   const programmatic = useRef(false)
   // Ignore the onMoved burst right after mount (the entry dock).
   const settling = useRef(true)
-  // Remember the user's vertical position so tuck/expand keep it.
-  const lastY = useRef(ENTRY_DOCK_Y)
   // Expanded card height adapts to the content; tucked is fixed.
   const cardHeight = useRef(CARD_HEIGHT_DEFAULT)
   // Tucked hover-drawer extra height (0 when closed): the mini-bar grows
@@ -79,8 +82,11 @@ export function useLightweightTuck() {
       : cardHeight.current
     // Tucked flush-edges (inset 0); expanded keeps a small breathing gap (2).
     const inset = wantTucked ? INSET_TUCKED : INSET_EXPANDED
-    const y = await dockRight(logicalW, logicalH, lastY.current, inset)
-    if (y != null) lastY.current = y
+    // Y is persisted per phase in window-geometry.ts so it survives hook
+    // unmount + restart; dockRight returns the clamped Y actually applied.
+    const phaseKey: TuckPhase = wantTucked ? "tucked" : "expanded"
+    const y = await dockRight(logicalW, logicalH, readLwY(phaseKey), inset)
+    if (y != null) saveLwY(phaseKey, y)
     window.setTimeout(() => {
       programmatic.current = false
     }, 150)
@@ -135,7 +141,9 @@ export function useLightweightTuck() {
       void (async () => {
         const mon = await monitorForWindow()
         const f = mon?.scaleFactor || 1
-        lastY.current = payload.y / f
+        // Persist the dragged Y for the current phase so the next explicit
+        // tuck/expand (or a restart) re-docks here instead of back at the top.
+        saveLwY(phaseRef.current, payload.y / f)
       })()
     })
     return () => {

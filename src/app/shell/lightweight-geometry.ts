@@ -98,3 +98,25 @@ export async function centerWindow(
   const r = await commands.centerWindow(clientLogicalW, clientLogicalH)
   if ("error" in r) return
 }
+
+/** Restore the window to an arbitrary logical rect via one atomic Rust
+ *  SetWindowPos (size + position together). Used to bring the full-mode window
+ *  back to the exact position + size the user last left it. Same atomic-write
+ *  rationale as dockRight/centerWindow — no `[new size, old pos]` straddle that
+ *  would flip MonitorFromWindow and lock WebView2 to the wrong DPI. The outer
+ *  rect is clamped to the current monitor in Rust, so an out-of-range stored
+ *  position lands on-screen. No-op on failure. */
+export async function setWindowRect(
+  clientLogicalX: number,
+  clientLogicalY: number,
+  clientLogicalW: number,
+  clientLogicalH: number,
+): Promise<void> {
+  const r = await commands.setWindowRect(
+    clientLogicalX,
+    clientLogicalY,
+    clientLogicalW,
+    clientLogicalH,
+  )
+  if ("error" in r) return
+}
