@@ -60,7 +60,7 @@ fn build_callbacks(token: &str) -> RemoteCallbacks {
 }
 
 // ---------------------------------------------------------------------------
-// System proxy discovery (ADR-0019)
+// System proxy discovery
 // ---------------------------------------------------------------------------
 //
 // libgit2 ships its own HTTP stack (Schannel TLS on Windows); unlike a browser

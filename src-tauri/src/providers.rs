@@ -59,7 +59,7 @@ pub struct CollectResult {
     pub lines_skipped: u32,
 }
 
-/// Per-file incremental scan cursor (ADR-0013). Persisted in `scan_progress`;
+/// Per-file incremental scan cursor. Persisted in `scan_progress`;
 /// replaceable — a lost cursor triggers a full rescan (the ledger dedups).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FileCursor {
@@ -94,7 +94,7 @@ pub trait Provider: Send + Sync {
         self.parse(&files)
     }
 
-    /// Incremental collect (ADR-0013): parse only lines past each file's
+    /// Incremental collect: parse only lines past each file's
     /// recorded cursor, returning the advanced cursors to persist. The default
     /// impl **degrades to a full parse and returns an empty delta** (the cursor
     /// never advances), so a provider that does not override this stays correct
@@ -234,7 +234,7 @@ impl Provider for ClaudeCodeProvider {
         })
     }
 
-    /// Incremental collect (ADR-0013): parse only lines past each file's
+    /// Incremental collect: parse only lines past each file's
     /// recorded cursor and return the advanced cursors to persist. The mtime
     /// gate skips unchanged files (no IO/serde); a never-seen file ({0,0})
     /// falls through to a full parse on first sight.
@@ -286,7 +286,7 @@ impl Provider for ClaudeCodeProvider {
             // Line parse loop — mirrors `parse`'s inner loop but skips lines
             // already processed (line_no <= start_line). NOTE: the stored uuid
             // stays the event uuid (not the message id) — re-keying would cause
-            // a mass migration duplicate on first run (ADR-0013 limitations).
+            // a mass migration duplicate on first run.
             for (idx, line) in text.lines().enumerate() {
                 let line_no = idx as i64 + 1; // 1-based, matching CC-Switch
                 if line_no <= start_line {
@@ -338,8 +338,7 @@ impl Provider for ClaudeCodeProvider {
             source: self.name().to_string(),
             events,
             turn_durations,
-            // files_scanned stays "discovered count" (IngestReport / ADR-0008
-            // typed contract) — do not redefine to "parsed count".
+            // files_scanned stays "discovered count" — do not redefine to "parsed count".
             files_scanned: files.len() as u32,
             lines_skipped: skipped,
         };
@@ -600,7 +599,7 @@ mod tests {
         assert!(p.discover().unwrap().is_empty());
     }
 
-    // ---- incremental collect (ADR-0013) ----
+    // ---- incremental collect ----
 
     /// One assistant event line (with message id) for incremental tests.
     fn assistant_line(uuid: &str, mid: &str, out: u32) -> String {

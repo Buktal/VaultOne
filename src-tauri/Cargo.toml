@@ -18,37 +18,37 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["specta", "tray-icon"] }
 tauri-plugin-opener = "2"
-# Auto-update (ADR-0017): Ed25519-signed installs fetched from GitHub Releases.
+# Auto-update: Ed25519-signed installs fetched from GitHub Releases.
 tauri-plugin-updater = "2"
-# Relaunch the app after an auto-update install (ADR-0017).
+# Relaunch the app after an auto-update install.
 tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# tauri-specta v2 (ADR-0008): pin exact RC — specta v2 not yet stable.
+# tauri-specta v2: pin exact RC — specta v2 not yet stable.
 specta = { version = "=2.0.0-rc.25", features = ["derive", "function"] }
 specta-typescript = "0.0.12"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 thiserror = "2"
 
-# Local store (ADR-0004): rusqlite with bundled SQLite so no system SQLite needed.
+# Local store: rusqlite with bundled SQLite so no system SQLite needed.
 rusqlite = { version = "0.31", features = ["bundled"] }
-# Cost precision (ADR-0004: Decimal stored as TEXT).
+# Cost precision (Decimal stored as TEXT).
 rust_decimal = { version = "1", features = ["serde"] }
-# Timestamps as ISO8601 UTC (ADR-0003 / 0004).
+# Timestamps as ISO8601 UTC.
 chrono = { version = "0.4", features = ["serde"] }
-# Device identity (ADR-0002) + record ids.
+# Device identity + record ids.
 rand = "0.8"
-# ~/.config/vaultone home-relative paths (ADR-0004).
+# ~/.config/vaultone home-relative paths.
 dirs = "5"
-# Session-log discovery (ADR-0001): walk ~/.claude/projects/**/*.jsonl.
+# Session-log discovery: walk ~/.claude/projects/**/*.jsonl.
 walkdir = "2"
-# LiteLLM upstream pricing fetch (ADR-0007). ureq = blocking + rustls (pure Rust).
+# LiteLLM upstream pricing fetch. ureq = blocking + rustls (pure Rust).
 ureq = "2"
-# GitHub-repo sync over libgit2 (ADR-0005). HTTPS-only (PAT); no SSH feature to
+# GitHub-repo sync over libgit2. HTTPS-only (PAT); no SSH feature to
 # keep the dependency surface small. Windows TLS uses Schannel via libgit2.
 git2 = { version = "0.19", default-features = false, features = ["https"] }
 
-# Win32 window geometry for the lightweight glance dock (ADR-0015): one atomic
+# Win32 window geometry for the lightweight glance dock: one atomic
 # SetWindowPos that sets the OUTER rect (shadow included) so the window can't
 # straddle two monitors of different DPI. Windows-only; reuses the `windows`
 # crate tauri/tao already resolve (0.61.x), no new version introduced.
@@ -58,7 +58,7 @@ windows = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",
 ] }
-# Windows system-proxy discovery (ADR-0019): read HKCU's `Internet Settings` to
+# Windows system-proxy discovery: read HKCU's `Internet Settings` to
 # follow the OS proxy on every libgit2 push/fetch. libgit2's own HTTP stack
 # (Schannel TLS) ignores the Windows system proxy, so without this a Synced-mode
 # client behind a system proxy (Clash/Mihomo, corporate gateway) silently times

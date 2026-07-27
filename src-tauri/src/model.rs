@@ -186,7 +186,7 @@ pub struct TurnDuration {
     pub duration_ms: u32,
 }
 
-// ---- Device-name sync artifact (ADR-0002 + device-name sync ADR) ----
+// ---- Device-name sync artifact ----
 
 /// A device's published identity, materialized one-per-file at
 /// `config/devices/<device_id>.json`. Each device writes ONLY its own file, so
@@ -261,7 +261,7 @@ pub struct TrendPoint {
 }
 
 /// Trend aggregation granularity. `Day` groups on the UTC `day` column
-/// (ADR-0004, cross-device deterministic); `Hour` groups on local-time hour,
+/// (cross-device deterministic); `Hour` groups on local-time hour,
 /// used for the single-day zoom where per-day resolution collapses to one bar.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, specta::Type)]
 pub enum TrendBucket {
@@ -275,10 +275,10 @@ pub enum TrendBucket {
 /// semantic cache-key axis: `None` = all devices.
 ///
 /// Range bounds are ISO8601 **timestamps**, not `day` strings. The `day` column
-/// is a UTC whole-day bucket (ADR-0004 cross-device determinism), so a local
+/// is a UTC whole-day bucket (cross-device determinism), so a local
 /// "today" in a non-UTC zone (e.g. UTC+8) straddles two UTC days; filtering on
 /// `day` would drop early-morning rows. The frontend converts its local-day
-/// range to UTC timestamps, and we filter on `timestamp` (ADR-0004 amendment:
+/// range to UTC timestamps, and we filter on `timestamp` (amendment:
 /// `day` stays the UTC bucket for grouping/trend only).
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct UsageFilter {

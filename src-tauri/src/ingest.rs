@@ -570,7 +570,10 @@ mod tests {
         assert_eq!(read[0].display_name, "Laptop");
         // Path is flat — no legacy devices/ subdir was created.
         assert!(paths.devices_file_path("0123456789ab").exists());
-        assert!(!paths.legacy_devices_dir().join("0123456789ab.json").exists());
+        assert!(!paths
+            .legacy_devices_dir()
+            .join("0123456789ab.json")
+            .exists());
     }
 
     #[test]

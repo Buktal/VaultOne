@@ -1,4 +1,4 @@
-//! Typed error channel (ADR-0008).
+//! Typed error channel.
 //!
 //! Every Tauri command returns `Result<T, AppError>`. `AppError` derives
 //! `specta::Type` and is serialized as a tagged enum, so the frontend receives
@@ -12,19 +12,19 @@
 #[derive(Debug, thiserror::Error, serde::Serialize, specta::Type)]
 #[serde(tag = "type", content = "data")]
 pub enum AppError {
-    /// The local data dir / config could not be created or read (ADR-0004).
+    /// The local data dir / config could not be created or read.
     #[error("config error: {0}")]
     Config(String),
-    /// SQLite Local Store error (ADR-0004).
+    /// SQLite Local Store error.
     #[error("db error: {0}")]
     Db(String),
-    /// Provider failed to discover/parse Source logs (ADR-0001).
+    /// Provider failed to discover/parse Source logs.
     #[error("provider error: {0}")]
     Provider(String),
-    /// Pricing lookup / cost calc error (ADR-0007).
+    /// Pricing lookup / cost calc error.
     #[error("pricing error: {0}")]
     Pricing(String),
-    /// Sync (git2 / network) error — only raised in Synced mode (ADR-0005).
+    /// Sync (git2 / network) error — only raised in Synced mode.
     #[error("sync error: {0}")]
     Sync(String),
     /// Catch-all for anything not covered above.

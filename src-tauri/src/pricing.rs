@@ -1,10 +1,10 @@
-//! Pricing table + cost calculator (ADR-0007).
+//! Pricing table + cost calculator.
 //!
 //! Cost is computed at ingest time by a pure, unit-testable function
 //! (`CostCalculator`), looking up per-million-token rates with model-key
 //! normalization + prefix fallback, and cache heuristics when cache rates are
 //! unspecified. A whole model with no rate ⇒ cost 0 (recorded for later top-up,
-//! ADR-0007: freeze + top-up zero-cost only). Rates are `rust_decimal::Decimal`
+//! freeze + top-up zero-cost only). Rates are `rust_decimal::Decimal`
 //! for precision; the DB column is TEXT, the DTO exposes `f64`.
 
 use std::collections::HashMap;
@@ -28,7 +28,7 @@ pub struct ModelPricing {
 }
 
 impl ModelPricing {
-    /// Convert to the boundary DTO (f64 rates, ADR-0008 / 0007).
+    /// Convert to the boundary DTO (f64 rates).
     pub fn to_entry(&self) -> PricingEntry {
         PricingEntry {
             model_key: self.model_key.clone(),
@@ -71,7 +71,7 @@ impl PricingBook {
         Self { by_key }
     }
 
-    /// Resolve a runtime model string to usable rates (ADR-0007):
+    /// Resolve a runtime model string to usable rates:
     /// normalization candidates → exact → prefix fallback. Cache rates left at
     /// zero are filled with the documented heuristics (cache write ≈ 1.25×
     /// input, cache read ≈ 0.1× input). Returns `None` if no model matches at
@@ -97,7 +97,7 @@ pub struct ResolvedRate {
 
 impl ResolvedRate {
     fn from_pricing(p: &ModelPricing) -> Self {
-        // Cache heuristics (ADR-0007) only kick in when the rate is unset (0).
+        // Cache heuristics only kick in when the rate is unset (0).
         let zero = Decimal::ZERO;
         let cache_read = if p.cache_read == zero {
             p.input * dec("0.1")
@@ -118,7 +118,7 @@ impl ResolvedRate {
     }
 }
 
-/// Pure cost calculator (ADR-0007: unit-testable). `rate` is per 1M tokens.
+/// Pure cost calculator (unit-testable). `rate` is per 1M tokens.
 pub struct CostCalculator;
 
 impl CostCalculator {
@@ -168,7 +168,7 @@ pub fn normalize_key(model: &str) -> String {
 }
 
 /// Ordered candidates to try: full normalized key, then progressively shorter
-/// `-`-delimited prefixes (prefix fallback, ADR-0007).
+/// `-`-delimited prefixes (prefix fallback).
 fn normalization_candidates(model: &str) -> Vec<String> {
     let norm = normalize_key(model);
     let mut out = vec![norm.clone()];
@@ -183,8 +183,8 @@ fn normalization_candidates(model: &str) -> Vec<String> {
     out
 }
 
-/// A small built-in seed so cost calc works offline before the LiteLLM fetch
-/// (ADR-0007). These are **bootstrap placeholders** — refresh via LiteLLM or
+/// A small built-in seed so cost calc works offline before the LiteLLM fetch.
+/// These are **bootstrap placeholders** — refresh via LiteLLM or
 /// edit in the Pricing UI; treat values as approximate.
 ///
 /// `glm-5.2` is included because it is the transit model used via CC-Switch in
@@ -298,9 +298,9 @@ pub fn write_pricing_doc(entries: &[ModelPricing]) -> AppResult<String> {
 }
 
 /// Fetch the LiteLLM upstream price sheet and convert it to per-million-token
-/// pricing entries (ADR-0007 seed). LiteLLM lists costs **per token**, so each
+/// pricing entries. LiteLLM lists costs **per token**, so each
 /// is multiplied by 1e6. Best-effort: the caller treats network failure as
-/// "keep using the existing book" (offline-first, ADR-0007 fallback).
+/// "keep using the existing book" (offline-first).
 pub fn fetch_litellm() -> AppResult<Vec<ModelPricing>> {
     const URL: &str =
         "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
@@ -421,7 +421,7 @@ mod tests {
             is_builtin: true,
         }]);
         let rate = book.resolve("m").expect("seeded model resolves");
-        // cache_read ≈ 0.1×input, cache_creation ≈ 1.25×input (ADR-0007).
+        // cache_read ≈ 0.1×input, cache_creation ≈ 1.25×input.
         assert_eq!(rate.cache_read, dec("1.0"));
         assert_eq!(rate.cache_creation, dec("12.5"));
         assert_eq!(rate.input, dec("10"));

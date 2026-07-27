@@ -1,8 +1,8 @@
--- VaultOne SQLite Local Store schema (ADR-0002 / 0004 / 0005 / 0007).
+-- VaultOne SQLite Local Store schema.
 -- Idempotent migration: CREATE ... IF NOT EXISTS. Run on every open.
 -- Naming is snake_case end-to-end (Rust ↔ SQLite ↔ JSONL ↔ TS).
 
--- Per-request usage detail (ADR-0003: per API request). uuid = dedup key.
+-- Per-request usage detail (per API request). uuid = dedup key.
 CREATE TABLE IF NOT EXISTS usage_records (
     uuid                   TEXT PRIMARY KEY,
     timestamp              TEXT NOT NULL,            -- ISO8601 UTC
@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS usage_records (
     model                  TEXT NOT NULL,            -- billed / mapped model
     pricing_model          TEXT NOT NULL,            -- key used for price lookup (rebill)
     source                 TEXT NOT NULL,            -- provider tag, e.g. claude_code
-    device_id              TEXT NOT NULL,            -- 12-hex owner (ADR-0002)
+    device_id              TEXT NOT NULL,            -- 12-hex owner
     input_tokens           INTEGER NOT NULL,
     output_tokens          INTEGER NOT NULL,
     cache_creation_tokens  INTEGER NOT NULL,
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS turn_durations (
 CREATE INDEX IF NOT EXISTS idx_turndur_day    ON turn_durations(day);
 CREATE INDEX IF NOT EXISTS idx_turndur_device ON turn_durations(device_id);
 
--- Dedup ledger (ADR-0005): canonical "have we imported this uuid" set + provenance.
+-- Dedup ledger: canonical "have we imported this uuid" set + provenance.
 CREATE TABLE IF NOT EXISTS ledger (
     uuid        TEXT PRIMARY KEY,
     source      TEXT NOT NULL,
@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS ledger (
     ingested_at TEXT NOT NULL
 );
 
--- Daily rollups cache (ADR-0007: derived, holds total_cost_usd). Per (day,model,device).
+-- Daily rollups cache (derived, holds total_cost_usd). Per (day,model,device).
 CREATE TABLE IF NOT EXISTS daily_rollups (
     day                    TEXT NOT NULL,
     model                  TEXT NOT NULL,
@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS daily_rollups (
     PRIMARY KEY (day, model, device_id)
 );
 
--- Pricing table (ADR-0007: LiteLLM seed + user overrides). Decimal as TEXT.
+-- Pricing table (LiteLLM seed + user overrides). Decimal as TEXT.
 CREATE TABLE IF NOT EXISTS model_pricing (
     model_key                TEXT PRIMARY KEY,        -- normalized id
     display_name             TEXT NOT NULL,
@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS model_pricing (
     updated_at               TEXT NOT NULL
 );
 
--- Device registry (ADR-0002).
+-- Device registry.
 CREATE TABLE IF NOT EXISTS device (
     device_id   TEXT PRIMARY KEY,
     display_name TEXT NOT NULL,
@@ -85,7 +85,7 @@ CREATE TABLE IF NOT EXISTS device (
     first_seen  TEXT NOT NULL
 );
 
--- Incremental scan cursor (ADR-0013). Replaceable cache: a lost/truncated row
+-- Incremental scan cursor. Replaceable cache: a lost/truncated row
 -- only triggers a full rescan of that file on the next collect — the dedup
 -- ledger (not this table) is the source of truth. NOT part of the JSONL
 -- Artifact; it is local parse-progress state, not authoritative data. A brand-

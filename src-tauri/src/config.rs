@@ -1,9 +1,9 @@
-//! Local data layout + config (ADR-0002 / 0004 / 0006).
+//! Local data layout + config.
 //!
 //! Everything lives under `~/.config/vaultone/` (even on Windows:
-//! `C:\Users\<user>\.config\vaultone\`, CodeBurn-style, ADR-0004). The local
+//! `C:\Users\<user>\.config\vaultone\`, CodeBurn-style). The local
 //! `config.json` (token / deviceId / repo URL / display-name map) never enters
-//! the repo. First start defaults to Standalone (ADR-0006).
+//! the repo. First start defaults to Standalone.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -22,7 +22,7 @@ pub fn root_dir() -> AppResult<PathBuf> {
     Ok(home.join(".config").join("vaultone"))
 }
 
-/// All well-known paths under the root (ADR-0004 layout).
+/// All well-known paths under the root.
 #[derive(Debug, Clone)]
 pub struct Paths {
     pub root: PathBuf,
@@ -59,7 +59,7 @@ impl Paths {
             .join(format!("usage-{day}.jsonl"))
     }
 
-    /// Cloud pricing config: `repo/config/pricing.json` (ADR-0007).
+    /// Cloud pricing config: `repo/config/pricing.json`.
     pub fn pricing_json(&self) -> PathBuf {
         self.repo_config.join("pricing.json")
     }
@@ -80,7 +80,7 @@ impl Paths {
     }
 }
 
-/// Window-close behavior preference (ADR-0012). Crosses the Rust→JS boundary.
+/// Window-close behavior preference. Crosses the Rust→JS boundary.
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type,
 )]
@@ -95,7 +95,7 @@ pub enum CloseBehavior {
     Quit,
 }
 
-/// How the lightweight glance card's tucked half-icon expands (ADR-0015).
+/// How the lightweight glance card's tucked half-icon expands.
 /// Crosses the Rust→JS boundary; Rust itself doesn't act on it (a pure frontend
 /// interaction), but it rides `ConfigData` so every Settings preference lives in
 /// one place.
@@ -111,7 +111,7 @@ pub enum LightweightExpand {
     Hover,
 }
 
-/// Color skin for multi-skin theming (ADR-0013 token-first). Serialized
+/// Color skin for multi-skin theming (token-first). Serialized
 /// snake_case; `neutral` is the default and maps to NO `data-skin` attribute on
 /// `<html>` (the :root/.dark values in src/index.css ARE the Neutral palette —
 /// pure greyscale chrome over a default multi-hue chart). Per-device, not synced
@@ -141,7 +141,7 @@ pub enum Skin {
     Mauve,
 }
 
-/// Default background-collect interval in seconds (ADR-0014: 30 s — decoupled
+/// Default background-collect interval in seconds (30 s — decoupled
 /// from the push cadence, which has its own interval).
 ///
 /// `u32` (not `u64`): the value crosses the Rust→JS boundary via the typed
@@ -152,13 +152,13 @@ fn default_collect_interval_secs() -> u32 {
     30
 }
 
-/// Default push-to-sync interval in seconds (ADR-0014: 10 min). Decoupled from
+/// Default push-to-sync interval in seconds (10 min). Decoupled from
 /// collect so a short collect cadence does not bloat the Git history.
 fn default_push_interval_secs() -> u32 {
     600
 }
 
-/// Display language (ADR-0016). Serialized lowercase (`en`/`zh`/`ja`), matching
+/// Display language. Serialized lowercase (`en`/`zh`/`ja`), matching
 /// the frontend locale codes. The tray "Quit" item — the only user-facing Rust
 /// string — is localized from this; all other UI text is frontend i18n.
 #[derive(
@@ -172,15 +172,15 @@ pub enum Language {
     Ja,
 }
 
-/// The local `config.json` content (ADR-0004). Never uploaded to the repo.
+/// The local `config.json` content. Never uploaded to the repo.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ConfigData {
     pub device_id: String,
-    /// Friendly name for *this* device (ADR-0002: display name, not a key).
+    /// Friendly name for *this* device (display name, not a key).
     pub display_name: String,
-    /// Sync repo URL; `None` ⇒ Standalone (ADR-0006).
+    /// Sync repo URL; `None` ⇒ Standalone.
     pub repo_url: Option<String>,
-    /// Fine-grained PAT (ADR-0004); kept only in local config + Rust memory.
+    /// Fine-grained PAT; kept only in local config + Rust memory.
     #[serde(default)]
     pub github_token: Option<String>,
     /// `deviceId → friendly name` for other devices seen in the repo.
@@ -189,23 +189,23 @@ pub struct ConfigData {
     /// Optional: GitHub handle resolved from the token (for display only).
     #[serde(default)]
     pub github_user: Option<String>,
-    /// Window-close behavior (ADR-0012). `Ask` ⇒ show the minimize/quit dialog.
+    /// Window-close behavior. `Ask` ⇒ show the minimize/quit dialog.
     #[serde(default)]
     pub close_behavior: CloseBehavior,
-    /// Background collect interval in seconds (ADR-0014). Clamped to [10, 3600]
+    /// Background collect interval in seconds. Clamped to [10, 3600]
     /// at use; serialized verbatim so the UI shows what the user typed.
     #[serde(default = "default_collect_interval_secs")]
     pub collect_interval_secs: u32,
-    /// Push-to-sync interval in seconds (ADR-0014). Synced only; clamped to
+    /// Push-to-sync interval in seconds. Synced only; clamped to
     /// [60, 7200] at use. Decoupled from collect so the Git push cadence stays
     /// independent of the (shorter) collect cadence.
     #[serde(default = "default_push_interval_secs")]
     pub push_interval_secs: u32,
-    /// Display language (ADR-0016). Default English; per-device, not synced
+    /// Display language. Default English; per-device, not synced
     /// (config.json never enters the repo).
     #[serde(default)]
     pub language: Language,
-    /// How the lightweight half-icon expands (ADR-0015). Frontend-only behavior;
+    /// How the lightweight half-icon expands. Frontend-only behavior;
     /// Rust doesn't read it, but it lives here so all Settings prefs are unified.
     #[serde(default)]
     pub lightweight_expand: LightweightExpand,
@@ -237,7 +237,7 @@ impl Default for ConfigData {
 }
 
 impl ConfigData {
-    /// Synced iff a repo URL *and* a token are configured (ADR-0006).
+    /// Synced iff a repo URL *and* a token are configured.
     pub fn mode(&self) -> RunMode {
         match self.repo_url.as_deref().zip(self.github_token.as_deref()) {
             Some((url, token)) if !url.trim().is_empty() && !token.trim().is_empty() => {
@@ -275,12 +275,12 @@ pub struct ConfigStore {
 
 impl ConfigStore {
     /// Load (or bootstrap on first run) config + ensure the full directory
-    /// layout exists (ADR-0004). Idempotent.
+    /// layout exists. Idempotent.
     pub fn load() -> AppResult<Self> {
         let root = root_dir()?;
         let paths = Paths::resolve(&root);
 
-        // Full directory layout up front (ADR-0004).
+        // Full directory layout up front.
         for dir in [
             &paths.root,
             &paths.repo,
@@ -304,7 +304,7 @@ impl ConfigStore {
         let mut data = data;
         let mut dirty = false;
 
-        // deviceId first-generation (ADR-0002): persistent 12-hex, collision-checked.
+        // deviceId first-generation: persistent 12-hex, collision-checked.
         if data.device_id.is_empty() || !is_valid_device_id(&data.device_id) {
             data.device_id = generate_device_id(&paths);
             if data.display_name.trim().is_empty() || data.display_name == "VaultOne" {
@@ -351,7 +351,7 @@ impl ConfigStore {
     }
 }
 
-/// A valid deviceId is 12 lowercase hex chars (ADR-0002: 48-bit short id).
+/// A valid deviceId is 12 lowercase hex chars (48-bit short id).
 pub fn is_valid_device_id(id: &str) -> bool {
     id.len() == 12
         && id
@@ -360,7 +360,7 @@ pub fn is_valid_device_id(id: &str) -> bool {
 }
 
 /// Generate a 12-hex deviceId (48 bits), retrying if it collides with an
-/// existing device dir in `repo/data/` (ADR-0002: collision check).
+/// existing device dir in `repo/data/` (collision check).
 fn generate_device_id(paths: &Paths) -> String {
     let existing = list_existing_device_ids(&paths.repo_data);
     let mut rng = rand::thread_rng();
