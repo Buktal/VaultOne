@@ -50,7 +50,7 @@ impl Store {
         if count > 0 {
             return Ok(());
         }
-        let now = now_iso();
+        let now = crate::time::now_iso();
         let mut stmt = conn.prepare(
             "INSERT INTO model_pricing
              (model_key, display_name, input_per_million, output_per_million,
@@ -108,6 +108,18 @@ impl Store {
             .map_err(AppError::from)
     }
 
+    /// Reload pricing from a JSON doc on disk (the cloud `pricing.json`) into
+    /// the Store. Shared by the manual reload command and the post-pull sync
+    /// step so both run the same parse → upsert loop. Returns the entry count.
+    pub fn reload_pricing_from_path(&self, path: &std::path::Path) -> AppResult<u32> {
+        let text = std::fs::read_to_string(path)?;
+        let entries = crate::pricing::parse_pricing_doc(&text)?;
+        for e in &entries {
+            self.upsert_pricing(&e.to_entry())?;
+        }
+        Ok(entries.len() as u32)
+    }
+
     /// Upsert a pricing entry from the UI; user edits are `is_builtin = false`.
     pub fn upsert_pricing(&self, entry: &PricingEntry) -> AppResult<()> {
         let p = ModelPricing::from_entry(entry)?;
@@ -133,7 +145,7 @@ impl Store {
                 p.cache_read.to_string(),
                 p.cache_creation.to_string(),
                 p.is_builtin as i64,
-                now_iso(),
+                crate::time::now_iso(),
             ],
         )?;
         Ok(())
@@ -169,7 +181,7 @@ impl Store {
             rows.filter_map(Result::ok).collect()
         };
 
-        let now = now_iso();
+        let now = crate::time::now_iso();
         let mut new_days: std::collections::HashSet<(String, String, String)> = Default::default();
         let mut inserted: Vec<UsageRecord> = Vec::new();
         for r in records {
@@ -380,7 +392,7 @@ impl Store {
              ON CONFLICT(device_id) DO UPDATE SET
                display_name=excluded.display_name,
                is_self=excluded.is_self",
-            params![device_id, display_name, is_self as i64, now_iso()],
+            params![device_id, display_name, is_self as i64, crate::time::now_iso()],
         )?;
         Ok(())
     }
@@ -483,7 +495,7 @@ impl Store {
     /// Aggregate stats over a filter (BLUEPRINT 使用统计).
     pub fn query_stats(&self, filter: &UsageFilter) -> AppResult<UsageStats> {
         let conn = self.conn.lock().expect("db mutex poisoned");
-        let (clause, params_vec) = build_where(filter);
+        let (clause, params_vec) = build_where(filter, true);
         let sql = format!(
             "SELECT
                 COUNT(*),
@@ -519,7 +531,7 @@ impl Store {
         };
         s.cache_hit_rate = tokens.cache_hit_rate();
         // Per-turn aggregates (separate grain, from turn_durations).
-        let (tclause, tparams) = build_turn_where(filter);
+        let (tclause, tparams) = build_where(filter, false);
         let tsql =
             format!("SELECT COUNT(*), COALESCE(AVG(duration_ms),0) FROM turn_durations {tclause}");
         let (turn_count, avg_dur): (i64, f64) =
@@ -534,7 +546,7 @@ impl Store {
     /// Per-model breakdown over a filter.
     pub fn query_models(&self, filter: &UsageFilter) -> AppResult<Vec<ModelStatsRow>> {
         let conn = self.conn.lock().expect("db mutex poisoned");
-        let (clause, params_vec) = build_where(filter);
+        let (clause, params_vec) = build_where(filter, true);
         let sql = format!(
             "SELECT model,
                 COUNT(*),
@@ -567,7 +579,7 @@ impl Store {
         bucket: TrendBucket,
     ) -> AppResult<Vec<TrendPoint>> {
         let conn = self.conn.lock().expect("db mutex poisoned");
-        let (clause, params_vec) = build_where(filter);
+        let (clause, params_vec) = build_where(filter, true);
         // Hour buckets read the clock in the device's local zone so a UTC+8
         // "today" trends in hours the user recognizes; the day bucket stays on
         // the stored UTC `day` for cross-device determinism.
@@ -625,7 +637,7 @@ impl Store {
     /// Request-log rows (BLUEPRINT 请求日志; columns).
     pub fn query_logs(&self, q: &LogsQuery) -> AppResult<Vec<UsageLogRow>> {
         let conn = self.conn.lock().expect("db mutex poisoned");
-        let (clause, params_vec) = build_where(&q.filter);
+        let (clause, params_vec) = build_where(&q.filter, true);
         let limit = q.limit.clamp(1, 1000) as i64;
         let offset = q.offset as i64;
         let sql = format!(
@@ -660,7 +672,7 @@ impl Store {
     /// Total row count (for paging display).
     pub fn count_logs(&self, filter: &UsageFilter) -> AppResult<u32> {
         let conn = self.conn.lock().expect("db mutex poisoned");
-        let (clause, params_vec) = build_where(filter);
+        let (clause, params_vec) = build_where(filter, true);
         let sql = format!("SELECT COUNT(*) FROM usage_records {clause}");
         let n: i64 = conn.query_row(&sql, params_from_iter(params_vec.iter()), |r| r.get(0))?;
         Ok(n as u32)
@@ -741,7 +753,7 @@ fn recompute_rollup(
 /// model, source, device scope). The range filters on `timestamp` (UTC), not
 /// `day` — see `UsageFilter` for why. Returns `("WHERE ...", vec![...])` or
 /// `("", [])`.
-fn build_where(filter: &UsageFilter) -> (String, Vec<SqlValue>) {
+fn build_where(filter: &UsageFilter, include_model_source: bool) -> (String, Vec<SqlValue>) {
     let mut conds: Vec<String> = Vec::new();
     let mut params: Vec<SqlValue> = Vec::new();
     if let Some(ts) = &filter.from_ts {
@@ -756,48 +768,18 @@ fn build_where(filter: &UsageFilter) -> (String, Vec<SqlValue>) {
             params.push(SqlValue::Text(ts.clone()));
         }
     }
-    if let Some(m) = &filter.model {
-        if !m.is_empty() {
-            conds.push("model = ?".into());
-            params.push(SqlValue::Text(m.clone()));
+    if include_model_source {
+        if let Some(m) = &filter.model {
+            if !m.is_empty() {
+                conds.push("model = ?".into());
+                params.push(SqlValue::Text(m.clone()));
+            }
         }
-    }
-    if let Some(s) = &filter.source {
-        if !s.is_empty() {
-            conds.push("source = ?".into());
-            params.push(SqlValue::Text(s.clone()));
-        }
-    }
-    if let Some(d) = &filter.device_scope {
-        if !d.is_empty() {
-            conds.push("device_id = ?".into());
-            params.push(SqlValue::Text(d.clone()));
-        }
-    }
-    let clause = if conds.is_empty() {
-        String::new()
-    } else {
-        format!("WHERE {}", conds.join(" AND "))
-    };
-    (clause, params)
-}
-
-/// Build a WHERE clause + bound params for `turn_durations` (timestamp range +
-/// device scope only — that table has no model/source columns). Range filters on
-/// `timestamp` (UTC), not `day` — see `UsageFilter`.
-fn build_turn_where(filter: &UsageFilter) -> (String, Vec<SqlValue>) {
-    let mut conds: Vec<String> = Vec::new();
-    let mut params: Vec<SqlValue> = Vec::new();
-    if let Some(ts) = &filter.from_ts {
-        if !ts.is_empty() {
-            conds.push("timestamp >= ?".into());
-            params.push(SqlValue::Text(ts.clone()));
-        }
-    }
-    if let Some(ts) = &filter.to_ts {
-        if !ts.is_empty() {
-            conds.push("timestamp <= ?".into());
-            params.push(SqlValue::Text(ts.clone()));
+        if let Some(s) = &filter.source {
+            if !s.is_empty() {
+                conds.push("source = ?".into());
+                params.push(SqlValue::Text(s.clone()));
+            }
         }
     }
     if let Some(d) = &filter.device_scope {
@@ -845,10 +827,6 @@ fn migrate_schema(conn: &Connection) -> AppResult<()> {
         }
     }
     Ok(())
-}
-
-fn now_iso() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 #[cfg(test)]

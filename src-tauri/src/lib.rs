@@ -22,6 +22,7 @@ mod model;
 mod pricing;
 mod providers;
 mod sync;
+mod time;
 mod window_geom;
 
 use commands::AppState;

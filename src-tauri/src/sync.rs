@@ -1026,11 +1026,7 @@ fn reload_pricing_into_store(
     if !path.exists() {
         return Ok(());
     }
-    let text = std::fs::read_to_string(&path)?;
-    let entries = crate::pricing::parse_pricing_doc(&text)?;
-    for e in &entries {
-        store.upsert_pricing(&e.to_entry())?;
-    }
+    store.reload_pricing_from_path(&path)?;
     Ok(())
 }
 

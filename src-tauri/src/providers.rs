@@ -418,7 +418,7 @@ impl SessionEvent {
             return match (self.uuid, self.duration_ms) {
                 (Some(uuid), Some(duration_ms)) => Parsed::TurnDuration(RawTurnDuration {
                     uuid,
-                    timestamp: self.timestamp.unwrap_or_else(now_iso),
+                    timestamp: self.timestamp.unwrap_or_else(crate::time::now_iso),
                     duration_ms,
                 }),
                 _ => Parsed::Skip,
@@ -449,7 +449,7 @@ impl SessionEvent {
             return None;
         }
         let uuid = self.uuid?;
-        let timestamp = self.timestamp.unwrap_or_else(now_iso);
+        let timestamp = self.timestamp.unwrap_or_else(crate::time::now_iso);
         let st = usage.server_tool_use.unwrap_or_default();
         Some(RawUsage {
             uuid,
@@ -478,11 +478,6 @@ fn metadata_modified_nanos(metadata: &std::fs::Metadata) -> i64 {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
         .unwrap_or(0)
-}
-
-/// ISO8601 UTC "now", used as a last-resort timestamp when the source omits one.
-fn now_iso() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 /// Resolve the default projects dir for diagnostics (used by commands).

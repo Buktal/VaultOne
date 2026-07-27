@@ -454,12 +454,7 @@ pub fn reload_pricing_from_file(state: State<'_, AppState>) -> AppResult<u32> {
             path.display()
         )));
     }
-    let text = std::fs::read_to_string(&path)?;
-    let entries = pricing::parse_pricing_doc(&text)?;
-    for e in &entries {
-        state.store.upsert_pricing(&e.to_entry())?;
-    }
-    Ok(entries.len() as u32)
+    state.store.reload_pricing_from_path(&path)
 }
 
 /// Persist current DB pricing to the cloud `pricing.json`.
