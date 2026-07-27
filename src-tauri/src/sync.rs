@@ -581,6 +581,8 @@ pub fn pull_and_import(
     // Per-turn durations (separate grain, uuid-deduped).
     let turns = crate::ingest::read_all_turn_artifacts(paths)?;
     store.ingest_turn_durations(&turns)?;
+    // Device-name registry: pull may have added/updated config/devices/*.json.
+    reload_devices_into_store(store, paths, cfg)?;
     Ok(inserted.len() as u32)
 }
 
@@ -813,6 +815,25 @@ fn reload_pricing_into_store(
     Ok(())
 }
 
+/// Reload the (just-pulled) cloud device registry into the Store (device-name
+/// sync ADR). Each `config/devices/<id>.json` becomes a row in the `device`
+/// table; `is_self` is decided by matching `cfg.device_id`. A single failed
+/// upsert is logged and skipped so one bad row can't abort the rest. Aliases
+/// stay local and are layered on at `list_devices`, not here.
+fn reload_devices_into_store(
+    store: &crate::db::Store,
+    paths: &crate::config::Paths,
+    cfg: &ConfigData,
+) -> AppResult<()> {
+    for a in crate::ingest::read_all_device_artifacts(paths) {
+        let is_self = a.device_id == cfg.device_id;
+        if let Err(e) = store.upsert_device(&a.device_id, &a.display_name, is_self) {
+            eprintln!("[vaultone] device reload skipped {}: {e}", a.device_id);
+        }
+    }
+    Ok(())
+}
+
 /// Fast-forward pull that preserves uncommitted worktree edits to files the
 /// remote did NOT touch. Conflict files (local dirty ∩ remote changed) MUST be
 /// resolved by the caller beforehand — `sync_config` pre-checks and surfaces
@@ -917,6 +938,8 @@ pub fn sync_config(
     if pricing_changed {
         reload_pricing_into_store(store, paths)?;
     }
+    // Device-name registry rides in the same pull (config/devices/*.json).
+    reload_devices_into_store(store, paths, cfg)?;
 
     let pushed = if has_changes(&repo)? {
         let email = author_email(cfg);
@@ -1008,6 +1031,8 @@ pub fn resolve_config_conflict(
     if pricing_changed {
         reload_pricing_into_store(store, paths)?;
     }
+    // Device-name registry rides in the same pull (config/devices/*.json).
+    reload_devices_into_store(store, paths, cfg)?;
 
     let email = author_email(cfg);
     commit_all(

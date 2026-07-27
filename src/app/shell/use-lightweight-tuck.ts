@@ -2,7 +2,9 @@
 // sub-shapes, both docked flush-right via the Rust `dock_window_right` command
 // (one atomic SetWindowPos of the OUTER rect — see lightweight-geometry.ts):
 //   - expanded: the 5-field today card (CARD_WIDTH × measured content height)
-//   - tucked:   the mini-bar docked flush at the right edge (TUCKED_W × H)
+//   - tucked:   the mini-bar docked flush at the right edge (TUCKED_W × H;
+//                H grows on hover to reveal a device-picker drawer, see
+//                `setTuckDrawer` below)
 //
 // The phase lives in the store (viewSlice.lightweightPhase) so the full-mode
 // title bar can enter lightweight directly as either sub-shape (→中 expanded /
@@ -57,6 +59,10 @@ export function useLightweightTuck() {
   const lastY = useRef(ENTRY_DOCK_Y)
   // Expanded card height adapts to the content; tucked is fixed.
   const cardHeight = useRef(CARD_HEIGHT_DEFAULT)
+  // Tucked hover-drawer extra height (0 when closed): the mini-bar grows
+  // downward to reveal a device picker (device_scope in the small window).
+  // Only applies in tucked; expanded ignores it.
+  const drawerExtra = useRef(0)
 
   useEffect(() => {
     const t = window.setTimeout(() => {
@@ -68,7 +74,9 @@ export function useLightweightTuck() {
   const applyShape = useCallback(async (wantTucked: boolean) => {
     programmatic.current = true
     const logicalW = wantTucked ? TUCKED_WIDTH : CARD_WIDTH
-    const logicalH = wantTucked ? TUCKED_HEIGHT : cardHeight.current
+    const logicalH = wantTucked
+      ? TUCKED_HEIGHT + drawerExtra.current
+      : cardHeight.current
     // Tucked flush-edges (inset 0); expanded keeps a small breathing gap (2).
     const inset = wantTucked ? INSET_TUCKED : INSET_EXPANDED
     const y = await dockRight(logicalW, logicalH, lastY.current, inset)
@@ -104,6 +112,20 @@ export function useLightweightTuck() {
     [applyShape],
   )
 
+  /** Grow (or shrink) the tucked mini-bar to reveal the hover device drawer.
+   *  `extra` is the drawer height in logical px (0 closes). No-op unless tucked.
+   *  Driven by explicit mouse enter/leave — never mouse position — so it does
+   *  not retrigger the SetWindowPos ⇄ onMoved loop (ADR-0018). */
+  const setTuckDrawer = useCallback(
+    (extra: number) => {
+      const next = Math.max(0, Math.round(extra))
+      if (Math.abs(next - drawerExtra.current) < 2) return
+      drawerExtra.current = next
+      if (phaseRef.current === "tucked") void applyShape(true).catch(() => {})
+    },
+    [applyShape],
+  )
+
   // Dragging either shape moves it; remember the Y so the next dock keeps it.
   // No auto-tuck, no re-dock on drag — the card stays where it's dropped until
   // the next explicit phase change.
@@ -121,5 +143,5 @@ export function useLightweightTuck() {
     }
   }, [])
 
-  return { phase, expand, tuck, setCardHeight }
+  return { phase, expand, tuck, setCardHeight, setTuckDrawer }
 }

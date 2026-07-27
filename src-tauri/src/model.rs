@@ -186,6 +186,25 @@ pub struct TurnDuration {
     pub duration_ms: u32,
 }
 
+// ---- Device-name sync artifact (ADR-0002 + device-name sync ADR) ----
+
+/// A device's published identity, materialized one-per-file at
+/// `config/devices/<device_id>.json`. Each device writes ONLY its own file, so
+/// concurrent edits by different devices never collide (zero Git merge
+/// conflict). Only the authoritative self-name syncs; per-device aliases stay
+/// local (`config.json`, never in the repo).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DeviceArtifact {
+    /// 12-hex device id (matches the filename and `usage_records.device_id`).
+    pub device_id: String,
+    /// This device's self-chosen display name — the authoritative name other
+    /// devices learn by pulling this file.
+    pub display_name: String,
+    /// ISO8601 UTC of first publish; preserved across rewrites so it stays the
+    /// device's stable "first seen" timestamp.
+    pub first_seen: String,
+}
+
 // ---- DTOs crossing the boundary (specta-typed, f64 cost) ----
 
 /// One row of the request-log table.

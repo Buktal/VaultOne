@@ -167,6 +167,15 @@ pub fn run() {
     {
         let cfg = config.get();
         let _ = store.upsert_device(&cfg.device_id, &cfg.display_name, true);
+        // Self-heal: ensure this device's name is published to the cloud
+        // registry (config/devices/<id>.json). Covers both first run and an
+        // upgrade from a version that predates device-name sync. Best-effort;
+        // the normal Git sync carries it.
+        let _ = crate::ingest::ensure_own_device_artifact(
+            &config.paths(),
+            &cfg.device_id,
+            &cfg.display_name,
+        );
         // Best-effort zero-cost top-up on boot (ADR-0007): newly-seeded pricing
         // may price rows that were imported while the model was missing.
         let book = store.load_pricing_book().unwrap_or_else(|e| {

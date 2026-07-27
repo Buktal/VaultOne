@@ -385,6 +385,39 @@ impl Store {
         Ok(())
     }
 
+    /// Self-heal the `device` table from `usage_records`: any device that has
+    /// usage rows but no `device` row (e.g. a peer that never published its
+    /// `config/devices_<id>.json` name artifact) gets a fallback row with a
+    /// generated `Device-<prefix>` name. `ON CONFLICT DO NOTHING` preserves
+    /// names already learned via `reload_devices_into_store` — this only fills
+    /// gaps, never overwrites. `is_self` is left 0 here; the command layer
+    /// re-derives it from `cfg.device_id` on read, so a stale stored value can
+    /// never mislabel a peer as "this device". `first_seen` takes the device's
+    /// earliest usage timestamp (more truthful than `now`).
+    pub fn discover_devices_from_usage(&self) -> AppResult<()> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT device_id, MIN(timestamp)
+             FROM usage_records
+             WHERE device_id NOT IN (SELECT device_id FROM device)
+             GROUP BY device_id",
+        )?;
+        let gaps: Vec<(String, String)> = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+        for (device_id, first_seen) in gaps {
+            let name = crate::config::default_display_name(&device_id);
+            conn.execute(
+                "INSERT INTO device (device_id, display_name, is_self, first_seen)
+                 VALUES (?1, ?2, 0, ?3)
+                 ON CONFLICT(device_id) DO NOTHING",
+                params![device_id, name, first_seen],
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn list_devices(&self) -> AppResult<Vec<crate::model::DeviceInfo>> {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let mut stmt = conn.prepare(

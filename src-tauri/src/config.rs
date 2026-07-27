@@ -63,6 +63,21 @@ impl Paths {
     pub fn pricing_json(&self) -> PathBuf {
         self.repo_config.join("pricing.json")
     }
+
+    /// Cloud device-name registry: `repo/config/devices_<id>.json`, one file per
+    /// device (flattened — no `devices/` subdir). Each device writes only its
+    /// own file, so concurrent edits never collide (zero Git merge conflict).
+    /// Carried by the normal Git sync flow.
+    pub fn devices_file_path(&self, device_id: &str) -> PathBuf {
+        self.repo_config.join(format!("devices_{device_id}.json"))
+    }
+
+    /// Legacy registry dir (`repo/config/devices/`) from before the flattening.
+    /// Read-only fallback so a peer still on the old layout stays visible until
+    /// it republishes; new writes always go to [`Self::devices_file_path`].
+    pub fn legacy_devices_dir(&self) -> PathBuf {
+        self.repo_config.join("devices")
+    }
 }
 
 /// Window-close behavior preference (ADR-0012). Crosses the Rust→JS boundary.
@@ -380,7 +395,7 @@ fn hex_encode(bytes: &[u8]) -> String {
     s
 }
 
-fn default_display_name(device_id: &str) -> String {
+pub fn default_display_name(device_id: &str) -> String {
     let prefix = &device_id[..6.min(device_id.len())];
     format!("Device-{prefix}")
 }

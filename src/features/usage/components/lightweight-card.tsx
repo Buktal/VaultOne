@@ -32,16 +32,23 @@
 
 import { getCurrentWindow } from "@tauri-apps/api/window"
 import dayjs from "dayjs"
-import { Airplay, AlignHorizontalJustifyEnd } from "lucide-react"
-import { type MouseEvent, useEffect, useMemo, useRef } from "react"
+import { Airplay, AlignHorizontalJustifyEnd, ChevronDown } from "lucide-react"
+import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { useLightweightTuck } from "@/app/shell/use-lightweight-tuck"
-import { usePreferencesQuery, useStatsQuery, ZERO_STATS } from "@/app/store/api"
-import { useAppDispatch } from "@/app/store/hooks"
-import { toFilter } from "@/app/store/slices/filterSlice"
+import {
+  useDevicesQuery,
+  usePreferencesQuery,
+  useStatsQuery,
+  ZERO_STATS,
+} from "@/app/store/api"
+import { useAppDispatch, useAppSelector } from "@/app/store/hooks"
+import { patchFilter, toFilter } from "@/app/store/slices/filterSlice"
 import { setMode } from "@/app/store/slices/viewSlice"
 import { formatTokens } from "@/lib/format"
+import { cn } from "@/lib/utils"
 
+import { DeviceScopeControl } from "./device-scope-control"
 import { TokenHero } from "./token-hero"
 
 const appWindow = getCurrentWindow()
@@ -53,7 +60,19 @@ const DRAG_THRESHOLD_SQ = 16
 export function LightweightCard() {
   const { t } = useTranslation()
   const dispatch = useAppDispatch()
-  const { phase, expand, tuck, setCardHeight } = useLightweightTuck()
+  const { phase, expand, tuck, setCardHeight, setTuckDrawer } =
+    useLightweightTuck()
+  // Tucked hover-drawer (two-step): hover the mini-bar → a Select-like trigger
+  // appears directly below it (full-width, top border as the divider — not a
+  // floating card inset); clicking the trigger opens the device list.
+  // device_scope in the small window. Disabled when hover-expand is chosen
+  // (hover then means "go to the mid window") or with ≤1 device.
+  const [drawerHover, setDrawerHover] = useState(false)
+  const [listOpen, setListOpen] = useState(false)
+  // Hover-leave 关闭延迟: tucked 窗口 resize (抽屉展开/收起) 时鼠标可能瞬间越过
+  // 窗口边界 → mouseleave → 立即收起 → 鼠标又回窗口 → mouseenter → 再展开, 形成抖动
+  // 循环。延迟 180ms 关闭, 期间 mouseenter 取消定时器, 打破循环。
+  const leaveTimer = useRef<number | undefined>(undefined)
 
   // Whole-bar drag for the tucked mini-bar. startDragging() is a JS call, not
   // data-tauri-drag-region, so it does NOT swallow the number's click — a press
@@ -87,10 +106,63 @@ export function LightweightCard() {
   const { data: prefs } = usePreferencesQuery()
   const hoverExpand = prefs?.lightweight_expand === "hover"
 
-  // 今日 · 全部设备 — reuses toFilter (local-day → UTC timestamp bounds) so the
-  // 口径 is identical to the dashboard's "today" preset. Recomputed when the
-  // local day rolls over (dep on `today`), not every render.
+  // 今日 · device_scope 跟随全局 (统一控制: 大窗口选了某设备，中/小窗今日快照
+  // 也是该设备)。仍固定"今日"范围——只并入设备维度，不并 model/日期 (中/小窗恒
+  // 为今日快照)。reuses toFilter (local-day → UTC timestamp bounds) 与看板"今天"
+  // preset 同口径; local day 翻页或 device_scope 变更时重算。
   const today = dayjs().format("YYYY-MM-DD")
+  const deviceScope = useAppSelector((s) => s.filter.filter.device_scope)
+  // 设备列表 — 仅用于 expanded 卡内设备分段的显隐 (单设备不渲染)。缓存与
+  // dashboard / DeviceScopeControl 共享，无额外请求。
+  const { data: devices = [] } = useDevicesQuery()
+  // Hover-drawer gating + heights. Two steps: hover slides out a trigger
+  // (TRIGGER_H); clicking the trigger opens the list (listH = items × row).
+  const drawerEnabled = devices.length > 1 && !hoverExpand
+  const TRIGGER_H = 28
+  const listH = drawerEnabled ? (devices.length + 1) * 26 + 10 : 0
+  const closeDrawer = () => {
+    if (leaveTimer.current) {
+      window.clearTimeout(leaveTimer.current)
+      leaveTimer.current = undefined
+    }
+    setDrawerHover(false)
+    setListOpen(false)
+    setTuckDrawer(0)
+  }
+  const openDrawer = () => {
+    if (leaveTimer.current) {
+      window.clearTimeout(leaveTimer.current)
+      leaveTimer.current = undefined
+    }
+    if (!drawerEnabled) return
+    setDrawerHover(true)
+    setTuckDrawer(TRIGGER_H)
+  }
+  // 延迟关闭 (见 leaveTimer 注释): 取代 onMouseLeave 内的立即 closeDrawer, 避开
+  // resize 越界导致的 leave → close → enter → open 抖动循环。
+  const scheduleClose = () => {
+    disarm()
+    if (leaveTimer.current) window.clearTimeout(leaveTimer.current)
+    leaveTimer.current = window.setTimeout(closeDrawer, 180)
+  }
+  const toggleList = () => {
+    const next = !listOpen
+    setListOpen(next)
+    setTuckDrawer(next ? TRIGGER_H + listH : TRIGGER_H)
+  }
+  // Reset the drawer when leaving tucked (e.g. →大 to full): otherwise it
+  // would reopen the next time the mini-bar shows.
+  useEffect(() => {
+    if (phase !== "tucked") {
+      if (leaveTimer.current) {
+        window.clearTimeout(leaveTimer.current)
+        leaveTimer.current = undefined
+      }
+      setDrawerHover(false)
+      setListOpen(false)
+      setTuckDrawer(0)
+    }
+  }, [phase, setTuckDrawer])
   const todayFilter = useMemo(
     () =>
       toFilter({
@@ -98,9 +170,9 @@ export function LightweightCard() {
         to_day: today,
         model: "",
         source: "",
-        device_scope: "",
+        device_scope: deviceScope,
       }),
-    [today],
+    [today, deviceScope],
   )
 
   // tucked reads total_tokens here; expanded reuses <TokenHero> which runs its
@@ -130,37 +202,106 @@ export function LightweightCard() {
   // number stays clickable. number is flex-1 (the big drag/click target); →大
   // stops propagation so a press on it never starts a drag.
   if (phase === "tucked") {
+    // 本机写「本机」(与 DeviceScopeControl 一致), 对端显示 display_name。
+    const items = [
+      { id: "", label: t("usage.control.all") },
+      ...devices.map((d) => ({
+        id: d.device_id,
+        label: d.is_self
+          ? t("devices.thisDevice")
+          : d.display_name || t("common.unnamed"),
+      })),
+    ]
     return (
-      // biome-ignore lint/a11y/noStaticElementInteractions: Tauri window drag handle — mouse-only startDragging with no keyboard equivalent; keyboard users reach the same actions via the inner buttons.
+      // biome-ignore lint/a11y/noStaticElementInteractions: Tauri window drag handle + hover drawer — mouse-only startDragging with no keyboard equivalent; keyboard users reach the same actions via the inner buttons.
       <div
         onMouseDown={armDrag}
         onMouseMove={maybeDrag}
         onMouseUp={disarm}
-        onMouseLeave={disarm}
-        className="bg-background flex h-screen w-screen animate-in fade-in slide-in-from-right-2 cursor-grab items-stretch gap-1 overflow-hidden px-1 duration-150 motion-reduce:animate-none"
+        onMouseEnter={openDrawer}
+        onMouseLeave={scheduleClose}
+        className="bg-background flex h-screen w-screen flex-col animate-in fade-in slide-in-from-right-2 cursor-grab overflow-hidden duration-150 motion-reduce:animate-none"
       >
-        <button
-          type="button"
-          onMouseEnter={hoverExpand ? expand : undefined}
-          onClick={() => {
-            if (!dragged.current) expand()
-          }}
-          aria-label={t("usage.lightweight.expandToday")}
-          className="flex flex-1 cursor-pointer items-center justify-center border-0 bg-transparent p-0"
-        >
-          <span className="font-semibold tabular-nums text-base leading-none">
-            {formatTokens(s.total_tokens)}
-          </span>
-        </button>
-        <button
-          type="button"
-          aria-label={t("usage.lightweight.expandFull")}
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={() => dispatch(setMode("full"))}
-          className="text-muted-foreground hover:bg-muted hover:text-foreground inline-flex w-6 shrink-0 items-center justify-center rounded-md my-0.5"
-        >
-          <Airplay className="size-3.5" />
-        </button>
+        {/* h-10 = TUCKED_HEIGHT (40px): 固定占满 tucked 高度 + items-center 让
+            数字/→大 垂直居中 (不再置顶)。显式 bg-background 满铺数字条, 不靠
+            外层透出。 */}
+        <div className="bg-background relative z-10 flex h-10 shrink-0 items-center gap-1 px-1">
+          <button
+            type="button"
+            onMouseEnter={hoverExpand ? expand : undefined}
+            onClick={() => {
+              if (!dragged.current) expand()
+            }}
+            aria-label={t("usage.lightweight.expandToday")}
+            className="flex flex-1 cursor-pointer items-center justify-center border-0 bg-transparent p-0"
+          >
+            <span className="font-semibold tabular-nums text-base leading-none">
+              {formatTokens(s.total_tokens)}
+            </span>
+          </button>
+          <button
+            type="button"
+            aria-label={t("usage.lightweight.expandFull")}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={() => dispatch(setMode("full"))}
+            className="text-muted-foreground hover:bg-muted hover:text-foreground inline-flex w-6 shrink-0 items-center justify-center rounded-md my-0.5"
+          >
+            <Airplay className="size-3.5" />
+          </button>
+        </div>
+        {drawerHover && drawerEnabled ? (
+          <button
+            type="button"
+            aria-label={t("usage.deviceScope.label")}
+            aria-expanded={listOpen}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={toggleList}
+            className="border-border bg-background text-foreground hover:bg-muted/60 flex w-full shrink-0 items-center justify-between border-t px-2 py-1 text-[11px] transition-colors"
+          >
+            <span className="min-w-0 flex-1 truncate">
+              {deviceScope
+                ? items.find((it) => it.id === deviceScope)?.label ||
+                  t("common.unnamed")
+                : t("usage.control.all")}
+            </span>
+            <ChevronDown
+              className={cn(
+                "text-muted-foreground size-3 shrink-0 transition-transform",
+                listOpen && "rotate-180",
+              )}
+            />
+          </button>
+        ) : null}
+        {drawerHover && listOpen && drawerEnabled ? (
+          <fieldset
+            aria-label={t("devices.currentDevice")}
+            className="bg-background m-0 flex w-full min-w-0 shrink-0 flex-col gap-0.5 p-0"
+          >
+            {items.map((it) => {
+              const selected = deviceScope === it.id
+              return (
+                <button
+                  key={it.id || "all"}
+                  type="button"
+                  aria-pressed={selected}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={() => {
+                    dispatch(patchFilter({ device_scope: it.id }))
+                    closeDrawer()
+                  }}
+                  className={cn(
+                    "focus-visible:ring-ring/40 flex w-full items-center rounded-none px-2 py-1 text-[11px] outline-none transition-colors focus-visible:ring-2",
+                    selected
+                      ? "bg-accent-tint text-accent-brand-strong"
+                      : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                  )}
+                >
+                  <span className="min-w-0 flex-1 truncate">{it.label}</span>
+                </button>
+              )
+            })}
+          </fieldset>
+        ) : null}
       </div>
     )
   }
@@ -206,6 +347,16 @@ export function LightweightCard() {
           square edge so the card's rounded corners don't sit flush against a
           square window border — the full dashboard gives the same card the
           same breathing room via the main-area padding/gap. */}
+      {/* 设备视角切换 — 从 p-3 卡区提出来, 紧贴 drag-bar 下方右对齐。drag-bar 与
+          大窗口 TitleBar 同为 h-8(32), selector 紧贴 → 两窗口 selector 离窗口顶都
+          是 32, 完全对齐。px-3 右缩进与 TokenHero 卡右边平齐。单设备不渲染。 */}
+      {devices.length > 1 ? (
+        <div className="flex justify-end px-3">
+          <DeviceScopeControl compact />
+        </div>
+      ) : null}
+      {/* TokenHero 卡保留 p-3 呼吸 (圆角不贴窗口边); 其 pt-3 同时给出与上方
+          selector 行的间距。 */}
       <div className="p-3">
         <TokenHero filter={todayFilter} />
       </div>
