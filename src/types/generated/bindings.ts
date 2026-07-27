@@ -5,19 +5,19 @@ import { invoke as __TAURI_INVOKE } from "@tauri-apps/api/core";
 
 /** Commands */
 export const commands = {
-	/**  App status: device, mode (Standalone/Synced), paths, version (ADR-0006). */
+	/**  App status: device, mode (Standalone/Synced), paths, version. */
 	getAppInfo: () => typedError<AppInfo, AppError>(__TAURI_INVOKE("get_app_info")),
-	/**  Configure the sync repo + PAT, upgrading Standalone → Synced (ADR-0006). */
+	/**  Configure the sync repo + PAT, upgrading Standalone → Synced. */
 	setSyncRepo: (repoUrl: string, githubToken: string) => typedError<RunMode, AppError>(__TAURI_INVOKE("set_sync_repo", { repoUrl, githubToken })),
 	/**
-	 *  Unbind the repo, downgrading to Standalone (ADR-0006). Clears the local
+	 *  Unbind the repo, downgrading to Standalone. Clears the local
 	 *  `.git` so a re-bind (often to a different repo) starts clean instead of
 	 *  reusing the old remote/branch. Usage rows (DB) and `data/` are retained.
 	 */
 	clearSyncRepo: () => typedError<RunMode, AppError>(__TAURI_INVOKE("clear_sync_repo")),
-	/**  Rename *this* device (display name only — not a uniqueness key, ADR-0002). */
+	/**  Rename *this* device (display name only — not a uniqueness key). */
 	setDisplayName: (displayName: string) => typedError<null, AppError>(__TAURI_INVOKE("set_display_name", { displayName })),
-	/**  Set a friendly name for *another* device seen in the repo (ADR-0002 map). */
+	/**  Set a friendly name for *another* device seen in the repo (map). */
 	setDeviceDisplayName: (deviceId: string, displayName: string) => typedError<null, AppError>(__TAURI_INVOKE("set_device_display_name", { deviceId, displayName })),
 	/**
 	 *  Manual「立即采集」: collect now, best-effort push if Synced, refresh the UI.
@@ -25,12 +25,12 @@ export const commands = {
 	 */
 	collectNow: () => typedError<IngestReport, AppError>(__TAURI_INVOKE("collect_now")),
 	/**
-	 *  Manual「立即同步」(ADR-0005, Synced only): pull + import + commit + push.
+	 *  Manual「立即同步」(Synced only): pull + import + commit + push.
 	 *  Standalone ⇒ no-op returning a zero report.
 	 */
 	syncNow: () => typedError<SyncReport, AppError>(__TAURI_INVOKE("sync_now")),
 	/**
-	 *  Manual cloud-config sync (ADR-0005 / #6, Synced only): detect conflicts on
+	 *  Manual cloud-config sync (#6, Synced only): detect conflicts on
 	 *  shared `config/{app,user,pricing}.json`; if clean, pull + commit + push and
 	 *  reload pricing. Returns a conflict report for the UI to resolve when local
 	 *  and remote both edited the same file. Standalone ⇒ error (UI hides the entry).
@@ -38,11 +38,11 @@ export const commands = {
 	syncConfig: () => typedError<ConfigSyncOutcome, AppError>(__TAURI_INVOKE("sync_config")),
 	/**
 	 *  Apply the user's per-file conflict verdicts, then pull + commit + push
-	 *  (ADR-0005, Synced only). `choices` should cover every file `sync_config`
+	 *  (Synced only). `choices` should cover every file `sync_config`
 	 *  reported as conflicting.
 	 */
 	resolveConfigConflict: (choices: ConfigConflictResolution[]) => typedError<ConfigSyncOutcome, AppError>(__TAURI_INVOKE("resolve_config_conflict", { choices })),
-	/**  Rebill zero-cost rows whose model now has a price (ADR-0007 top-up). */
+	/**  Rebill zero-cost rows whose model now has a price (top-up). */
 	rebillZeroCost: () => typedError<number, AppError>(__TAURI_INVOKE("rebill_zero_cost")),
 	queryUsageStats: (filter: UsageFilter) => typedError<UsageStats, AppError>(__TAURI_INVOKE("query_usage_stats", { filter })),
 	queryUsageTrend: (filter: UsageFilter, bucket: TrendBucket) => typedError<TrendPoint[], AppError>(__TAURI_INVOKE("query_usage_trend", { filter, bucket })),
@@ -57,41 +57,41 @@ export const commands = {
 	savePricingEntry: (entry: PricingEntry, isBuiltin: boolean | null) => typedError<null, AppError>(__TAURI_INVOKE("save_pricing_entry", { entry, isBuiltin })),
 	deletePricingEntry: (modelKey: string) => typedError<null, AppError>(__TAURI_INVOKE("delete_pricing_entry", { modelKey })),
 	/**
-	 *  Re-load pricing from the cloud `pricing.json` into the DB (ADR-0007).
+	 *  Re-load pricing from the cloud `pricing.json` into the DB.
 	 *  In Standalone this is the local `repo/config/pricing.json`; no push.
 	 */
 	reloadPricingFromFile: () => typedError<number, AppError>(__TAURI_INVOKE("reload_pricing_from_file")),
-	/**  Persist current DB pricing to the cloud `pricing.json` (ADR-0007). */
+	/**  Persist current DB pricing to the cloud `pricing.json`. */
 	savePricingToFile: () => typedError<null, AppError>(__TAURI_INVOKE("save_pricing_to_file")),
 	/**
-	 *  Fetch LiteLLM upstream pricing and merge into the DB (ADR-0007 seed).
+	 *  Fetch LiteLLM upstream pricing and merge into the DB (seed).
 	 *  Network → async + offloaded. Best-effort: returns count merged (0 offline).
 	 */
 	fetchLitellmPricing: () => typedError<number, AppError>(__TAURI_INVOKE("fetch_litellm_pricing")),
 	/**  Read the current preferences for the Settings card. */
 	getPreferences: () => typedError<Preferences_Serialize, AppError>(__TAURI_INVOKE("get_preferences")),
-	/**  Persist the window-close behavior (ADR-0012). */
+	/**  Persist the window-close behavior. */
 	setCloseBehavior: (closeBehavior: CloseBehavior) => typedError<Preferences_Serialize, AppError>(__TAURI_INVOKE("set_close_behavior", { closeBehavior })),
 	/**
 	 *  Persist the background-collect interval (seconds, clamped to [10, 3600];
-	 *  ADR-0014). Pure-local cadence — does not touch the network.
+	 * ). Pure-local cadence — does not touch the network.
 	 */
 	setCollectInterval: (seconds: number) => typedError<Preferences_Serialize, AppError>(__TAURI_INVOKE("set_collect_interval", { seconds })),
 	/**
 	 *  Persist the push-to-sync interval (seconds, clamped to [60, 7200]; Synced
-	 *  only; ADR-0014). Decoupled from collect so the Git history grows at this
+	 *  only). Decoupled from collect so the Git history grows at this
 	 *  rate, not the (shorter) collect rate.
 	 */
 	setPushInterval: (seconds: number) => typedError<Preferences_Serialize, AppError>(__TAURI_INVOKE("set_push_interval", { seconds })),
 	/**
-	 *  Persist the display language (ADR-0016) and rebuild the tray menu so the
+	 *  Persist the display language and rebuild the tray menu so the
 	 *  "Quit" item follows the new language immediately. The tray item is the only
 	 *  user-facing Rust string; all other UI text is frontend i18n driven by this
 	 *  same preference.
 	 */
 	setLanguage: (language: Language) => typedError<Preferences_Serialize, AppError>(__TAURI_INVOKE("set_language", { language })),
 	/**
-	 *  Persist the lightweight half-icon expand trigger (ADR-0015). Pure frontend
+	 *  Persist the lightweight half-icon expand trigger. Pure frontend
 	 *  behavior; Rust doesn't read it back, but it rides ConfigData for unity.
 	 */
 	setLightweightExpand: (lightweightExpand: LightweightExpand) => typedError<Preferences_Serialize, AppError>(__TAURI_INVOKE("set_lightweight_expand", { lightweightExpand })),
@@ -101,7 +101,7 @@ export const commands = {
 	 */
 	setSkin: (skin: Skin_Deserialize) => typedError<Preferences_Serialize, AppError>(__TAURI_INVOKE("set_skin", { skin })),
 	/**
-	 *  Probe a sync repo + PAT for reachability (ADR-0005「测试连接」). Pass explicit
+	 *  Probe a sync repo + PAT for reachability (「测试连接」). Pass explicit
 	 *  values to validate BEFORE binding, or `None`/`None` to re-check the already-
 	 *  configured repo. Pure ls-remote — never mutates config or the real sync repo.
 	 *  Always returns `Ok(report)`; the probe's own outcome (auth ok / bad token /
@@ -110,7 +110,7 @@ export const commands = {
 	 */
 	verifySyncRepo: (repoUrl: string | null, githubToken: string | null) => typedError<VerifyReport, AppError>(__TAURI_INVOKE("verify_sync_repo", { repoUrl, githubToken })),
 	/**
-	 *  Resolve the one-time close dialog (ADR-0012). `remember` pins `choice` as
+	 *  Resolve the one-time close dialog. `remember` pins `choice` as
 	 *  the persisted behavior; the chosen action is then executed immediately.
 	 *  `Minimize`/`Ask` hide the window (scheduler keeps running); `Quit` exits.
 	 */
@@ -220,12 +220,12 @@ export type ConfigConflictResolution = {
 };
 
 /**
- *  A cloud-config file under `repo/config/` (ADR-0007). Crosses the boundary as
+ *  A cloud-config file under `repo/config/`. Crosses the boundary as
  *  a snake_case tag (`"pricing"` …) so the UI can switch on it without path math.
  */
 export type ConfigFile = "app" | "user" | "pricing";
 
-/**  User's per-file verdict for a conflict (ADR-0005 "pick a version"). */
+/**  User's per-file verdict for a conflict ("pick a version"). */
 export type ConfigSyncChoice = 
 /**  Discard the remote change, keep the local worktree version. */
 "keep_local" | 
@@ -303,10 +303,10 @@ export type ModelStatsRow = {
 	total_cost_usd: number | null,
 };
 
-/**  User-tunable preferences surfaced in the Settings「通用」card (ADR-0012). */
+/**  User-tunable preferences surfaced in the Settings「通用」card. */
 export type Preferences = Preferences_Serialize | Preferences_Deserialize;
 
-/**  User-tunable preferences surfaced in the Settings「通用」card (ADR-0012). */
+/**  User-tunable preferences surfaced in the Settings「通用」card. */
 export type Preferences_Deserialize = {
 	close_behavior: CloseBehavior,
 	collect_interval_secs: number,
@@ -316,7 +316,7 @@ export type Preferences_Deserialize = {
 	skin: Skin_Deserialize,
 };
 
-/**  User-tunable preferences surfaced in the Settings「通用」card (ADR-0012). */
+/**  User-tunable preferences surfaced in the Settings「通用」card. */
 export type Preferences_Serialize = {
 	close_behavior: CloseBehavior,
 	collect_interval_secs: number,

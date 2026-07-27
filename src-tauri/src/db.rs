@@ -514,8 +514,8 @@ impl Store {
     }
 
     /// Trend points over a filter (BLUEPRINT 使用趋势). `bucket` picks the
-    /// granularity: `Day` groups on the UTC `day` column (,
-    /// cross-device deterministic); `Hour` groups on local-time hour for the
+    /// granularity: `Day` groups on the UTC `day` column
+    /// (cross-device deterministic); `Hour` groups on local-time hour for the
     /// single-day zoom where per-day resolution collapses to one bar. The
     /// TrendPoint `day` field carries the resolved bucket key.
     pub fn query_trend(

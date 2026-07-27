@@ -832,7 +832,7 @@ pub fn sync_now(
 }
 
 // ===========================================================================
-// Cloud-config sync (/ #6 — Synced-only, S3)
+// Cloud-config sync (#6 — Synced-only, S3)
 // ===========================================================================
 //
 // Usage artifacts live under `data/<deviceId>/` and so can never collide across
@@ -1101,7 +1101,7 @@ fn pull_preserving_dirty(repo: &Repository, token: &str) -> AppResult<()> {
     Ok(())
 }
 
-/// Manual cloud-config sync (, Synced-only). Detects conflicts between
+/// Manual cloud-config sync (Synced-only). Detects conflicts between
 /// local worktree edits and remote changes on shared config files; if clean,
 /// pulls (SAFE), commits + pushes any local change, and reloads pricing.
 pub fn sync_config(
@@ -1769,7 +1769,7 @@ mod tests {
         assert_eq!(stats.request_count, 1);
     }
 
-    // ---- S3 cloud-config sync tests (/ #6) ----
+    // ---- S3 cloud-config sync tests (#6) ----
 
     fn write_pricing(paths: &crate::config::Paths, body: &str) {
         let p = paths.pricing_json();

@@ -197,8 +197,8 @@ pub fn collect_into(store: &Store, config: &ConfigStore) -> AppResult<IngestRepo
     Ok(report)
 }
 
-/// Best-effort push of the current Artifact to the sync repo (Synced only,
-///). Errors are logged, never propagated — push is a backstop.
+/// Best-effort push of the current Artifact to the sync repo (Synced only).
+/// Errors are logged, never propagated — push is a backstop.
 pub fn push_if_synced(config: &ConfigStore) {
     let cfg = config.get();
     if !cfg.is_synced() {
@@ -231,7 +231,7 @@ pub async fn collect_now(
     .map_err(|e| AppError::Internal(format!("collect task failed: {e}")))?
 }
 
-/// Manual「立即同步」(, Synced only): pull + import + commit + push.
+/// Manual「立即同步」(Synced only): pull + import + commit + push.
 /// Standalone ⇒ no-op returning a zero report.
 #[tauri::command]
 #[specta::specta]
@@ -250,7 +250,7 @@ pub async fn sync_now(state: State<'_, AppState>) -> AppResult<SyncReport> {
     .map_err(|e| AppError::Internal(format!("sync task failed: {e}")))?
 }
 
-/// Manual cloud-config sync (/ #6, Synced only): detect conflicts on
+/// Manual cloud-config sync (#6, Synced only): detect conflicts on
 /// shared `config/{app,user,pricing}.json`; if clean, pull + commit + push and
 /// reload pricing. Returns a conflict report for the UI to resolve when local
 /// and remote both edited the same file. Standalone ⇒ error (UI hides the entry).
@@ -274,7 +274,7 @@ pub async fn sync_config(state: State<'_, AppState>) -> AppResult<ConfigSyncOutc
 }
 
 /// Apply the user's per-file conflict verdicts, then pull + commit + push
-/// (, Synced only). `choices` should cover every file `sync_config`
+/// (Synced only). `choices` should cover every file `sync_config`
 /// reported as conflicting.
 #[tauri::command]
 #[specta::specta]
@@ -518,7 +518,7 @@ pub fn set_collect_interval(state: State<'_, AppState>, seconds: u32) -> AppResu
 }
 
 /// Persist the push-to-sync interval (seconds, clamped to [60, 7200]; Synced
-/// only;). Decoupled from collect so the Git history grows at this
+/// only). Decoupled from collect so the Git history grows at this
 /// rate, not the (shorter) collect rate.
 #[tauri::command]
 #[specta::specta]

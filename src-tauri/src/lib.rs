@@ -225,7 +225,7 @@ pub fn run() {
         .setup(|app| {
             let state: tauri::State<AppState> = app.state::<AppState>();
 
-            // Startup pull (, Synced only): covers the device-switch case.
+            // Startup pull (Synced only): covers the device-switch case.
             let store = state.store.clone();
             let config = state.config.clone();
             std::thread::spawn(move || {
