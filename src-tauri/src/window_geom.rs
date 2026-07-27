@@ -93,28 +93,39 @@ fn win_shadow_insets(hwnd: windows::Win32::Foundation::HWND) -> Result<(i32, i32
     ))
 }
 
+/// Measured window geometry shared by the dock / center / set-rect commands:
+/// the live scale factor, the target OUTER size (client + shadow) in physical
+/// px, and the monitor Windows considers the window to be on. Each command
+/// computes only its own outer top-left from this, then hands the rect to
+/// [`set_outer_rect`] for one atomic `SetWindowPos`.
 #[cfg(target_os = "windows")]
-fn dock_right_win(
+struct WindowPlacement {
+    hwnd: windows::Win32::Foundation::HWND,
+    scale: f64,
+    target_outer_w: i32,
+    target_outer_h: i32,
+    mon: windows::Win32::Foundation::RECT,
+}
+
+/// Read hwnd / scale / live shadow insets / monitor for a desired CLIENT size.
+/// Restore-if-maximized happens inside [`win_shadow_insets`] so the measure is
+/// correct before any positioning.
+#[cfg(target_os = "windows")]
+fn measure_window(
     window: &WebviewWindow,
     client_logical_w: f64,
     client_logical_h: f64,
-    logical_y: f64,
-    inset_logical: f64,
-) -> Result<f64, String> {
+) -> Result<WindowPlacement, String> {
     use windows::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
 
     let hwnd = window.hwnd().map_err(|e| e.to_string())?;
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
-    // Restore-if-maximized + live shadow insets (shared with center_window).
     let (shadow_lr, shadow_tb) = win_shadow_insets(hwnd)?;
 
     let target_client_w = (client_logical_w * scale).round() as i32;
     let target_client_h = (client_logical_h * scale).round() as i32;
-    let target_outer_w = target_client_w + shadow_lr;
-    let target_outer_h = target_client_h + shadow_tb;
 
     // Pick the monitor the Windows way: largest intersection area.
     let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
@@ -125,31 +136,53 @@ fn dock_right_win(
     if !unsafe { GetMonitorInfoW(monitor, &mut mi) }.as_bool() {
         return Err("GetMonitorInfoW failed".into());
     }
-    let mon = mi.rcMonitor;
 
-    let inset_phys = (inset_logical * scale).ceil() as i32;
-    let outer_x = mon.right - inset_phys - target_outer_w;
+    Ok(WindowPlacement {
+        hwnd,
+        scale,
+        target_outer_w: target_client_w + shadow_lr,
+        target_outer_h: target_client_h + shadow_tb,
+        mon: mi.rcMonitor,
+    })
+}
 
-    let lo = mon.top + inset_phys;
-    let hi = mon.bottom - inset_phys - target_outer_h;
-    let desired_y = mon.top + (logical_y * scale).round() as i32;
-    let outer_y = desired_y.clamp(lo.min(hi), lo.max(hi));
-
-    // hwndInsertAfter is ignored under SWP_NOZORDER; pass None.
+/// Apply an OUTER rect in one atomic `SetWindowPos` (size + position together).
+/// hwndInsertAfter is ignored under SWP_NOZORDER, so None.
+#[cfg(target_os = "windows")]
+fn set_outer_rect(p: &WindowPlacement, outer_x: i32, outer_y: i32) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
     unsafe {
         SetWindowPos(
-            hwnd,
+            p.hwnd,
             None,
             outer_x,
             outer_y,
-            target_outer_w,
-            target_outer_h,
+            p.target_outer_w,
+            p.target_outer_h,
             SWP_NOZORDER | SWP_NOACTIVATE,
         )
         .map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
 
-    Ok(((outer_y - mon.top) as f64) / scale)
+#[cfg(target_os = "windows")]
+fn dock_right_win(
+    window: &WebviewWindow,
+    client_logical_w: f64,
+    client_logical_h: f64,
+    logical_y: f64,
+    inset_logical: f64,
+) -> Result<f64, String> {
+    let p = measure_window(window, client_logical_w, client_logical_h)?;
+    let inset_phys = (inset_logical * p.scale).ceil() as i32;
+    let outer_x = p.mon.right - inset_phys - p.target_outer_w;
+    let lo = p.mon.top + inset_phys;
+    let hi = p.mon.bottom - inset_phys - p.target_outer_h;
+    let desired_y = p.mon.top + (logical_y * p.scale).round() as i32;
+    let outer_y = desired_y.clamp(lo.min(hi), lo.max(hi));
+    set_outer_rect(&p, outer_x, outer_y)?;
+    Ok(((outer_y - p.mon.top) as f64) / p.scale)
 }
 
 /// Center the window on its current monitor at a given CLIENT size, in one
@@ -182,49 +215,10 @@ fn center_window_win(
     client_logical_w: f64,
     client_logical_h: f64,
 ) -> Result<(), String> {
-    use windows::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-    };
-    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
-
-    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
-    let scale = window.scale_factor().map_err(|e| e.to_string())?;
-    let (shadow_lr, shadow_tb) = win_shadow_insets(hwnd)?;
-
-    let target_client_w = (client_logical_w * scale).round() as i32;
-    let target_client_h = (client_logical_h * scale).round() as i32;
-    let target_outer_w = target_client_w + shadow_lr;
-    let target_outer_h = target_client_h + shadow_tb;
-
-    // Pick the monitor the Windows way: largest intersection area.
-    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
-    let mut mi = MONITORINFO {
-        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-        ..Default::default()
-    };
-    if !unsafe { GetMonitorInfoW(monitor, &mut mi) }.as_bool() {
-        return Err("GetMonitorInfoW failed".into());
-    }
-    let mon = mi.rcMonitor;
-
-    // Center the OUTER rect on the monitor.
-    let outer_x = mon.left + (mon.right - mon.left - target_outer_w) / 2;
-    let outer_y = mon.top + (mon.bottom - mon.top - target_outer_h) / 2;
-
-    unsafe {
-        SetWindowPos(
-            hwnd,
-            None,
-            outer_x,
-            outer_y,
-            target_outer_w,
-            target_outer_h,
-            SWP_NOZORDER | SWP_NOACTIVATE,
-        )
-        .map_err(|e| e.to_string())?;
-    }
-
-    Ok(())
+    let p = measure_window(window, client_logical_w, client_logical_h)?;
+    let outer_x = p.mon.left + (p.mon.right - p.mon.left - p.target_outer_w) / 2;
+    let outer_y = p.mon.top + (p.mon.bottom - p.mon.top - p.target_outer_h) / 2;
+    set_outer_rect(&p, outer_x, outer_y)
 }
 
 /// Place the window at an arbitrary logical rect, in one atomic `SetWindowPos`
@@ -269,53 +263,16 @@ fn set_window_rect_win(
     logical_w: f64,
     logical_h: f64,
 ) -> Result<(), String> {
-    use windows::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-    };
-    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
-
-    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
-    let scale = window.scale_factor().map_err(|e| e.to_string())?;
-    let (shadow_lr, shadow_tb) = win_shadow_insets(hwnd)?;
-
-    let target_client_w = (logical_w * scale).round() as i32;
-    let target_client_h = (logical_h * scale).round() as i32;
-    let target_outer_w = target_client_w + shadow_lr;
-    let target_outer_h = target_client_h + shadow_tb;
-
-    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
-    let mut mi = MONITORINFO {
-        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-        ..Default::default()
-    };
-    if !unsafe { GetMonitorInfoW(monitor, &mut mi) }.as_bool() {
-        return Err("GetMonitorInfoW failed".into());
-    }
-    let mon = mi.rcMonitor;
-
+    let p = measure_window(window, logical_w, logical_h)?;
     // Desired outer top-left in physical virtual-screen coords, clamped so the
     // full outer rect (shadow included) stays inside the current monitor.
-    let raw_x = (logical_x * scale).round() as i32;
-    let raw_y = (logical_y * scale).round() as i32;
-    let lo_x = mon.left;
-    let hi_x = mon.right - target_outer_w;
-    let lo_y = mon.top;
-    let hi_y = mon.bottom - target_outer_h;
+    let raw_x = (logical_x * p.scale).round() as i32;
+    let raw_y = (logical_y * p.scale).round() as i32;
+    let lo_x = p.mon.left;
+    let hi_x = p.mon.right - p.target_outer_w;
+    let lo_y = p.mon.top;
+    let hi_y = p.mon.bottom - p.target_outer_h;
     let outer_x = raw_x.clamp(lo_x.min(hi_x), lo_x.max(hi_x));
     let outer_y = raw_y.clamp(lo_y.min(hi_y), lo_y.max(hi_y));
-
-    unsafe {
-        SetWindowPos(
-            hwnd,
-            None,
-            outer_x,
-            outer_y,
-            target_outer_w,
-            target_outer_h,
-            SWP_NOZORDER | SWP_NOACTIVATE,
-        )
-        .map_err(|e| e.to_string())?;
-    }
-
-    Ok(())
+    set_outer_rect(&p, outer_x, outer_y)
 }
