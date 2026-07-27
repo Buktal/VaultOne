@@ -1,9 +1,9 @@
 //! VaultOne Tauri backend library.
 //!
 //! Module tree: config / db / providers / ingest / pricing /
-//! commands / window_geom, behind a tauri-specta typed contract (ADR-0008). First start
+//! commands / window_geom, behind a tauri-specta typed contract. First start
 //! bootstraps the local data dir + deviceId and defaults to Standalone
-//! (ADR-0006).
+//!.
 
 use std::sync::Arc;
 
@@ -28,7 +28,7 @@ use commands::AppState;
 use config::ConfigStore;
 use db::Store;
 
-/// Assemble the tauri-specta builder with all typed commands (ADR-0008).
+/// Assemble the tauri-specta builder with all typed commands.
 fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new().commands(tauri_specta::collect_commands![
         commands::get_app_info,
@@ -70,7 +70,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
     ])
 }
 
-/// Tray "Show" label for the active display language (ADR-0016). The tray menu
+/// Tray "Show" label for the active display language. The tray menu
 /// items are the ONLY user-facing Rust strings — all other UI text is frontend
 /// i18n — so this and [`quit_label`] are rebuilt on a live language change.
 pub(crate) fn show_label(lang: config::Language) -> &'static str {
@@ -81,7 +81,7 @@ pub(crate) fn show_label(lang: config::Language) -> &'static str {
     }
 }
 
-/// Tray "Quit" label for the active display language (ADR-0016).
+/// Tray "Quit" label for the active display language.
 pub(crate) fn quit_label(lang: config::Language) -> &'static str {
     match lang {
         config::Language::En => "Quit",
@@ -90,11 +90,11 @@ pub(crate) fn quit_label(lang: config::Language) -> &'static str {
     }
 }
 
-/// (Re)build the tray menu, localized to `lang` (ADR-0016). Called at setup
+/// (Re)build the tray menu, localized to `lang`. Called at setup
 /// and from `set_language` on a language change so both items track the
 /// language without an app restart.
 ///
-/// Two items (ADR-0012): "Show" surfaces the dashboard; "Quit" exits.
+/// Two items: "Show" surfaces the dashboard; "Quit" exits.
 /// The Show entry is the ONLY reliable restore path on Linux, where
 /// libappindicator does not emit tray click events — so the left-click handler
 /// (`on_tray_icon_event` below) is dead code there and the menu Show item is
@@ -110,7 +110,7 @@ pub(crate) fn tray_menu_for(
 }
 
 /// Surface the main window from the tray: show + unminimize + focus, then tell
-/// the frontend to morph out of lightweight mode (ADR-0015) so the FULL
+/// the frontend to morph out of lightweight mode so the FULL
 /// dashboard is shown. Shared by the tray menu "Show" entry and the tray
 /// left-click handler. `unminimize` covers the GNOME/Mutter case where a hidden
 /// window needs both show and unminimize to reliably take focus.
@@ -124,7 +124,7 @@ fn show_main_window(app: &tauri::AppHandle) {
 }
 
 /// Export TypeScript bindings to the frontend `src/types/generated/`
-/// (ADR-0008). Dev builds only; skipped for release binaries. Path is resolved
+///. Dev builds only; skipped for release binaries. Path is resolved
 /// from `CARGO_MANIFEST_DIR` so it is correct regardless of the runtime CWD.
 fn export_bindings(builder: &Builder<tauri::Wry>) {
     #[cfg(debug_assertions)]
@@ -161,7 +161,7 @@ pub fn run() {
         return;
     }
 
-    // Boot (ADR-0004 / 0002 / 0006): load config (bootstraps dir + deviceId),
+    // Boot: load config (bootstraps dir + deviceId),
     // open the Local Store (seeds pricing), register this device.
     let config = ConfigStore::load().expect("vaultone: failed to load local config");
     let store = Store::open(&config.paths().db).expect("vaultone: failed to open Local Store");
@@ -177,7 +177,7 @@ pub fn run() {
             &cfg.device_id,
             &cfg.display_name,
         );
-        // Best-effort zero-cost top-up on boot (ADR-0007): newly-seeded pricing
+        // Best-effort zero-cost top-up on boot: newly-seeded pricing
         // may price rows that were imported while the model was missing.
         let book = store.load_pricing_book().unwrap_or_else(|e| {
             eprintln!("[vaultone] boot rebill skipped: {e}");
@@ -195,16 +195,16 @@ pub fn run() {
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        // Auto-update (ADR-0017): check / download / install signed packages
+        // Auto-update: check / download / install signed packages
         // from GitHub Releases. Endpoint + pubkey live in tauri.conf.json
         // (plugins.updater); capability grants updater:default.
         .plugin(tauri_plugin_updater::Builder::new().build())
-        // Relaunch the app after an auto-update install (ADR-0017).
+        // Relaunch the app after an auto-update install.
         .plugin(tauri_plugin_process::init())
         .manage(state)
         .invoke_handler(builder.invoke_handler())
         .on_window_event(|window, event| {
-            // Close→tray routing (ADR-0012). Only the main window exists.
+            // Close→tray routing. Only the main window exists.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let state = window.app_handle().state::<AppState>();
                 match state.config.get().close_behavior {
@@ -225,7 +225,7 @@ pub fn run() {
         .setup(|app| {
             let state: tauri::State<AppState> = app.state::<AppState>();
 
-            // Startup pull (ADR-0005, Synced only): covers the device-switch case.
+            // Startup pull (, Synced only): covers the device-switch case.
             let store = state.store.clone();
             let config = state.config.clone();
             std::thread::spawn(move || {
@@ -240,9 +240,9 @@ pub fn run() {
                 }
             });
 
-            // System tray (ADR-0012): left-click shows the window; the menu is
+            // System tray: left-click shows the window; the menu is
             // Quit only — collect / sync live inside the window, not the tray.
-            // The Quit label follows the persisted display language (ADR-0016);
+            // The Quit label follows the persisted display language;
             // `set_language` rebuilds this menu on a live language change.
             let menu = tray_menu_for(app.handle(), state.config.get().language)?;
             let _tray = TrayIconBuilder::with_id("main")
@@ -270,12 +270,12 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // Background scheduler (ADR-0014): collect and push run on
+            // Background scheduler: collect and push run on
             // INDEPENDENT intervals. Collect is short (seconds, local-only) so
             // the dashboard stays fresh; push is longer (minutes, Synced only)
             // so the Git history grows at a controlled rate. This decouples the
-            // single chained timer from ADR-0012 — exactly the evolution
-            // ADR-0012's Consequences flagged as the right next step.
+            // single chained timer from — exactly the evolution
+            //'s Consequences flagged as the right next step.
             //
             // One thread, two deadlines, slept-to (not polled): on each wake we
             // re-read both intervals, so Settings changes apply without restart.
@@ -287,7 +287,7 @@ pub fn run() {
             //
             // First collect fires immediately (dashboard is fresh on open). The
             // first push is delayed by one push_interval so it cannot race the
-            // startup pull's git-worktree ops (ADR-0012 rationale, preserved).
+            // startup pull's git-worktree ops (rationale, preserved).
             let store = state.store.clone();
             let config = state.config.clone();
             let app_handle = app.handle().clone();
@@ -332,7 +332,7 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(|app_handle, event| {
-        // Exit flush (ADR-0005): push any unpushed Artifact before quitting,
+        // Exit flush: push any unpushed Artifact before quitting,
         // covering the close-A / open-B device switch. Synced only, best-effort.
         if let tauri::RunEvent::ExitRequested { .. } = event {
             let state: tauri::State<AppState> = app_handle.state::<AppState>();

@@ -1,12 +1,12 @@
-//! GitHub-repo sync over libgit2 (ADR-0005).
+//! GitHub-repo sync over libgit2.
 //!
-//! Synced-mode only (ADR-0006): the high-level entry (`ensure_repo`) refuses to
+//! Synced-mode only: the high-level entry (`ensure_repo`) refuses to
 //! run unless a repo URL *and* a PAT are configured, so Standalone mode never
 //! touches a remote. Auth is an in-process git2 credential callback — the
-//! fine-grained PAT (ADR-0004) lives only in Rust memory; it never appears in
+//! fine-grained PAT lives only in Rust memory; it never appears in
 //! the URL, a credential helper, or an env var.
 //!
-//! Primitives provided here (ADR-0005 timing — startup pull / flush push /
+//! Primitives provided here (timing — startup pull / flush push /
 //! periodic push / manual — is wired in S2b):
 //! - `open_or_clone` — open the local repo, or clone on first use
 //! - `pull`           — fetch `origin` + fast-forward (refuses to auto-merge)
@@ -25,7 +25,7 @@ use crate::config::ConfigData;
 use crate::error::{AppError, AppResult};
 
 // ---------------------------------------------------------------------------
-// Credential callback (ADR-0005: in-process PAT)
+// Credential callback (in-process PAT)
 // ---------------------------------------------------------------------------
 
 /// Build a GitHub PAT credential. GitHub accepts the fine-grained PAT as the
@@ -39,7 +39,7 @@ fn pat_credential(username_from_url: Option<&str>, token: &str) -> Result<Cred, 
 /// Remote callbacks that inject the PAT, with a one-shot guard so a rejected
 /// token does not loop forever (libgit2 may re-invoke the callback on auth
 /// failure). git2 0.19's `RemoteCallbacks` holds a `'static` callback, so the
-/// token is cloned into the closure (cheap; sync is low-frequency, ADR-0005).
+/// token is cloned into the closure (cheap; sync is low-frequency).
 // The borrowed `&str` is unrelated to the returned `RemoteCallbacks` (its
 // callback is 'static), so rustc's mismatched_lifetime_syntaxes misfires here.
 #[allow(mismatched_lifetime_syntaxes)]
@@ -310,7 +310,7 @@ fn open_or_clone_impl(
     if local.join(".git").exists() {
         return Ok(Repository::open(local)?);
     }
-    // Standalone collects write JSONL artifacts into `local/data/` (ADR-0004).
+    // Standalone collects write JSONL artifacts into `local/data/`.
     // When the user later switches to Synced, `local` is non-empty but has no
     // `.git`, and libgit2's `clone` (which demands an empty target) fails with
     // "exists and is not an empty directory". Detect that and bootstrap the repo
@@ -327,7 +327,7 @@ fn open_or_clone_impl(
     builder.fetch_options(fo);
     let repo = builder.clone(repo_url, local)?;
     // Force LF so JSONL artifacts round-trip byte-identically across Windows /
-    // POSIX (ADR-0004 deterministic interop). libgit2's platform-default text
+    // POSIX (deterministic interop). libgit2's platform-default text
     // conversion would otherwise flip \n ↔ \r\n and corrupt line-oriented JSONL.
     repo.config()?.set_str("core.autocrlf", "false")?;
     // The initial checkout ran under libgit2's platform-default autocrlf; under
@@ -497,7 +497,7 @@ fn pick_origin_branch(repo: &Repository) -> AppResult<Option<(String, Oid)>> {
 /// Fetch `origin` and fast-forward the current branch to its tip. Refuses to
 /// auto-merge divergent histories — usage data should never diverge (each
 /// device writes its own `data/<deviceId>/` subtree), and config conflict
-/// handling is deferred to S3 (ADR-0005).
+/// handling is deferred to S3.
 pub fn pull(repo: &Repository, token: &str) -> AppResult<()> {
     // Unborn HEAD (fresh init, first commit still pending): no local branch to
     // fast-forward, so there is nothing to pull — the first commit+push creates
@@ -605,7 +605,7 @@ pub fn push(repo: &Repository, token: &str) -> AppResult<()> {
 }
 
 // ---------------------------------------------------------------------------
-// High-level entry (Standalone guard, ADR-0006)
+// High-level entry (Standalone guard)
 // ---------------------------------------------------------------------------
 
 /// Return the configured repo URL + PAT, or an error in Standalone mode.
@@ -631,7 +631,7 @@ pub fn ensure_repo(cfg: &ConfigData, local: &Path) -> AppResult<Repository> {
 }
 
 // ---------------------------------------------------------------------------
-// Remote probe (ADR-0005): validate a repo URL + PAT WITHOUT touching the real
+// Remote probe: validate a repo URL + PAT WITHOUT touching the real
 // sync repo. A pure read (ls-remote) powering the Settings「测试连接」button so the
 // user can verify credentials before binding — and re-check after.
 // ---------------------------------------------------------------------------
@@ -764,7 +764,7 @@ fn friendly_git_error(e: &git2::Error) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// High-level sync flow (ADR-0005): pull → import JSONL → commit → push
+// High-level sync flow: pull → import JSONL → commit → push
 // ---------------------------------------------------------------------------
 
 /// Outcome of one sync round, surfaced to the UI.
@@ -776,7 +776,7 @@ pub struct SyncReport {
     pub pushed: bool,
 }
 
-/// Deterministic commit identity for this device (ADR-0002 device-scoped).
+/// Deterministic commit identity for this device (device-scoped).
 fn author_email(cfg: &ConfigData) -> String {
     format!("{}@devices.vaultone", cfg.device_id)
 }
@@ -787,7 +787,7 @@ fn has_changes(repo: &Repository) -> AppResult<bool> {
 }
 
 /// Pull the remote and import every device's JSONL Artifact into the Local
-/// Store (uuid-deduped via the ledger, ADR-0005). Synced-only.
+/// Store (uuid-deduped via the ledger). Synced-only.
 pub fn pull_and_import(
     store: &crate::db::Store,
     paths: &crate::config::Paths,
@@ -806,7 +806,7 @@ pub fn pull_and_import(
     Ok(inserted.len() as u32)
 }
 
-/// Commit any local Artifact/config change and push it (ADR-0005 push). A clean
+/// Commit any local Artifact/config change and push it (push). A clean
 /// worktree is a no-op (returns `false`). Synced-only.
 pub fn commit_and_push(paths: &crate::config::Paths, cfg: &ConfigData) -> AppResult<bool> {
     let (url, token) = require_synced(cfg)?;
@@ -820,7 +820,7 @@ pub fn commit_and_push(paths: &crate::config::Paths, cfg: &ConfigData) -> AppRes
     Ok(true)
 }
 
-/// Manual「立即同步」(ADR-0005): pull + import, then commit + push.
+/// Manual「立即同步」: pull + import, then commit + push.
 pub fn sync_now(
     store: &crate::db::Store,
     paths: &crate::config::Paths,
@@ -832,14 +832,14 @@ pub fn sync_now(
 }
 
 // ===========================================================================
-// Cloud-config sync (ADR-0005 / #6 — Synced-only, S3)
+// Cloud-config sync (/ #6 — Synced-only, S3)
 // ===========================================================================
 //
 // Usage artifacts live under `data/<deviceId>/` and so can never collide across
 // devices — the usage path (above) fast-forwards freely. Cloud config
 // (`config/{app,user,pricing}.json`) is *shared*: two devices can each edit the
 // same file, and a blind pull would clobber one side. So config sync is manual
-// (ADR-0005) and detects conflicts before touching the worktree:
+// and detects conflicts before touching the worktree:
 //
 //   1. fetch origin
 //   2. conflict = (files dirty in the worktree) ∩ (files the remote changed
@@ -849,9 +849,9 @@ pub fn sync_now(
 //      commit → push, then reload pricing into the Store if it changed.
 //
 // Conflict resolution rewrites the worktree so the SAFE pull can advance, then
-// restores local-wins files afterward (ADR-0005 "pick a version").
+// restores local-wins files afterward ("pick a version").
 
-/// A cloud-config file under `repo/config/` (ADR-0007). Crosses the boundary as
+/// A cloud-config file under `repo/config/`. Crosses the boundary as
 /// a snake_case tag (`"pricing"` …) so the UI can switch on it without path math.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
@@ -883,7 +883,7 @@ fn parse_config_file(path: &str) -> Option<ConfigFile> {
     }
 }
 
-/// User's per-file verdict for a conflict (ADR-0005 "pick a version").
+/// User's per-file verdict for a conflict ("pick a version").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigSyncChoice {
@@ -1017,7 +1017,7 @@ fn pricing_fingerprint(paths: &crate::config::Paths) -> String {
     std::fs::read_to_string(paths.pricing_json()).unwrap_or_default()
 }
 
-/// Reload the (just-pulled) cloud `pricing.json` into the Store (ADR-0007).
+/// Reload the (just-pulled) cloud `pricing.json` into the Store.
 fn reload_pricing_into_store(
     store: &crate::db::Store,
     paths: &crate::config::Paths,
@@ -1101,7 +1101,7 @@ fn pull_preserving_dirty(repo: &Repository, token: &str) -> AppResult<()> {
     Ok(())
 }
 
-/// Manual cloud-config sync (ADR-0005, Synced-only). Detects conflicts between
+/// Manual cloud-config sync (, Synced-only). Detects conflicts between
 /// local worktree edits and remote changes on shared config files; if clean,
 /// pulls (SAFE), commits + pushes any local change, and reloads pricing.
 pub fn sync_config(
@@ -1184,7 +1184,7 @@ pub fn sync_config(
 }
 
 /// Apply the user's per-file conflict verdicts, then pull + commit + push
-/// (ADR-0005 "pick a version", Synced-only). `choices` should cover every file
+/// ("pick a version", Synced-only). `choices` should cover every file
 /// reported as conflicting by `sync_config`.
 pub fn resolve_config_conflict(
     store: &crate::db::Store,
@@ -1375,7 +1375,7 @@ mod tests {
         ));
     }
 
-    // ---- remote probe tests (ADR-0005: 「测试连接」) ----
+    // ---- remote probe tests (「测试连接」) ----
     //
     // The auth / 404 / DNS / timeout branches need a live network, so they are
     // covered only by the manual checklist below — NOT by these unit tests:
@@ -1390,7 +1390,7 @@ mod tests {
         assert!(!r.ok && r.message.contains("仓库地址"));
         let r = verify_remote("https://github.com/x/y", "");
         assert!(!r.ok && r.message.contains("访问令牌"));
-        // SSH-style URLs are rejected (HTTPS-only, ADR-0005).
+        // SSH-style URLs are rejected (HTTPS-only).
         let r = verify_remote("git@github.com:x/y.git", "tok");
         assert!(!r.ok && r.message.contains("https"));
     }
@@ -1666,7 +1666,7 @@ mod tests {
         );
     }
 
-    // ---- S2b high-level flow tests (ADR-0005) ----
+    // ---- S2b high-level flow tests ----
 
     fn raw_usage(uuid: &str) -> crate::providers::RawUsage {
         use crate::model::{ServerToolUse, TokenCounts};
@@ -1769,7 +1769,7 @@ mod tests {
         assert_eq!(stats.request_count, 1);
     }
 
-    // ---- S3 cloud-config sync tests (ADR-0005 / #6) ----
+    // ---- S3 cloud-config sync tests (/ #6) ----
 
     fn write_pricing(paths: &crate::config::Paths, body: &str) {
         let p = paths.pricing_json();

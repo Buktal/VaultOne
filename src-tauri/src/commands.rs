@@ -1,8 +1,8 @@
-//! Tauri command layer (ADR-0008 typed contract — the query boundary).
+//! Tauri command layer (typed contract — the query boundary).
 //!
 //! Every command is `#[specta::specta]` with typed args/return/error; tauri-specta
 //! generates the matching typed JS function. `tauri::State` args are injected by
-//! the runtime and excluded from the JS signature. JS never sees SQL (ADR-0008).
+//! the runtime and excluded from the JS signature. JS never sees SQL.
 //!
 //! The state holds `Arc`s so blocking work can be moved onto `spawn_blocking`
 //! without borrowing the request-scoped `State` (which is not `'static`).
@@ -23,7 +23,7 @@ use crate::pricing;
 use crate::providers::{ClaudeCodeProvider, Provider};
 use crate::sync::{ConfigConflictResolution, ConfigSyncOutcome, SyncReport, VerifyReport};
 
-/// App-wide managed state: the Local Store + local config (ADR-0004), wrapped
+/// App-wide managed state: the Local Store + local config, wrapped
 /// in `Arc` so blocking tasks can take owned clones.
 pub struct AppState {
     pub store: Arc<Store>,
@@ -45,7 +45,7 @@ pub struct AppInfo {
 
 // ---------------- App info / config ----------------
 
-/// App status: device, mode (Standalone/Synced), paths, version (ADR-0006).
+/// App status: device, mode (Standalone/Synced), paths, version.
 #[tauri::command]
 #[specta::specta]
 pub fn get_app_info(state: State<'_, AppState>) -> AppResult<AppInfo> {
@@ -63,7 +63,7 @@ pub fn get_app_info(state: State<'_, AppState>) -> AppResult<AppInfo> {
     })
 }
 
-/// Configure the sync repo + PAT, upgrading Standalone → Synced (ADR-0006).
+/// Configure the sync repo + PAT, upgrading Standalone → Synced.
 #[tauri::command]
 #[specta::specta]
 pub fn set_sync_repo(
@@ -86,7 +86,7 @@ pub fn set_sync_repo(
     Ok(cfg.mode())
 }
 
-/// Unbind the repo, downgrading to Standalone (ADR-0006). Clears the local
+/// Unbind the repo, downgrading to Standalone. Clears the local
 /// `.git` so a re-bind (often to a different repo) starts clean instead of
 /// reusing the old remote/branch. Usage rows (DB) and `data/` are retained.
 #[tauri::command]
@@ -101,7 +101,7 @@ pub fn clear_sync_repo(state: State<'_, AppState>) -> AppResult<RunMode> {
     Ok(cfg.mode())
 }
 
-/// Probe a sync repo + PAT for reachability (ADR-0005「测试连接」). Pass explicit
+/// Probe a sync repo + PAT for reachability (「测试连接」). Pass explicit
 /// values to validate BEFORE binding, or `None`/`None` to re-check the already-
 /// configured repo. Pure ls-remote — never mutates config or the real sync repo.
 /// Always returns `Ok(report)`; the probe's own outcome (auth ok / bad token /
@@ -136,7 +136,7 @@ pub async fn verify_sync_repo(
     .map_err(|e| AppError::Internal(format!("verify task failed: {e}")))?
 }
 
-/// Rename *this* device (display name only — not a uniqueness key, ADR-0002).
+/// Rename *this* device (display name only — not a uniqueness key).
 #[tauri::command]
 #[specta::specta]
 pub fn set_display_name(state: State<'_, AppState>, display_name: String) -> AppResult<()> {
@@ -157,7 +157,7 @@ pub fn set_display_name(state: State<'_, AppState>, display_name: String) -> App
     Ok(())
 }
 
-/// Set a friendly name for *another* device seen in the repo (ADR-0002 map).
+/// Set a friendly name for *another* device seen in the repo (map).
 #[tauri::command]
 #[specta::specta]
 pub fn set_device_display_name(
@@ -177,12 +177,12 @@ pub fn set_device_display_name(
 
 // ---------------- Collect / ingest ----------------
 
-/// Parse Source → Local Store (+ JSONL Artifact). No network (ADR-0012).
+/// Parse Source → Local Store (+ JSONL Artifact). No network.
 /// Shared by the manual `collect_now` command and the background scheduler so
 /// both follow the exact same ingest path.
 pub fn collect_into(store: &Store, config: &ConfigStore) -> AppResult<IngestReport> {
     let provider = ClaudeCodeProvider::new()?;
-    // Incremental collect (ADR-0013): load per-file cursors, parse only new
+    // Incremental collect: load per-file cursors, parse only new
     // lines, then persist the advanced cursors AFTER ingest — so a failed
     // ingest leaves the cursor untouched (next collect re-parses the same
     // lines; the ledger dedups). First run / empty table ⇒ full scan.
@@ -198,7 +198,7 @@ pub fn collect_into(store: &Store, config: &ConfigStore) -> AppResult<IngestRepo
 }
 
 /// Best-effort push of the current Artifact to the sync repo (Synced only,
-/// ADR-0012). Errors are logged, never propagated — push is a backstop.
+///). Errors are logged, never propagated — push is a backstop.
 pub fn push_if_synced(config: &ConfigStore) {
     let cfg = config.get();
     if !cfg.is_synced() {
@@ -231,7 +231,7 @@ pub async fn collect_now(
     .map_err(|e| AppError::Internal(format!("collect task failed: {e}")))?
 }
 
-/// Manual「立即同步」(ADR-0005, Synced only): pull + import + commit + push.
+/// Manual「立即同步」(, Synced only): pull + import + commit + push.
 /// Standalone ⇒ no-op returning a zero report.
 #[tauri::command]
 #[specta::specta]
@@ -250,7 +250,7 @@ pub async fn sync_now(state: State<'_, AppState>) -> AppResult<SyncReport> {
     .map_err(|e| AppError::Internal(format!("sync task failed: {e}")))?
 }
 
-/// Manual cloud-config sync (ADR-0005 / #6, Synced only): detect conflicts on
+/// Manual cloud-config sync (/ #6, Synced only): detect conflicts on
 /// shared `config/{app,user,pricing}.json`; if clean, pull + commit + push and
 /// reload pricing. Returns a conflict report for the UI to resolve when local
 /// and remote both edited the same file. Standalone ⇒ error (UI hides the entry).
@@ -274,7 +274,7 @@ pub async fn sync_config(state: State<'_, AppState>) -> AppResult<ConfigSyncOutc
 }
 
 /// Apply the user's per-file conflict verdicts, then pull + commit + push
-/// (ADR-0005, Synced only). `choices` should cover every file `sync_config`
+/// (, Synced only). `choices` should cover every file `sync_config`
 /// reported as conflicting.
 #[tauri::command]
 #[specta::specta]
@@ -298,7 +298,7 @@ pub async fn resolve_config_conflict(
     .map_err(|e| AppError::Internal(format!("config resolve task failed: {e}")))?
 }
 
-/// Rebill zero-cost rows whose model now has a price (ADR-0007 top-up).
+/// Rebill zero-cost rows whose model now has a price (top-up).
 #[tauri::command]
 #[specta::specta]
 pub fn rebill_zero_cost(state: State<'_, AppState>) -> AppResult<u32> {
@@ -385,7 +385,7 @@ pub fn list_devices(state: State<'_, AppState>) -> AppResult<Vec<DeviceInfo>> {
     Ok(devices)
 }
 
-// ---------------- Pricing (ADR-0007) ----------------
+// ---------------- Pricing ----------------
 
 #[tauri::command]
 #[specta::specta]
@@ -412,7 +412,7 @@ pub fn delete_pricing_entry(state: State<'_, AppState>, model_key: String) -> Ap
     state.store.delete_pricing(&model_key)
 }
 
-/// Re-load pricing from the cloud `pricing.json` into the DB (ADR-0007).
+/// Re-load pricing from the cloud `pricing.json` into the DB.
 /// In Standalone this is the local `repo/config/pricing.json`; no push.
 #[tauri::command]
 #[specta::specta]
@@ -432,7 +432,7 @@ pub fn reload_pricing_from_file(state: State<'_, AppState>) -> AppResult<u32> {
     Ok(entries.len() as u32)
 }
 
-/// Persist current DB pricing to the cloud `pricing.json` (ADR-0007).
+/// Persist current DB pricing to the cloud `pricing.json`.
 #[tauri::command]
 #[specta::specta]
 pub fn save_pricing_to_file(state: State<'_, AppState>) -> AppResult<()> {
@@ -446,7 +446,7 @@ pub fn save_pricing_to_file(state: State<'_, AppState>) -> AppResult<()> {
     Ok(())
 }
 
-/// Fetch LiteLLM upstream pricing and merge into the DB (ADR-0007 seed).
+/// Fetch LiteLLM upstream pricing and merge into the DB (seed).
 /// Network → async + offloaded. Best-effort: returns count merged (0 offline).
 #[tauri::command]
 #[specta::specta]
@@ -465,9 +465,9 @@ pub async fn fetch_litellm_pricing(state: State<'_, AppState>) -> AppResult<u32>
     .map_err(|e| AppError::Pricing(format!("litellm task failed: {e}")))?
 }
 
-// ---------------- Preferences (ADR-0012: tray + background) ----------------
+// ---------------- Preferences (tray + background) ----------------
 
-/// User-tunable preferences surfaced in the Settings「通用」card (ADR-0012).
+/// User-tunable preferences surfaced in the Settings「通用」card.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct Preferences {
     pub close_behavior: CloseBehavior,
@@ -496,7 +496,7 @@ pub fn get_preferences(state: State<'_, AppState>) -> AppResult<Preferences> {
     Ok(to_preferences(&state.config.get()))
 }
 
-/// Persist the window-close behavior (ADR-0012).
+/// Persist the window-close behavior.
 #[tauri::command]
 #[specta::specta]
 pub fn set_close_behavior(
@@ -508,7 +508,7 @@ pub fn set_close_behavior(
 }
 
 /// Persist the background-collect interval (seconds, clamped to [10, 3600];
-/// ADR-0014). Pure-local cadence — does not touch the network.
+///). Pure-local cadence — does not touch the network.
 #[tauri::command]
 #[specta::specta]
 pub fn set_collect_interval(state: State<'_, AppState>, seconds: u32) -> AppResult<Preferences> {
@@ -518,7 +518,7 @@ pub fn set_collect_interval(state: State<'_, AppState>, seconds: u32) -> AppResu
 }
 
 /// Persist the push-to-sync interval (seconds, clamped to [60, 7200]; Synced
-/// only; ADR-0014). Decoupled from collect so the Git history grows at this
+/// only;). Decoupled from collect so the Git history grows at this
 /// rate, not the (shorter) collect rate.
 #[tauri::command]
 #[specta::specta]
@@ -528,7 +528,7 @@ pub fn set_push_interval(state: State<'_, AppState>, seconds: u32) -> AppResult<
     Ok(to_preferences(&cfg))
 }
 
-/// Persist the display language (ADR-0016) and rebuild the tray menu so the
+/// Persist the display language and rebuild the tray menu so the
 /// "Quit" item follows the new language immediately. The tray item is the only
 /// user-facing Rust string; all other UI text is frontend i18n driven by this
 /// same preference.
@@ -548,7 +548,7 @@ pub fn set_language(
     Ok(to_preferences(&cfg))
 }
 
-/// Persist the lightweight half-icon expand trigger (ADR-0015). Pure frontend
+/// Persist the lightweight half-icon expand trigger. Pure frontend
 /// behavior; Rust doesn't read it back, but it rides ConfigData for unity.
 #[tauri::command]
 #[specta::specta]
@@ -571,7 +571,7 @@ pub fn set_skin(state: State<'_, AppState>, skin: Skin) -> AppResult<Preferences
     Ok(to_preferences(&cfg))
 }
 
-/// Resolve the one-time close dialog (ADR-0012). `remember` pins `choice` as
+/// Resolve the one-time close dialog. `remember` pins `choice` as
 /// the persisted behavior; the chosen action is then executed immediately.
 /// `Minimize`/`Ask` hide the window (scheduler keeps running); `Quit` exits.
 #[tauri::command]

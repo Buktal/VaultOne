@@ -1,11 +1,11 @@
-//! SQLite Local Store (ADR-0004 / 0005 / 0007 / 0008).
+//! SQLite Local Store.
 //!
 //! Owns the schema, the dedup ledger, daily rollups cache, pricing table and
 //! device registry. Exposes typed read methods (stats / trend / logs / models)
 //! and write methods (ingest, pricing CRUD, rebill) — the JS layer never sees
-//! SQL (ADR-0008: typed command boundary).
+//! SQL (typed command boundary).
 //!
-//! Cost columns are `rust_decimal::Decimal` stored as TEXT (ADR-0004); sums over
+//! Cost columns are `rust_decimal::Decimal` stored as TEXT; sums over
 //! them read back as REAL for display (f64 is display-only — JS never recomputes
 //! cost).
 
@@ -21,7 +21,7 @@ use crate::model::{
 use crate::pricing::{ModelPricing, PricingBook};
 use crate::providers::{FileCursor, ScanProgress, ScanProgressDelta};
 
-/// Schema DDL (ADR-0002 / 0004 / 0007). `IF NOT EXISTS` ⇒ idempotent migration.
+/// Schema DDL. `IF NOT EXISTS` ⇒ idempotent migration.
 pub const SCHEMA: &str = include_str!("db_schema.sql");
 
 /// Thread-safe wrapper over a single SQLite connection.
@@ -43,7 +43,7 @@ impl Store {
         Ok(store)
     }
 
-    /// Seed the pricing table from the built-in book if it is empty (ADR-0007).
+    /// Seed the pricing table from the built-in book if it is empty.
     fn ensure_pricing_seed(&self) -> AppResult<()> {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM model_pricing", [], |r| r.get(0))?;
@@ -150,7 +150,7 @@ impl Store {
 
     // ---------------- Ingest ----------------
 
-    /// Insert a batch of records, deduping by uuid via the ledger (ADR-0005).
+    /// Insert a batch of records, deduping by uuid via the ledger.
     /// Returns the newly imported rows (in order). Recomputes affected rollups.
     pub fn ingest(&self, records: &[UsageRecord]) -> AppResult<Vec<UsageRecord>> {
         if records.is_empty() {
@@ -253,7 +253,7 @@ impl Store {
         Ok(inserted)
     }
 
-    /// Load all incremental scan cursors (ADR-0013). Empty on a fresh/cleared
+    /// Load all incremental scan cursors. Empty on a fresh/cleared
     /// DB ⇒ the next collect is a full scan (safe fallback — the ledger dedups).
     pub fn load_scan_progress(&self) -> AppResult<ScanProgress> {
         let conn = self.conn.lock().expect("db mutex poisoned");
@@ -276,7 +276,7 @@ impl Store {
         Ok(map)
     }
 
-    /// Bulk UPSERT incremental scan cursors (ADR-0013). Called AFTER a
+    /// Bulk UPSERT incremental scan cursors. Called AFTER a
     /// successful ingest so the cursor never advances past un-ingested rows.
     pub fn save_scan_progress(&self, delta: &ScanProgressDelta) -> AppResult<()> {
         if delta.is_empty() {
@@ -296,7 +296,7 @@ impl Store {
         Ok(())
     }
 
-    /// Rebill zero-cost rows whose model now has a price (ADR-0007: freeze +
+    /// Rebill zero-cost rows whose model now has a price (freeze +
     /// top-up zero-cost only). Returns the number of rows rebilled.
     pub fn rebill_zero_cost(&self, book: &PricingBook) -> AppResult<usize> {
         let mut conn = self.conn.lock().expect("db mutex poisoned");
@@ -366,7 +366,7 @@ impl Store {
 
     // ---------------- Devices ----------------
 
-    /// Register/refresh a device in the registry (ADR-0002).
+    /// Register/refresh a device in the registry.
     pub fn upsert_device(
         &self,
         device_id: &str,
@@ -514,7 +514,7 @@ impl Store {
     }
 
     /// Trend points over a filter (BLUEPRINT 使用趋势). `bucket` picks the
-    /// granularity: `Day` groups on the UTC `day` column (ADR-0004,
+    /// granularity: `Day` groups on the UTC `day` column (,
     /// cross-device deterministic); `Hour` groups on local-time hour for the
     /// single-day zoom where per-day resolution collapses to one bar. The
     /// TrendPoint `day` field carries the resolved bucket key.
@@ -527,7 +527,7 @@ impl Store {
         let (clause, params_vec) = build_where(filter);
         // Hour buckets read the clock in the device's local zone so a UTC+8
         // "today" trends in hours the user recognizes; the day bucket stays on
-        // the stored UTC `day` for cross-device determinism (ADR-0004).
+        // the stored UTC `day` for cross-device determinism.
         let grouping: &str = match bucket {
             TrendBucket::Day => "day",
             TrendBucket::Hour => "strftime('%Y-%m-%dT%H', timestamp, 'localtime')",
@@ -579,7 +579,7 @@ impl Store {
             .map_err(AppError::from)
     }
 
-    /// Request-log rows (BLUEPRINT 请求日志; ADR-0003 columns).
+    /// Request-log rows (BLUEPRINT 请求日志; columns).
     pub fn query_logs(&self, q: &LogsQuery) -> AppResult<Vec<UsageLogRow>> {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let (clause, params_vec) = build_where(&q.filter);
@@ -1138,7 +1138,7 @@ mod tests {
         assert!((stats.avg_turn_duration_ms - 150_000.0).abs() < 1e-9);
     }
 
-    // ---- incremental scan cursors (ADR-0013) ----
+    // ---- incremental scan cursors ----
 
     #[test]
     fn scan_progress_save_load_roundtrip() {
