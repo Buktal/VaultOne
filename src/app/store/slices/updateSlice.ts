@@ -1,4 +1,4 @@
-// Update state machine (ADR-0017). The footer ⓘ indicator reads `status` to
+// Update state machine. The footer ⓘ indicator reads `status` to
 // decide visibility; UpdateCard renders one body per status. A check() failure
 // is silent (back to idle — the indicator never shows); only a download/install
 // failure surfaces the Manual Fallback card.

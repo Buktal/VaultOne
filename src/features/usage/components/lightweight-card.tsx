@@ -1,4 +1,4 @@
-// Lightweight glance card (ADR-0018): the same main window morphs into a small,
+// Lightweight glance card: the same main window morphs into a small,
 // always-on-top, right-edge-docked "today" snapshot. Two sub-shapes (both
 // docked flush-right via the Rust `dock_window_right` command — one atomic
 // SetWindowPos of the OUTER rect; see lightweight-geometry.ts):
@@ -8,8 +8,8 @@
 //     number's click): a press that moves >4px starts a window drag, a press
 //     that doesn't is a click → expand. →大 stops propagation so it stays a
 //     pure click.
-//   - expanded: a 1:1 reuse of the dashboard's right-column anchor (TokenHero,
-//     ADR-0011) fed today's filter — the "中窗口" mirrors the 右中 card exactly,
+//   - expanded: a 1:1 reuse of the dashboard's right-column anchor (TokenHero)
+//     fed today's filter — the "中窗口" mirrors the 右中 card exactly,
 //     only adding a drag/title bar with expand + shrink controls.
 //
 // Three "windows", each reachable from the others: full ⇄ expanded ⇄ tucked,
@@ -101,7 +101,7 @@ export function LightweightCard() {
   const disarm = () => {
     dragArmed.current = false
   }
-  // Hover-to-expand is opt-in (ADR-0018): the default is click. When hover is
+  // Hover-to-expand is opt-in: the default is click. When hover is
   // chosen, the tucked number area also expands on mouse-enter.
   const { data: prefs } = usePreferencesQuery()
   const hoverExpand = prefs?.lightweight_expand === "hover"

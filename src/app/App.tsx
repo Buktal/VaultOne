@@ -1,6 +1,6 @@
-// Root app: providers + shell + view switch (ADR-0011). View routing via a
+// Root app: providers + shell + view switch. View routing via a
 // Record keyed by ViewId — adding a view is one entry, no ternary chain.
-// Lightweight mode (ADR-0015): when mode === "lightweight" the same window
+// Lightweight mode: when mode === "lightweight" the same window
 // drops the Shell and renders the glance card instead; the OS window itself
 // (size / always-on-top) is morphed by useWindowMode, mounted here in App.
 
@@ -24,17 +24,17 @@ const VIEWS: Record<ViewId, ComponentType> = {
 }
 
 export default function App() {
-  // Morph the OS window to match the mode (ADR-0015). Mounted in App so it is
+  // Morph the OS window to match the mode. Mounted in App so it is
   // always under the Redux store, regardless of which skin renders below.
   useWindowMode()
-  // Startup update probe (ADR-0017): fires once app-wide via the hook's guard,
+  // Startup update probe: fires once app-wide via the hook's guard,
   // regardless of full vs lightweight skin — lightweight just doesn't render
   // the indicator.
   useUpdateCheck()
   const mode = useAppSelector((s) => s.view.mode)
   const view = useAppSelector((s) => s.view.view)
 
-  // Same window, two skins (ADR-0015): lightweight drops the Shell entirely.
+  // Same window, two skins: lightweight drops the Shell entirely.
   if (mode === "lightweight") return <LightweightCard />
 
   const Active = VIEWS[view]

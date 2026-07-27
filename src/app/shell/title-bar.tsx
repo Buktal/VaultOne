@@ -1,7 +1,7 @@
 // Custom title bar (decorations:false). A full-width drag region sits on
 // top; window controls live on the right only — the left is deliberately
 // empty so it never duplicates the sidebar logo. Close reuses the existing
-// CloseRequested routing (ADR-0012): appWindow.close() triggers the same
+// CloseRequested routing: appWindow.close() triggers the same
 // minimize-to-tray / quit / ask flow as a system close.
 
 import { getCurrentWindow } from "@tauri-apps/api/window"
@@ -40,7 +40,7 @@ export function TitleBar() {
       data-tauri-drag-region
       className="flex h-8 shrink-0 select-none items-center justify-end gap-1 pe-2"
     >
-      {/* Lightweight entries (ADR-0018): →中 (the 5-field glance card) and →小
+      {/* Lightweight entries: →中 (the 5-field glance card) and →小
           (the docked mini-bar). Both enter lightweight; the phase picks which
           sub-shape lands first. Decoupled from Close — entering is not closing. */}
       <CtrlButton

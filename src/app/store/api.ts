@@ -241,7 +241,7 @@ export const vaultApi = createApi({
       invalidatesTags: ["Devices", "Usage", "Logs", "Models"],
     }),
 
-    // ---- preferences (ADR-0012: tray + background) ----
+    // ---- preferences ----
     // Go through the generated `commands.*` so tauri-specta's `typedError`
     // wrapping matches what `run` expects. Raw `invoke` skips that wrapping.
     preferences: b.query<Preferences, void>({
@@ -326,7 +326,7 @@ export const {
 export type VaultApi = typeof vaultApi
 
 /**
- * Resolve the one-time close dialog (ADR-0012). Not an RTK Query endpoint —
+ * Resolve the one-time close dialog. Not an RTK Query endpoint —
  * it is a one-shot action (hide window / exit app). `remember` pins `choice`.
  */
 export async function confirmClose(

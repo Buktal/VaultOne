@@ -1,4 +1,4 @@
-// DeviceScopeControl — 设备维度筛选 (ADR-0011 device_scope)。
+// DeviceScopeControl — 设备维度筛选。
 //
 // 单一下拉选择器，lightweight expanded 小窗用。读 listDevices() (经共享
 // useDeviceOptions) + 读写 filter.device_scope。设备再多也只是下拉里的一

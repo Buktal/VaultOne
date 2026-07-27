@@ -11,7 +11,7 @@ import { useTranslation } from "react-i18next"
 import { useFreshness } from "@/hooks/use-freshness"
 
 // relativeTime gives us `fromNow()`; the locale it renders in is set globally by
-// `setDayjsLocale` (driven from the display-language preference, ADR-0016) — not
+// `setDayjsLocale` (driven from the display-language preference) — not
 // hard-coded here.
 dayjs.extend(relativeTime)
 

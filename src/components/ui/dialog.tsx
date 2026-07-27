@@ -1,4 +1,4 @@
-// Dialog primitive (base-ui + render composition per ADR-0007). Composes Portal
+// Dialog primitive (base-ui + render composition). Composes Portal
 // + Backdrop + Popup into a single <DialogContent>. base-ui's Dialog has no
 // Positioner (unlike Select/Tooltip), so the popup is centered with
 // fixed + translate. onOpenChange keeps base-ui's (open, details) signature;

@@ -1,4 +1,4 @@
-// Data freshness hook (ADR-0007 hooks/ first落地). Tracks the last time the
+// Data freshness hook. Tracks the last time the
 // Local Store was written (collect / sync) so the cockpit can show "采集于 3 分钟前".
 //
 // Source of truth for "data was written" is the Tauri `usage_changed` event

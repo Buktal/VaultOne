@@ -1,4 +1,4 @@
-// Cloud-config conflict resolver (ADR-0005 / #6): when sync_config detects that
+// Cloud-config conflict resolver (#6): when sync_config detects that
 // local and remote both edited a shared config file, the UI shows this panel so
 // the user picks which version wins per file (never last-write-wins).
 

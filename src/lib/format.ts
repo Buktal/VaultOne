@@ -1,7 +1,7 @@
-// Display formatting helpers (ADR-0007 shared lib). The JS layer never computes
-// cost (ADR-0009) — these are display-only shapers for numbers, currency, dates.
+// Display formatting helpers. The JS layer never computes
+// cost — these are display-only shapers for numbers, currency, dates.
 //
-// Locale policy (ADR-0016): token counts are ALWAYS K/M/B (international-neutral,
+// Locale policy: token counts are ALWAYS K/M/B (international-neutral,
 // language-independent); cost is always USD `$`; dates are always the compact
 // numeric `MM/DD HH:mm`. Only the relative-time words (`fromNow`) follow the
 // language — driven by the dayjs locale set in `@/i18n/languages`. So nothing

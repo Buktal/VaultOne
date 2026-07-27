@@ -1,15 +1,15 @@
-// General preferences (ADR-0012 / 0014 / 0016 / 0017): display language,
+// General preferences: display language,
 // background-collect interval, push-to-sync interval, window-close behavior,
 // and version/update. Content-only — rendered inside SettingsView's 通用
 // section card, so no Card wrapper of its own.
 //
-// Collect and push are DECOUPLED (ADR-0014): collect is a short seconds-level
+// Collect and push are DECOUPLED: collect is a short seconds-level
 // local cadence, push is a longer minutes-level Git cadence (Synced only).
-// Language (ADR-0016) is the one preference Rust must know at cold start (to
+// Language is the one preference Rust must know at cold start (to
 // build the localized tray), so it lives here alongside the others. All
 // discrete presets (Select, instant-effect) — no save button.
 //
-// Row-based layout (ADR-0011 v2): each preference is a SettingRow — label +
+// Row-based layout: each preference is a SettingRow — label +
 // hint on the left, control on the right, hairline between rows — so the card
 // stays scannable as more options land. Trigger labels are derived from the
 // value via a SelectValue render function; without it Base UI shows the raw
@@ -65,16 +65,16 @@ const CLOSE_OPTIONS: ReadonlyArray<[CloseBehavior, string]> = [
   ["quit", "common.quit"],
 ]
 
-/** Lightweight half-icon expand trigger (ADR-0015): click (default) or hover. */
+/** Lightweight half-icon expand trigger: click (default) or hover. */
 const EXPAND_OPTIONS: ReadonlyArray<[LightweightExpand, string]> = [
   ["click", "settings.general.lightweightExpandClick"],
   ["hover", "settings.general.lightweightExpandHover"],
 ]
 
-/** Collect presets (ADR-0014): seconds-level, local-only. */
+/** Collect presets: seconds-level, local-only. */
 const COLLECT_OPTIONS: ReadonlyArray<number> = [10, 30, 60]
 
-/** Push presets (ADR-0014): minutes-level, Git, Synced only. */
+/** Push presets: minutes-level, Git, Synced only. */
 const PUSH_OPTIONS: ReadonlyArray<number> = [300, 600, 900, 1800, 3600]
 
 /**
@@ -343,7 +343,7 @@ export function GeneralCard() {
   )
 }
 
-/** Row-based preference row (ADR-0011 v2): label + hint on the left, control
+/** Row-based preference row: label + hint on the left, control
  *  on the right, hairline between rows. Content-only — rendered inside the
  *  通用 Section's CardContent, whose vertical padding comes from the Card
  *  (--card-spacing), so rows only carry their own inter-row spacing. */

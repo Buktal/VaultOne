@@ -1,4 +1,4 @@
-// Supported display languages (ADR-0016). The single source of truth that the
+// Supported display languages. The single source of truth that the
 // Rust `Language` enum, this registry, the `src/locales/*.json` files, and the
 // dayjs locale map must all stay in agreement with. To add a language: extend
 // Rust `Language`, drop a JSON in `src/locales/`, register it here, and add the

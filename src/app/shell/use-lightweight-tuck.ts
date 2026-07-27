@@ -1,4 +1,4 @@
-// Lightweight glance card state (ADR-0018). The lightweight window has two
+// Lightweight glance card state. The lightweight window has two
 // sub-shapes, both docked flush-right via the Rust `dock_window_right` command
 // (one atomic SetWindowPos of the OUTER rect — see lightweight-geometry.ts):
 //   - expanded: the 5-field today card (CARD_WIDTH × measured content height)
@@ -14,7 +14,7 @@
 //
 // Transitions are EXPLICIT ONLY — no auto-tuck. The earlier "drag to edge" /
 // "mouse off card" auto-tucks were the flicker / DPI / loop bug source
-// (ADR-0018): the auto-detect → SetWindowPos → onMoved loop.
+// — the auto-detect → SetWindowPos → onMoved loop.
 //
 // Dragging either shape moves it; the Y is remembered so the next dock keeps
 // it. The dock runs only on phase change / height resize — the card does NOT
@@ -121,7 +121,7 @@ export function useLightweightTuck() {
   /** Grow (or shrink) the tucked mini-bar to reveal the hover device drawer.
    *  `extra` is the drawer height in logical px (0 closes). No-op unless tucked.
    *  Driven by explicit mouse enter/leave — never mouse position — so it does
-   *  not retrigger the SetWindowPos ⇄ onMoved loop (ADR-0018). */
+   *  not retrigger the SetWindowPos ⇄ onMoved loop. */
   const setTuckDrawer = useCallback(
     (extra: number) => {
       const next = Math.max(0, Math.round(extra))

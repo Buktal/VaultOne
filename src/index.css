@@ -53,7 +53,7 @@
 }
 
 /*
- * Visual language & theming — ADR-0011 / 0013, extended for multi-skin.
+ * Visual language & theming — extended for multi-skin.
  *
  * TWO TIERS — what changes when:
  *   A. Mode-scoped (light/dark): fonts + neutral surfaces.
@@ -76,7 +76,7 @@
  *     light  --primary = --brand-strong   --primary-foreground = --btn-fg
  *     dark   --primary = --brand          --primary-foreground = --btn-fg-dark
  * So a skin swap recolors every primary button / progress bar / synced dot in
- * BOTH modes — the light/dark control gap (ADR-0013 v3) is closed by driving
+ * BOTH modes — the light/dark control gap is closed by driving
  * --primary from the brand, not from a hardcoded neutral. Neutral's own brand
  * values are greyscale, which is how it stays black/white while still following
  * the same rule. --btn-fg / --btn-fg-dark are written out per skin so the pair
@@ -329,7 +329,7 @@
  * stop_reason semantic chip — recolors with the theme via the --sr-* aliases
  * (which default to the chart palette in :root). Tinted via color-mix
  * (Chromium 111+ / Safari 16.2+, both within Tauri's webview floor). Used by
- * the request-log table (ADR-0011).
+ * the request-log table.
  */
 .sr-chip {
   display: inline-flex;
@@ -359,7 +359,7 @@
 }
 
 /*
- * Lightweight glance card reveal (ADR-0015). The window has no native resize
+ * Lightweight glance card reveal. The window has no native resize
  * animation (Tauri/WebView2), so the size jump is hidden behind a content-layer
  * clip-path wipe: content reveals from the TOP-RIGHT corner toward the
  * BOTTOM-LEFT — the card grows left/down from its right-edge dock, so this is

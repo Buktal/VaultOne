@@ -1,4 +1,4 @@
-// Update indicator + popover card + Settings row (ADR-0017).
+// Update indicator + popover card + Settings row.
 //
 // UpdateIndicator: the footer ⓘ. Shows only when a probe surfaced a new
 //   version (available / downloading / ready / failed); clicking opens the
@@ -52,7 +52,7 @@ export function UpdateIndicator() {
   const { applyUpdate, restartNow, openReleases } = useUpdateCheck()
   const [open, setOpen] = useState(false)
 
-  // Idle / checking / up-to-date never surface the indicator (ADR-0017) —
+  // Idle / checking / up-to-date never surface the indicator —
   // only a real new-version state shows the ⓘ.
   if (status === "idle" || status === "checking" || status === "up-to-date") {
     return null
@@ -177,7 +177,7 @@ function UpdateCardBody({
     )
   }
 
-  // failed — Manual Fallback (ADR-0017).
+  // failed — Manual Fallback.
   return (
     <>
       <div className="text-destructive flex items-center gap-1.5 font-medium">

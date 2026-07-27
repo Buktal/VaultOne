@@ -1,4 +1,4 @@
-// App providers (ADR-0007): Redux <Provider> + next-themes <ThemeProvider> +
+// App providers: Redux <Provider> + next-themes <ThemeProvider> +
 // base-ui <TooltipProvider> + Toaster. next-themes toggles `.dark` on <html>;
 // attribute="class" matches the `@custom-variant dark` in index.css. The Toaster
 // relies on useTheme() so the ThemeProvider must wrap it, else toasts never
@@ -29,7 +29,7 @@ function SkinEffect() {
 }
 
 export function AppProviders({ children }: { children: ReactNode }) {
-  // ADR-0005 event-driven refresh: Rust emits `usage_changed` after writing the
+  // Event-driven refresh: Rust emits `usage_changed` after writing the
   // Local Store (collect / sync); invalidate the derived caches so views
   // re-query. `Devices` is included so a peer first seen via usage rows (or a
   // renamed device) refreshes the picker without waiting for a manual sync.
@@ -45,7 +45,7 @@ export function AppProviders({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  // ADR-0015: tray left-click means "show the full dashboard" (ADR-0012). If the
+  // Tray left-click means "show the full dashboard". If the
   // window is in lightweight mode, morph back — setMode("full") is a no-op when
   // already full, and useWindowMode restores the window geometry on the change.
   useEffect(() => {

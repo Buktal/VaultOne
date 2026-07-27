@@ -1,4 +1,4 @@
-// 请求日志视图 (ADR-0011 / ADR-0013). 顶部 ControlBar (时间/模型/刷新/采集)
+// 请求日志视图. 顶部 ControlBar (时间/模型/刷新/采集)
 // + 全宽日志表 (固定时间倒序)。查询条件与看板共享同一 filterSlice。
 
 import { useMemo } from "react"

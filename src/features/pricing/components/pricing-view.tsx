@@ -1,4 +1,4 @@
-// Pricing view (BLUEPRINT 成本定价; ADR-0006): model pricing table with add /
+// Pricing view (BLUEPRINT 成本定价): model pricing table with add /
 // edit / delete (via Dialog), LiteLLM upstream fetch, pricing.json read/write,
 // plus client-side search and single-column sort. Editing/删除 use icon buttons
 // with tooltips; the toolbar is an icon group to keep density high.

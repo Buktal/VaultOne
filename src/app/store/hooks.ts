@@ -1,5 +1,3 @@
-// Typed Redux hooks (ADR-0007).
-
 import type { TypedUseSelectorHook } from "react-redux"
 import { useDispatch, useSelector } from "react-redux"
 

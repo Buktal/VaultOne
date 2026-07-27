@@ -1,4 +1,4 @@
-// Unified loading / error / empty state for RTK Query results (ADR-0007).
+// Unified loading / error / empty state for RTK Query results.
 // Empty renders <EmptyState> so callers can attach an icon, description and
 // next-step action instead of a bare string.
 

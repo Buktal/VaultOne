@@ -1,4 +1,4 @@
-// Update Check orchestration (ADR-0017). Exposes the side-effect surface:
+// Update Check orchestration. Exposes the side-effect surface:
 //   - checkNow:    probe GitHub Releases for a newer version (startup silent
 //                  probe is 24h-throttled via a localStorage stamp; Settings
 //                  calls this manually). A check() failure is silent (back to
@@ -64,7 +64,7 @@ export function useUpdateCheck() {
         dispatch(setUpToDate())
       }
     } catch {
-      // Silent failure (ADR-0017): no network, 404 latest.json, endpoint down.
+      // Silent failure: no network, 404 latest.json, endpoint down.
       pendingUpdate = null
       dispatch(setIdle())
     } finally {
@@ -92,7 +92,7 @@ export function useUpdateCheck() {
       dispatch(setReady())
       await update.close()
     } catch (e) {
-      // Manual Fallback (ADR-0017): surface the "go to GitHub" card.
+      // Manual Fallback: surface the "go to GitHub" card.
       dispatch(setFailed({ error: describeError(e) }))
     }
   }, [dispatch])
@@ -105,7 +105,7 @@ export function useUpdateCheck() {
     await openUrl(RELEASES_URL)
   }, [])
 
-  // Startup silent probe, 24h-throttled (ADR-0017). Guarded app-wide so the
+  // Startup silent probe, 24h-throttled. Guarded app-wide so the
   // many useUpdateCheck mounts (App + footer + Settings) fire it exactly once.
   useEffect(() => {
     if (startupProbed) return

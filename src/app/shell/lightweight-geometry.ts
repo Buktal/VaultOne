@@ -1,4 +1,4 @@
-// Shared geometry for the lightweight glance window (ADR-0018).
+// Shared geometry for the lightweight glance window.
 //
 // The actual docking is done in Rust (dock_window_right): one atomic
 // SetWindowPos of the OUTER rect (shadow included), with the monitor picked by
@@ -25,7 +25,7 @@ import { commands } from "@/types/generated/bindings"
 export const CARD_WIDTH = 320
 /** Initial height guess before the content is measured; replaced on mount. */
 export const CARD_HEIGHT_DEFAULT = 360
-/** Tucked mini-bar — [grip][number][→大] (ADR-0018). The three cells are spaced
+/** Tucked mini-bar — [grip][number][→大]. The three cells are spaced
  * with px-1 + gap-1 and the hover tiles inset (my-0.5), so the width fits the
  * longest compact token (up to ~"123.4M") plus grip + →大 + that spacing.
  * Short height = thin strip. */

@@ -1,4 +1,4 @@
-// Shared usage-filter state (ADR-0011). Lifted out of DashboardView so the
+// Shared usage-filter state. Lifted out of DashboardView so the
 // toolbar's query conditions are shared across dashboard ⇆ logs. Empty
 // string = "no constraint"; toFilter() converts to the nullable UsageFilter
 // the API expects.

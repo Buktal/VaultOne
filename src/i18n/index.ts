@@ -1,4 +1,4 @@
-// i18next init (ADR-0016). Resources are inlined (single-bundle Tauri app — no
+// i18next init. Resources are inlined (single-bundle Tauri app — no
 // lazy loading needed). The language is NOT auto-detected from navigator or
 // localStorage; it is driven by the persisted Rust preference via
 // `i18n.changeLanguage` in <LanguageSync> (providers.tsx). Defaults to English,

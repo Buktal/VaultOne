@@ -1,8 +1,8 @@
-// KPI 概览 — token-first Tier 2 (ADR-0011). 右栏列表式卡片：平均时长 /
+// KPI 概览 — token-first Tier 2. 右栏列表式卡片：平均时长 /
 // 请求·轮 / 总请求数 / 总成本。Token 总量在 TokenHero 锚点；缓存命中率在
-// 锚点 footer。成本从旧 CostHero 下调至此 (ADR-0010 superseded)。
+// 锚点 footer。
 //
-// 右栏窄布局 (ADR-0013): 单列 label+value 行，替代旧 2×4 卡片网格。
+// 右栏窄布局: 单列 label+value 行，替代旧 2×4 卡片网格。
 
 import { useTranslation } from "react-i18next"
 import { useStatsQuery, ZERO_STATS } from "@/app/store/api"

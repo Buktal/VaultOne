@@ -1,4 +1,4 @@
-// Close-requested dialog (ADR-0012). When the main window's close is
+// Close-requested dialog. When the main window's close is
 // intercepted with close_behavior = Ask, Rust emits `close-requested`; this
 // component shows the minimize/quit dialog and resolves it via `confirmClose`.
 

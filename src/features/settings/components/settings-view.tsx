@@ -1,9 +1,9 @@
-// Settings view (ADR-0011): device identity, run mode, repo binding
+// Settings view: device identity, run mode, repo binding
 // (Standalone ↔ Synced), manual collect / rebill.
 //
 // Redesigned into 6 sectioned cards (通用 / 本机 / 同步 / 云配置 / 设备 / 维护),
 // each fronted by an eyebrow label. Cloud-config sync was split out of the
-// sync card into its own section (ADR-0005 / #6) so it no longer shares a
+// sync card into its own section (#6) so it no longer shares a
 // border-t with the usage-sync controls. Behaviour unchanged — layout only.
 
 import {
@@ -103,7 +103,7 @@ export function SettingsView() {
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-6">
-      {/* 通用 — tray / ADR-0012 / language / update ADR-0016-0017 */}
+      {/* 通用 — tray / language / update */}
       <Section
         eyebrow={t("settings.section.general")}
         description={t("settings.sectionDesc.general")}
@@ -288,7 +288,7 @@ export function SettingsView() {
         )}
       </Section>
 
-      {/* 云配置 — split out of the sync card (ADR-0005 / #6) */}
+      {/* 云配置 — split out of the sync card (#6) */}
       <Section
         eyebrow={t("settings.section.cloudConfig")}
         description={t("settings.sectionDesc.cloudConfig")}
@@ -400,7 +400,7 @@ function Row({
 }
 
 /** 测试连接结果 banner（诊断型操作，结果需持久可见，故用 inline 而非 toast）。
- *  `result.message` 来自 Rust 后端，按 ADR-0016 保持英文不本地化。 */
+ *  `result.message` 来自 Rust 后端，保持英文不本地化。 */
 function VerifyBanner({
   verifying,
   result,

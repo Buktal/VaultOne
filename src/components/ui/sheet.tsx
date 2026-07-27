@@ -1,4 +1,4 @@
-// Sheet primitive (base-ui Drawer + render composition per ADR-0007). base-ui
+// Sheet primitive (base-ui Drawer + render composition). base-ui
 // exposes Drawer as a mobile-style bottom sheet; we repurpose it as a desktop
 // side panel via the `side` prop on <SheetContent>. Manual Portal + Backdrop +
 // Popup composition (we don't use Drawer.Content so we fully control layout).

@@ -1,7 +1,6 @@
-// Dashboard view — token-first LLM Usage Cockpit (ADR-0011, supersedes
-// ADR-0009/0010 cost-first).
+// Dashboard view — token-first LLM Usage Cockpit.
 //
-// 三栏布局 (ADR-0013): 左导航(Shell) · 中图表(趋势 / 模型分布 / 近期请求) ·
+// 三栏布局: 左导航(Shell) · 中图表(趋势 / 模型分布 / 近期请求) ·
 // 右数值(控制卡 / 总消耗锚点 / 概览)。筛选与采集从旧顶部 UsageToolbar +
 // CommandBar 收敛进右栏 ControlCard；时间/模型/设备维度都进控制卡，中栏
 // 顶部不再空旷。device_scope 也在此统一控制 (单设备时控制卡自动隐藏)。

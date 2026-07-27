@@ -1,8 +1,8 @@
-// Token hero — token-first Tier 1 anchor (ADR-0011). 总消耗 headline + delta
+// Token hero — token-first Tier 1 anchor. 总消耗 headline + delta
 // (vs 窗首) + daily avg + 四桶堆叠 composition bar + legend (label/value 行) +
 // 缓存命中率 footer.
 //
-// 右栏窄布局 (ADR-0013): 纵向，无 sparkline — 中栏已有大趋势图，此处只留当前
+// 右栏窄布局: 纵向，无 sparkline — 中栏已有大趋势图，此处只留当前
 // 窗口的数值快照。颜色全部走 CSS 变量，换主题不改本件。
 
 import { useTranslation } from "react-i18next"

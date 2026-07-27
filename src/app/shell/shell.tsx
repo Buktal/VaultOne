@@ -1,7 +1,7 @@
-// App shell (ADR-0011 / ADR-0013): collapsible sidebar nav + scrollable content.
+// App shell: collapsible sidebar nav + scrollable content.
 // View switching via viewSlice (no react-router); the active view is rendered
 // by App. 顶栏 (CommandBar) 已移除 — 筛选/采集收敛进各 view 的 ControlCard /
-// ControlBar，主题切换与折叠 toggle 统一收进左下角 footer 控制台 (ADR-0013 v3，
+// ControlBar，主题切换与折叠 toggle 统一收进左下角 footer 控制台 (
 // 统一入口)，顶部仅留 logo 作品牌锚点，视图标题由导航
 // 选中态表达。Sidebar collapse persists to localStorage. 左栏视觉对齐原型 v10
 // (递减三色 mark / 绿字灰底选中 / 设备 pill)，main 区去掉 max-w 让看板与日志

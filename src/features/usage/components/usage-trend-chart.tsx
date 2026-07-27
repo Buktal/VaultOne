@@ -1,10 +1,8 @@
-// Usage trend chart (ADR-0011, amended): multi-line chart of the four token
+// Usage trend chart: multi-line chart of the four token
 // buckets (input / output / cache creation / cache read). Each bucket is its
 // own INDEPENDENT line with a solid dot per data point — no stacked area, no
 // fill under the line. The point is to compare each bucket's trend over time,
-// not to read cumulative composition (the stacked-area story the original
-// ADR-0011 told; daily totals now come from the tooltip's total row + the KPI
-// strip).
+// not to read cumulative composition.
 //
 // Built on the shadcn Chart primitive (ChartContainer / ChartConfig /
 // ChartLegend — see src/components/ui/chart.tsx). Colors flow straight from
@@ -51,7 +49,7 @@ type Bucket = {
 }
 
 // Order matches the KPI strip / token hero: input → output → cache creation →
-// cache read. Each line keeps its hue family across skins (ADR-0013).
+// cache read. Each line keeps its hue family across skins.
 const BUCKETS: Bucket[] = [
   {
     key: "input_tokens",

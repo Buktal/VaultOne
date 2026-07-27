@@ -1,4 +1,4 @@
-// ControlCard / ControlBar (ADR-0011 / ADR-0013) — shared meta-controls for the
+// ControlCard / ControlBar — shared meta-controls for the
 // data views. Time range · model · refresh, plus the 采集 primary action with a
 // data-freshness hint. Solid flat (no glass / no glow) — Pixso dark.
 //
@@ -223,7 +223,7 @@ function ModelChip({ align = "start" }: { align?: "start" | "end" }) {
   )
 }
 
-/** 纵向卡片版 — 看板右栏。标题行带主题切换 + 折叠 (ADR-0013 v2)。 */
+/** 纵向卡片版 — 看板右栏。标题行带主题切换 + 折叠。 */
 export function ControlCard() {
   const { t } = useTranslation()
   const { onCollect, collecting } = useCollectAction()

@@ -1,4 +1,4 @@
-// Redux store assembly (ADR-0007). Single consolidated RTK Query API
+// Redux store assembly. Single consolidated RTK Query API
 // (`vaultApi`) holds every Tauri command endpoint — no feature-injection
 // side-effect imports.
 

@@ -1,5 +1,5 @@
 // Drives i18next + the dayjs locale from the persisted display-language
-// preference (ADR-0016). Mounted once inside <AppProviders>. Before the
+// preference. Mounted once inside <AppProviders>. Before the
 // preferences query resolves, both stay at their English default (the app
 // default), so there is no flash of the wrong language on cold start. A live
 // change in Settings re-runs this effect and re-renders every `useTranslation`

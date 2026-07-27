@@ -1,4 +1,4 @@
-// Tooltip primitive (base-ui + render composition per ADR-0007). Mount one
+// Tooltip primitive (base-ui + render composition). Mount one
 // <TooltipProvider> near the app root — a bare <Tooltip> won't position without
 // it. Use <TooltipTrigger render={<Button …/>}> to wrap a custom control.
 
