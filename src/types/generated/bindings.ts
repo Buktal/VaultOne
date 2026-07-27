@@ -20,6 +20,14 @@ export const commands = {
 	/**  Set a friendly name for *another* device seen in the repo (map). */
 	setDeviceDisplayName: (deviceId: string, displayName: string) => typedError<null, AppError>(__TAURI_INVOKE("set_device_display_name", { deviceId, displayName })),
 	/**
+	 *  Locally forget a peer device: drop its registry row + all its local usage
+	 *  data (records, rollups, turn durations, ledger) + its local artifact dir,
+	 *  and clear any local alias. Nothing is pushed to Git — a peer still in the
+	 *  repo reappears on the next sync (registry + data artifacts are re-imported).
+	 *  This device (`is_self`) is not forgettable; rename it instead.
+	 */
+	forgetDevice: (deviceId: string) => typedError<null, AppError>(__TAURI_INVOKE("forget_device", { deviceId })),
+	/**
 	 *  Manual「立即采集」: collect now, best-effort push if Synced, refresh the UI.
 	 *  Heavy disk/git work → offloaded to a thread.
 	 */

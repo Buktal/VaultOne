@@ -39,6 +39,8 @@ import {
 } from "@/components/ui/select"
 import { useFreshness } from "@/hooks/use-freshness"
 import { cn } from "@/lib/utils"
+import { useDeviceOptions } from "../use-device-options"
+import { DeviceChip } from "./device-chip"
 
 const ALL = "__all__"
 
@@ -111,7 +113,7 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   )
 }
 
-function DateRangeChip() {
+function DateRangeChip({ align = "end" }: { align?: "start" | "end" }) {
   const { t } = useTranslation()
   const dispatch = useAppDispatch()
   const filter = useAppSelector((s) => s.filter.filter)
@@ -138,7 +140,7 @@ function DateRangeChip() {
           </button>
         }
       />
-      <PopoverContent align="end" className="w-72">
+      <PopoverContent align={align} className="w-72">
         <div className="bg-muted/60 inline-flex items-center gap-0.5 rounded-md p-0.5">
           {PRESETS.map((p) => (
             <button
@@ -189,7 +191,7 @@ function DateRangeChip() {
   )
 }
 
-function ModelChip() {
+function ModelChip({ align = "start" }: { align?: "start" | "end" }) {
   const { t } = useTranslation()
   const dispatch = useAppDispatch()
   const filter = useAppSelector((s) => s.filter.filter)
@@ -202,14 +204,14 @@ function ModelChip() {
       }
     >
       <SelectTrigger
-        className="border-border bg-card hover:bg-muted/60 h-8 w-28 rounded-md"
+        className="border-border bg-card hover:bg-muted/60 h-8 w-36 rounded-md"
         aria-label={t("usage.control.model")}
       >
-        <SelectValue>
+        <SelectValue className="min-w-0">
           {(value: string) => (value === ALL ? t("usage.control.all") : value)}
         </SelectValue>
       </SelectTrigger>
-      <SelectContent>
+      <SelectContent alignItemWithTrigger={false} align={align}>
         <SelectItem value={ALL}>{t("usage.control.all")}</SelectItem>
         {models.map((m) => (
           <SelectItem key={m} value={m}>
@@ -225,6 +227,7 @@ function ModelChip() {
 export function ControlCard() {
   const { t } = useTranslation()
   const { onCollect, collecting } = useCollectAction()
+  const multiDevice = useDeviceOptions().length > 0
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     if (typeof localStorage === "undefined") return false
     return localStorage.getItem(CONTROL_COLLAPSE_KEY) === "1"
@@ -262,8 +265,13 @@ export function ControlCard() {
             <DateRangeChip />
           </Row>
           <Row label={t("usage.control.model")}>
-            <ModelChip />
+            <ModelChip align="end" />
           </Row>
+          {multiDevice ? (
+            <Row label={t("usage.deviceScope.label")}>
+              <DeviceChip align="end" />
+            </Row>
+          ) : null}
           <div className="bg-border my-2 h-px" />
           <Button className="w-full" disabled={collecting} onClick={onCollect}>
             <Activity />
@@ -286,8 +294,9 @@ export function ControlBar() {
   const { onCollect, collecting } = useCollectAction()
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <DateRangeChip />
+      <DateRangeChip align="start" />
       <ModelChip />
+      <DeviceChip align="start" />
       <div className="flex-1" />
       <DataFreshness />
       <Button size="sm" disabled={collecting} onClick={onCollect}>

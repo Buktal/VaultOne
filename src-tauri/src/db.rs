@@ -435,6 +435,49 @@ impl Store {
             .map_err(AppError::from)
     }
 
+    /// All device_ids currently in the registry. Reconcile uses this to find
+    /// rows whose backing git presence has vanished.
+    pub fn list_device_ids(&self) -> AppResult<Vec<String>> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn.prepare("SELECT device_id FROM device")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(AppError::from)
+    }
+
+    /// Locally forget a device: drop its registry row and ALL its usage data
+    /// (usage_records, daily_rollups, turn_durations, ledger). No Git effect —
+    /// a peer still in the repo reappears on the next pull, which re-imports
+    /// its registry entry and data artifacts. The caller MUST guard `is_self`
+    /// (this device is never forgettable). Returns the total rows removed.
+    pub fn forget_device_local(&self, device_id: &str) -> AppResult<usize> {
+        let mut conn = self.conn.lock().expect("db mutex poisoned");
+        let tx = conn.transaction()?;
+        let mut deleted = 0;
+        deleted += tx.execute(
+            "DELETE FROM usage_records WHERE device_id = ?1",
+            params![device_id],
+        )?;
+        deleted += tx.execute(
+            "DELETE FROM daily_rollups WHERE device_id = ?1",
+            params![device_id],
+        )?;
+        deleted += tx.execute(
+            "DELETE FROM turn_durations WHERE device_id = ?1",
+            params![device_id],
+        )?;
+        deleted += tx.execute(
+            "DELETE FROM ledger WHERE device_id = ?1",
+            params![device_id],
+        )?;
+        deleted += tx.execute(
+            "DELETE FROM device WHERE device_id = ?1",
+            params![device_id],
+        )?;
+        tx.commit()?;
+        Ok(deleted)
+    }
+
     // ---------------- Reads (dashboard) ----------------
 
     /// Aggregate stats over a filter (BLUEPRINT 使用统计).
@@ -1072,6 +1115,47 @@ mod tests {
             .unwrap();
         let z = logs.iter().find(|r| r.uuid == "z").unwrap();
         assert!(z.total_cost_usd > 0.0);
+    }
+
+    #[test]
+    fn forget_device_local_purges_all_its_data() {
+        let s = mem();
+        s.upsert_device("aaaaaaaaaaaa", "Device-aaaa", false)
+            .unwrap();
+        s.upsert_device("bbbbbbbbbbbb", "Device-bbbb", false)
+            .unwrap();
+        s.ingest(&[
+            rec("u1", "2026-07-13", "glm-5.2", "aaaaaaaaaaaa", 100, 50, 0.0),
+            rec("u2", "2026-07-13", "glm-5.2", "bbbbbbbbbbbb", 200, 80, 0.0),
+        ])
+        .unwrap();
+
+        let deleted = s.forget_device_local("aaaaaaaaaaaa").unwrap();
+        // device row + usage_records + ledger (+ rollup recompute leaves none).
+        assert!(deleted >= 3, "expected several rows deleted, got {deleted}");
+
+        let ids = s.list_device_ids().unwrap();
+        assert!(
+            !ids.iter().any(|i| i == "aaaaaaaaaaaa"),
+            "forgotten device must be gone from the registry"
+        );
+        assert!(ids.iter().any(|i| i == "bbbbbbbbbbbb"));
+
+        // Forgotten device's usage is gone; the survivor keeps its row.
+        let gone = s
+            .count_logs(&UsageFilter {
+                device_scope: Some("aaaaaaaaaaaa".into()),
+                ..UsageFilter::default()
+            })
+            .unwrap();
+        assert_eq!(gone, 0);
+        let kept = s
+            .count_logs(&UsageFilter {
+                device_scope: Some("bbbbbbbbbbbb".into()),
+                ..UsageFilter::default()
+            })
+            .unwrap();
+        assert_eq!(kept, 1);
     }
 
     #[test]

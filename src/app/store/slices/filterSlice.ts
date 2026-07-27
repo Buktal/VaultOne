@@ -2,11 +2,17 @@
 // toolbar's query conditions are shared across dashboard ⇆ logs. Empty
 // string = "no constraint"; toFilter() converts to the nullable UsageFilter
 // the API expects.
+//
+// The filter persists to localStorage so the chosen time range / model / device
+// scope survive a restart (same pattern as the sidebar/control collapse flags).
+// It is pure frontend query state — never sent to the Rust layer.
 
 import { createSlice, type PayloadAction } from "@reduxjs/toolkit"
 import dayjs from "dayjs"
 
 import type { UsageFilter } from "@/types/generated/bindings"
+
+export const FILTER_STORAGE_KEY = "vaultone:usage-filter"
 
 export interface FilterState {
   from_day: string
@@ -22,6 +28,26 @@ export const EMPTY_FILTER: FilterState = {
   model: "",
   source: "",
   device_scope: "",
+}
+
+/** Read the persisted filter at startup; any shape mismatch ⇒ empty filter. */
+function loadPersistedFilter(): FilterState {
+  if (typeof localStorage === "undefined") return EMPTY_FILTER
+  const raw = localStorage.getItem(FILTER_STORAGE_KEY)
+  if (!raw) return EMPTY_FILTER
+  try {
+    const p = JSON.parse(raw) as Partial<FilterState>
+    const str = (v: unknown) => (typeof v === "string" ? v : "")
+    return {
+      from_day: str(p.from_day),
+      to_day: str(p.to_day),
+      model: str(p.model),
+      source: str(p.source),
+      device_scope: str(p.device_scope),
+    }
+  } catch {
+    return EMPTY_FILTER
+  }
 }
 
 /** Convert internal FilterState (empty = no constraint) → API UsageFilter (null). */
@@ -43,7 +69,7 @@ interface FilterSliceState {
   filter: FilterState
 }
 
-const initialState: FilterSliceState = { filter: EMPTY_FILTER }
+const initialState: FilterSliceState = { filter: loadPersistedFilter() }
 
 const filterSlice = createSlice({
   name: "filter",

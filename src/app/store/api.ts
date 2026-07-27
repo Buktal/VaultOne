@@ -234,6 +234,12 @@ export const vaultApi = createApi({
       }),
       invalidatesTags: ["Devices"],
     }),
+    forgetDevice: b.mutation<null, string>({
+      queryFn: async (deviceId) => ({
+        data: await run(commands.forgetDevice(deviceId)),
+      }),
+      invalidatesTags: ["Devices", "Usage", "Logs", "Models"],
+    }),
 
     // ---- preferences (ADR-0012: tray + background) ----
     // Go through the generated `commands.*` so tauri-specta's `typedError`
@@ -307,6 +313,7 @@ export const {
   useClearSyncRepoMutation,
   useSetDisplayNameMutation,
   useSetDeviceDisplayNameMutation,
+  useForgetDeviceMutation,
   usePreferencesQuery,
   useSetCloseBehaviorMutation,
   useSetCollectIntervalMutation,

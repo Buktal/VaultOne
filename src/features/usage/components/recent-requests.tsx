@@ -15,6 +15,7 @@ import { formatCost, formatInt, formatTime } from "@/lib/format"
 import { cn } from "@/lib/utils"
 
 import type { UsageLogRow } from "@/types/generated/bindings"
+import { useDeviceLabelMap } from "../use-device-options"
 
 const LIMIT = 5
 
@@ -32,6 +33,7 @@ export function RecentRequests() {
   const dispatch = useAppDispatch()
   const filter = useAppSelector((s) => s.filter.filter)
   const usageFilter = useMemo(() => toFilter(filter), [filter])
+  const deviceLabel = useDeviceLabelMap()
   const { data: rows = [] } = useLogsQuery({
     filter: usageFilter,
     limit: LIMIT,
@@ -91,6 +93,15 @@ export function RecentRequests() {
                   <span>{formatCost(r.total_cost_usd)}</span>
                   <span aria-hidden="true">·</span>
                   <span>{formatTime(r.timestamp)}</span>
+                  {deviceLabel.size > 0 ? (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <span className="max-w-24 truncate">
+                        {deviceLabel.get(r.device_id) ??
+                          r.device_id.slice(0, 8)}
+                      </span>
+                    </>
+                  ) : null}
                 </span>
               </div>
             </div>

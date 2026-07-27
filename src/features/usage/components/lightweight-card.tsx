@@ -352,13 +352,13 @@ export function LightweightCard() {
           =48, 完全对齐, 且与下方使用趋势的 gap-4 节奏一致 (不再紧贴顶部栏显偏
           上)。px-3 右缩进与 TokenHero 卡右边平齐。单设备不渲染。 */}
       {devices.length > 1 ? (
-        <div className="flex justify-end px-3 mt-4">
+        <div className="flex justify-end px-3 mt-3">
           <DeviceScopeControl compact />
         </div>
       ) : null}
-      {/* TokenHero 卡保留 p-3 呼吸 (圆角不贴窗口边); 其 pt-3 同时给出与上方
-          selector 行的间距。 */}
-      <div className="p-3">
+      {/* TokenHero 卡保留横向 p-3 呼吸 (圆角不贴窗口边); 上内边距收到 pt-2,
+          收紧与上方 selector 行的间距。 */}
+      <div className="px-3 pb-3 pt-2">
         <TokenHero filter={todayFilter} />
       </div>
     </div>

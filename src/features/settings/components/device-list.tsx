@@ -1,26 +1,45 @@
-// 多设备列表（ADR-0011）。列出所有已知设备；本机由 is_self 标记；可给其他
-// 设备起显示名（setDeviceDisplayName，后端早已就绪、前端此前未渲染）。
+// 多设备列表。列出所有已知设备；本机由 is_self 标记；可给其他设备起显示名
+// （setDeviceDisplayName），也可「删除」对端设备——本地遗忘：移除其本机注册
+// 行 + 用量历史 + 本地产物目录，不推 git；若该设备仍在别处活跃，下次同步会
+// 自动回来。本机不可删（只能改名）。
 //
 // Content-only — 渲染在 SettingsView 的「设备」分区卡片内，不再自带 Card 壳。
 
+import { Trash2 } from "lucide-react"
 import { useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 
 import {
   useDevicesQuery,
+  useForgetDeviceMutation,
   useSetDeviceDisplayNameMutation,
 } from "@/app/store/api"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 
 export function DeviceList() {
   const { t } = useTranslation()
   const { data: devices = [] } = useDevicesQuery()
   const [setName, { isLoading }] = useSetDeviceDisplayNameMutation()
+  const [forget, { isLoading: forgetting }] = useForgetDeviceMutation()
   const [editing, setEditing] = useState<string | null>(null)
   const [draft, setDraft] = useState("")
+  const [removing, setRemoving] = useState<string | null>(null)
 
   if (devices.length === 0) {
     return (
@@ -30,78 +49,143 @@ export function DeviceList() {
     )
   }
 
+  const target = devices.find((d) => d.device_id === removing)
+  const targetName = target ? target.display_name || t("common.unnamed") : ""
+
+  async function onConfirmForget() {
+    if (!removing) return
+    const id = removing
+    const name = targetName
+    const r = await forget(id)
+    if ("error" in r) {
+      toast.error(t("devices.removeFailed"))
+    } else {
+      toast.success(t("devices.removed", { name }))
+      setRemoving(null)
+    }
+  }
+
   return (
-    <div className="flex flex-col">
-      {devices.map((d, i) => (
-        <div
-          key={d.device_id}
-          className={`flex items-center justify-between gap-3 py-2 ${i === devices.length - 1 ? "" : "border-b"}`}
-        >
-          <div className="flex min-w-0 flex-col gap-0.5">
-            <span className="flex items-center gap-2">
-              <span className="truncate font-medium">
-                {d.display_name || t("common.unnamed")}
+    <>
+      <div className="flex flex-col">
+        {devices.map((d, i) => (
+          <div
+            key={d.device_id}
+            className={`flex items-center justify-between gap-3 py-2 ${i === devices.length - 1 ? "" : "border-b"}`}
+          >
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <span className="flex items-center gap-2">
+                <span className="truncate font-medium">
+                  {d.display_name || t("common.unnamed")}
+                </span>
+                {d.is_self ? (
+                  <Badge variant="secondary">{t("devices.thisDevice")}</Badge>
+                ) : null}
               </span>
-              {d.is_self ? (
-                <Badge variant="secondary">{t("devices.thisDevice")}</Badge>
-              ) : null}
-            </span>
-            <span className="text-muted-foreground truncate font-mono text-xs">
-              {d.device_id}
-            </span>
-          </div>
-          {d.is_self ? null : editing === d.device_id ? (
-            <div className="flex items-center gap-2">
-              <Input
-                className="h-8 w-32"
-                placeholder={t("devices.displayNamePlaceholder")}
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-              />
-              <Button
-                size="sm"
-                disabled={isLoading || !draft.trim()}
-                onClick={async () => {
-                  const r = await setName({
-                    deviceId: d.device_id,
-                    displayName: draft.trim(),
-                  })
-                  if ("error" in r)
-                    toast.error(t("settings.toast.renameFailed"))
-                  else {
-                    toast.success(t("settings.toast.displayNameUpdated"))
+              <span className="text-muted-foreground truncate font-mono text-xs">
+                {d.device_id}
+              </span>
+            </div>
+            {d.is_self ? null : editing === d.device_id ? (
+              <div className="flex items-center gap-2">
+                <Input
+                  className="h-8 w-32"
+                  placeholder={t("devices.displayNamePlaceholder")}
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                />
+                <Button
+                  size="sm"
+                  disabled={isLoading || !draft.trim()}
+                  onClick={async () => {
+                    const r = await setName({
+                      deviceId: d.device_id,
+                      displayName: draft.trim(),
+                    })
+                    if ("error" in r)
+                      toast.error(t("settings.toast.renameFailed"))
+                    else {
+                      toast.success(t("settings.toast.displayNameUpdated"))
+                      setEditing(null)
+                      setDraft("")
+                    }
+                  }}
+                >
+                  {t("common.save")}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
                     setEditing(null)
                     setDraft("")
-                  }
-                }}
-              >
-                {t("common.save")}
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  setEditing(null)
-                  setDraft("")
-                }}
-              >
-                {t("common.cancel")}
-              </Button>
-            </div>
-          ) : (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                setEditing(d.device_id)
-                setDraft(d.display_name ?? "")
-              }}
-            >
-              {t("devices.rename")}
+                  }}
+                >
+                  {t("common.cancel")}
+                </Button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setEditing(d.device_id)
+                    setDraft(d.display_name ?? "")
+                  }}
+                >
+                  {t("devices.rename")}
+                </Button>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={t("devices.remove")}
+                        onClick={() => setRemoving(d.device_id)}
+                      />
+                    }
+                  >
+                    <Trash2 className="text-muted-foreground" />
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-56 text-center">
+                    {t("devices.removeTooltip")}
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <Dialog
+        open={removing !== null}
+        onOpenChange={(o) => {
+          if (!o) setRemoving(null)
+        }}
+      >
+        <DialogContent showClose={false} className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("devices.removeConfirmTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("devices.removeWarning", { name: targetName })}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRemoving(null)}>
+              {t("common.cancel")}
             </Button>
-          )}
-        </div>
-      ))}
-    </div>
+            <Button
+              variant="destructive"
+              disabled={forgetting}
+              onClick={onConfirmForget}
+            >
+              {forgetting ? t("common.saving") : t("devices.remove")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }

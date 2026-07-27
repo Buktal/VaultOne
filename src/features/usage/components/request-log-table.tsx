@@ -6,7 +6,7 @@
 // CTA so the user isn't bounced to the command bar to seed the first rows.
 
 import { FileText } from "lucide-react"
-import { useState } from "react"
+import { type ReactNode, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 
@@ -30,6 +30,7 @@ import { formatCost, formatInt, formatTime } from "@/lib/format"
 import { cn } from "@/lib/utils"
 
 import type { UsageFilter, UsageLogRow } from "@/types/generated/bindings"
+import { useDeviceLabelMap } from "../use-device-options"
 
 const PAGE_SIZE = 50
 
@@ -42,8 +43,27 @@ function tokenTotal(r: UsageLogRow): number {
   )
 }
 
+/**
+ * Right-aligned token-column header: label + a muted, language-neutral `tok`
+ * unit. Cells stay pure numbers (tabular-nums) — the unit rides the header so
+ * the dense ledger stays scannable (consistent with the recent-requests card).
+ */
+function TokHead({ children }: { children: ReactNode }) {
+  return (
+    <TableHead className="text-right">
+      <span className="inline-flex items-center justify-end gap-1">
+        {children}
+        <span className="text-muted-foreground text-[10px] font-normal">
+          tok
+        </span>
+      </span>
+    </TableHead>
+  )
+}
+
 export function RequestLogTable({ filter }: { filter: UsageFilter }) {
   const { t } = useTranslation()
+  const deviceLabel = useDeviceLabelMap()
   const [offset, setOffset] = useState(0)
   const {
     data: rows = [],
@@ -98,21 +118,11 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
                   <TableHead>{t("usage.logs.col.time")}</TableHead>
                   <TableHead>{t("usage.logs.col.provider")}</TableHead>
                   <TableHead>{t("usage.logs.col.billedModel")}</TableHead>
-                  <TableHead className="text-right">
-                    {t("usage.tokens.input")}
-                  </TableHead>
-                  <TableHead className="text-right">
-                    {t("usage.tokens.output")}
-                  </TableHead>
-                  <TableHead className="text-right">
-                    {t("usage.tokens.cacheCreation")}
-                  </TableHead>
-                  <TableHead className="text-right">
-                    {t("usage.tokens.cacheRead")}
-                  </TableHead>
-                  <TableHead className="text-right">
-                    {t("usage.logs.col.totalToken")}
-                  </TableHead>
+                  <TokHead>{t("usage.tokens.input")}</TokHead>
+                  <TokHead>{t("usage.tokens.output")}</TokHead>
+                  <TokHead>{t("usage.tokens.cacheCreation")}</TokHead>
+                  <TokHead>{t("usage.tokens.cacheRead")}</TokHead>
+                  <TokHead>{t("usage.logs.col.totalToken")}</TokHead>
                   <TableHead className="text-right">
                     {t("usage.logs.col.cost")}
                   </TableHead>
@@ -156,10 +166,13 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
                       {r.source}
                     </TableCell>
                     <TableCell
-                      className="text-muted-foreground font-mono text-xs"
+                      className="text-muted-foreground text-xs"
                       title={r.device_id || undefined}
                     >
-                      {r.device_id ? r.device_id.slice(0, 8) : "—"}
+                      {r.device_id
+                        ? (deviceLabel.get(r.device_id) ??
+                          r.device_id.slice(0, 8))
+                        : "—"}
                     </TableCell>
                   </TableRow>
                 ))}

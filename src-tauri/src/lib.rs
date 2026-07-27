@@ -36,6 +36,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::clear_sync_repo,
         commands::set_display_name,
         commands::set_device_display_name,
+        commands::forget_device,
         commands::collect_now,
         commands::sync_now,
         commands::sync_config,

@@ -175,6 +175,31 @@ pub fn set_device_display_name(
     Ok(())
 }
 
+/// Locally forget a peer device: drop its registry row + all its local usage
+/// data (records, rollups, turn durations, ledger) + its local artifact dir,
+/// and clear any local alias. Nothing is pushed to Git — a peer still in the
+/// repo reappears on the next sync (registry + data artifacts are re-imported).
+/// This device (`is_self`) is not forgettable; rename it instead.
+#[tauri::command]
+#[specta::specta]
+pub fn forget_device(state: State<'_, AppState>, device_id: String) -> AppResult<()> {
+    let cfg = state.config.get();
+    if cfg.device_id == device_id {
+        return Err(AppError::Config(
+            "this device cannot be removed (rename it instead)".into(),
+        ));
+    }
+    state.store.forget_device_local(&device_id)?;
+    state.config.update(|c| {
+        c.device_names.remove(&device_id);
+    })?;
+    let dir = state.config.paths().device_data_dir(&device_id);
+    if dir.exists() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    Ok(())
+}
+
 // ---------------- Collect / ingest ----------------
 
 /// Parse Source → Local Store (+ JSONL Artifact). No network.
@@ -194,6 +219,11 @@ pub fn collect_into(store: &Store, config: &ConfigStore) -> AppResult<IngestRepo
     let paths = config.paths();
     let report = ingest::ingest_collected(store, &paths, &cfg.device_id, &book, result)?;
     store.save_scan_progress(&delta)?;
+    // Drop devices the local repo no longer backs (e.g. a peer deleted itself
+    // and its data is gone, or a regenerated-id residue). The local repo
+    // filesystem is the source of truth and is always available, so this runs
+    // on every collect — not only on a sync pull.
+    crate::sync::reconcile_devices(store, &paths, &cfg)?;
     Ok(report)
 }
 
