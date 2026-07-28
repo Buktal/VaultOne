@@ -142,6 +142,38 @@ impl ClaudeCodeProvider {
     pub fn with_dir(dir: PathBuf) -> Self {
         Self { projects_dir: dir }
     }
+
+    /// Fold one JSONL line into the running accumulators, returning whether it
+    /// was skipped (unparseable). Shared by the full `parse` and the gated
+    /// `collect_incremental` so the message-id dedup + event classification
+    /// policy lives in one place (one assistant response may span several
+    /// content-block events that all repeat the full usage; one message id ⇒
+    /// one record, falling back to the event uuid when the source omits one).
+    fn fold_line(
+        raw: &str,
+        events_by_mid: &mut std::collections::HashMap<String, RawUsage>,
+        turn_durations: &mut Vec<RawTurnDuration>,
+    ) -> bool {
+        let line = raw.trim();
+        if line.is_empty() {
+            return false;
+        }
+        match serde_json::from_str::<SessionEvent>(line) {
+            Ok(ev) => {
+                let mid = ev.message.as_ref().and_then(|m| m.id.clone());
+                match ev.classify() {
+                    Parsed::Usage(u) => {
+                        let key = mid.unwrap_or_else(|| u.uuid.clone());
+                        events_by_mid.entry(key).or_insert(u);
+                    }
+                    Parsed::TurnDuration(td) => turn_durations.push(td),
+                    Parsed::Skip => {}
+                }
+                false
+            }
+            Err(_) => true,
+        }
+    }
 }
 
 impl Default for ClaudeCodeProvider {
@@ -198,26 +230,8 @@ impl Provider for ClaudeCodeProvider {
                 }
             };
             for line in text.lines() {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                match serde_json::from_str::<SessionEvent>(line) {
-                    Ok(ev) => {
-                        let mid = ev.message.as_ref().and_then(|m| m.id.clone());
-                        match ev.classify() {
-                            Parsed::Usage(u) => {
-                                // Fall back to the event uuid when the source
-                                // omits a message id (older logs), preserving
-                                // per-event uniqueness.
-                                let key = mid.unwrap_or_else(|| u.uuid.clone());
-                                events_by_mid.entry(key).or_insert(u);
-                            }
-                            Parsed::TurnDuration(td) => turn_durations.push(td),
-                            Parsed::Skip => {}
-                        }
-                    }
-                    Err(_) => skipped += 1,
+                if Self::fold_line(line, &mut events_by_mid, &mut turn_durations) {
+                    skipped += 1;
                 }
             }
         }
@@ -283,32 +297,17 @@ impl Provider for ClaudeCodeProvider {
             } else {
                 prev.last_line_offset
             };
-            // Line parse loop — mirrors `parse`'s inner loop but skips lines
-            // already processed (line_no <= start_line). NOTE: the stored uuid
-            // stays the event uuid (not the message id) — re-keying would cause
-            // a mass migration duplicate on first run.
+            // Skip lines already processed (line_no <= start_line); the per-line
+            // parse + message-id dedup is shared with `parse` via fold_line.
+            // NOTE: the stored uuid stays the event uuid (not the message id) —
+            // re-keying would cause a mass migration duplicate on first run.
             for (idx, line) in text.lines().enumerate() {
                 let line_no = idx as i64 + 1; // 1-based, matching CC-Switch
                 if line_no <= start_line {
                     continue;
                 }
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                match serde_json::from_str::<SessionEvent>(line) {
-                    Ok(ev) => {
-                        let mid = ev.message.as_ref().and_then(|m| m.id.clone());
-                        match ev.classify() {
-                            Parsed::Usage(u) => {
-                                let key = mid.unwrap_or_else(|| u.uuid.clone());
-                                events_by_mid.entry(key).or_insert(u);
-                            }
-                            Parsed::TurnDuration(td) => turn_durations.push(td),
-                            Parsed::Skip => {}
-                        }
-                    }
-                    Err(_) => skipped += 1,
+                if Self::fold_line(line, &mut events_by_mid, &mut turn_durations) {
+                    skipped += 1;
                 }
             }
             // Partial-last-line guard: if the file has no trailing newline the
