@@ -120,31 +120,58 @@ pub fn ingest_collected(
     })
 }
 
-// ---------------- UsageRecord JSONL Artifact (per-call) ----------------
+// ---------------- Per-day JSONL Artifact (generic over the grain) ----------------
+//
+// Two grains share this machinery: per-call UsageRecord (`usage-<day>.jsonl`)
+// and per-turn TurnDuration (`turns-<day>.jsonl`). Both append grouped by day,
+// both skip unparseable lines on read, both leave the SQLite write intact when
+// the JSONL append fails (JSONL is the backup medium). Only the row type, the
+// file-name prefix, and the day accessor differ — captured by [`ArtifactGrain`]
+// so the policy lives in one place.
 
-/// Append records to the per-day JSONL Artifact (`repo/data/<deviceId>/usage-<day>.jsonl`).
-/// Records are grouped by day; each line is one JSON-serialized `UsageRecord`.
-/// Errors here are logged but do not undo the SQLite write (JSONL is a backup).
-pub fn append_jsonl(paths: &Paths, device_id: &str, records: &[UsageRecord]) -> AppResult<()> {
-    use std::collections::BTreeMap;
-    let mut by_day: BTreeMap<String, Vec<&UsageRecord>> = BTreeMap::new();
-    for r in records {
-        by_day.entry(r.day.clone()).or_default().push(r);
-    }
-    for (day, rows) in by_day {
-        let path = paths.artifact_path(device_id, &day);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        match write_day(&path, &rows) {
-            Ok(()) => {}
-            Err(e) => eprintln!("[vaultone] jsonl append failed for {day}: {e}"),
-        }
-    }
-    Ok(())
+/// One JSONL Artifact grain: its row type, file-name prefix, diagnostic label,
+/// and the day bucket that drives the per-day file split.
+trait ArtifactGrain {
+    type Row: serde::Serialize + serde::de::DeserializeOwned;
+    /// File-name prefix; the Artifact is `<prefix>-<day>.jsonl`.
+    const PREFIX: &'static str;
+    /// Label for append-failure log lines.
+    const LABEL: &'static str;
+    /// Day bucket this row belongs to.
+    fn day(row: &Self::Row) -> &str;
 }
 
-fn write_day(path: &Path, rows: &[&UsageRecord]) -> std::io::Result<()> {
+/// Per-call usage records → `usage-<day>.jsonl`.
+struct UsageGrain;
+impl ArtifactGrain for UsageGrain {
+    type Row = UsageRecord;
+    const PREFIX: &'static str = "usage";
+    const LABEL: &'static str = "jsonl";
+    fn day(r: &UsageRecord) -> &str {
+        &r.day
+    }
+}
+
+/// Per-turn durations → `turns-<day>.jsonl`.
+struct TurnGrain;
+impl ArtifactGrain for TurnGrain {
+    type Row = TurnDuration;
+    const PREFIX: &'static str = "turns";
+    const LABEL: &'static str = "turn jsonl";
+    fn day(t: &TurnDuration) -> &str {
+        &t.day
+    }
+}
+
+/// `<device_data_dir>/<deviceId>/<prefix>-<day>.jsonl`.
+fn day_path<A: ArtifactGrain>(paths: &Paths, device_id: &str, day: &str) -> std::path::PathBuf {
+    paths
+        .device_data_dir(device_id)
+        .join(format!("{}-{day}.jsonl", A::PREFIX))
+}
+
+/// Open once in append mode, serialize + writeln each row.
+fn write_jsonl_day<T: serde::Serialize>(path: &Path, rows: &[&T]) -> std::io::Result<()> {
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     for r in rows {
         let line = serde_json::to_string(r).map_err(std::io::Error::other)?;
@@ -153,8 +180,32 @@ fn write_day(path: &Path, rows: &[&UsageRecord]) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Read all records from a single usage JSONL Artifact file. Skips unparseable lines.
-pub fn read_jsonl_file(path: &Path) -> AppResult<Vec<UsageRecord>> {
+/// Group rows by day and append each day's file. Append errors are logged but
+/// do NOT undo the caller's SQLite write (JSONL is a backup medium).
+fn append_artifact_jsonl<A: ArtifactGrain>(
+    paths: &Paths,
+    device_id: &str,
+    rows: &[A::Row],
+) -> AppResult<()> {
+    use std::collections::BTreeMap;
+    let mut by_day: BTreeMap<String, Vec<&A::Row>> = BTreeMap::new();
+    for r in rows {
+        by_day.entry(A::day(r).to_string()).or_default().push(r);
+    }
+    for (day, day_rows) in by_day {
+        let path = day_path::<A>(paths, device_id, &day);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if let Err(e) = write_jsonl_day(&path, &day_rows) {
+            eprintln!("[vaultone] {} append failed for {day}: {e}", A::LABEL);
+        }
+    }
+    Ok(())
+}
+
+/// Read every row from one JSONL Artifact file. Unparseable lines are skipped.
+fn read_jsonl_file_of<T: serde::de::DeserializeOwned>(path: &Path) -> AppResult<Vec<T>> {
     let text = std::fs::read_to_string(path)?;
     let mut out = Vec::new();
     for line in text.lines() {
@@ -162,17 +213,29 @@ pub fn read_jsonl_file(path: &Path) -> AppResult<Vec<UsageRecord>> {
         if line.is_empty() {
             continue;
         }
-        match serde_json::from_str::<UsageRecord>(line) {
-            Ok(r) => out.push(r),
-            Err(_) => continue,
+        if let Ok(r) = serde_json::from_str::<T>(line) {
+            out.push(r);
         }
     }
     Ok(out)
 }
 
-/// Read every usage JSONL Artifact for a device under `repo/data/<deviceId>/`.
-/// Only `usage-*.jsonl` files (not `turns-*.jsonl`).
-pub fn read_device_artifacts(paths: &Paths, device_id: &str) -> AppResult<Vec<UsageRecord>> {
+/// `<prefix>-*.jsonl` under the device dir?
+fn is_artifact_of<A: ArtifactGrain>(path: &Path) -> bool {
+    let prefix_dash = format!("{}-", A::PREFIX);
+    path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+        && path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with(&prefix_dash))
+            .unwrap_or(false)
+}
+
+/// Read every `<prefix>-*.jsonl` Artifact for one device.
+fn read_device_artifacts_of<A: ArtifactGrain>(
+    paths: &Paths,
+    device_id: &str,
+) -> AppResult<Vec<A::Row>> {
     let dir = paths.device_data_dir(device_id);
     if !dir.exists() {
         return Ok(Vec::new());
@@ -181,15 +244,15 @@ pub fn read_device_artifacts(paths: &Paths, device_id: &str) -> AppResult<Vec<Us
     for entry in std::fs::read_dir(&dir)? {
         let entry = entry?;
         let p = entry.path();
-        if is_usage_artifact(&p) {
-            out.extend(read_jsonl_file(&p)?);
+        if is_artifact_of::<A>(&p) {
+            out.extend(read_jsonl_file_of::<A::Row>(&p)?);
         }
     }
     Ok(out)
 }
 
-/// Read every device's usage artifacts (all known devices under `repo/data/`).
-pub fn read_all_artifacts(paths: &Paths) -> AppResult<Vec<UsageRecord>> {
+/// Read every device's `<prefix>-*.jsonl` Artifacts (all known devices).
+fn read_all_artifacts_of<A: ArtifactGrain>(paths: &Paths) -> AppResult<Vec<A::Row>> {
     let root = &paths.repo_data;
     if !root.exists() {
         return Ok(Vec::new());
@@ -200,12 +263,38 @@ pub fn read_all_artifacts(paths: &Paths) -> AppResult<Vec<UsageRecord>> {
         if entry.file_type()?.is_dir() {
             if let Some(name) = entry.file_name().to_str() {
                 if crate::config::is_valid_device_id(name) {
-                    out.extend(read_device_artifacts(paths, name)?);
+                    out.extend(read_device_artifacts_of::<A>(paths, name)?);
                 }
             }
         }
     }
     Ok(out)
+}
+
+// Typed entry points (stable public API; each delegates to the generic core).
+
+/// Append usage records to the per-day Artifact.
+pub fn append_jsonl(paths: &Paths, device_id: &str, records: &[UsageRecord]) -> AppResult<()> {
+    append_artifact_jsonl::<UsageGrain>(paths, device_id, records)
+}
+
+/// Append turn durations to the per-day Artifact.
+pub fn append_turn_jsonl(
+    paths: &Paths,
+    device_id: &str,
+    turns: &[TurnDuration],
+) -> AppResult<()> {
+    append_artifact_jsonl::<TurnGrain>(paths, device_id, turns)
+}
+
+/// Read every device's usage artifacts.
+pub fn read_all_artifacts(paths: &Paths) -> AppResult<Vec<UsageRecord>> {
+    read_all_artifacts_of::<UsageGrain>(paths)
+}
+
+/// Read every device's turn-duration artifacts.
+pub fn read_all_turn_artifacts(paths: &Paths) -> AppResult<Vec<TurnDuration>> {
+    read_all_artifacts_of::<TurnGrain>(paths)
 }
 
 // ---------------- DeviceArtifact (device-name sync, one file per device) ----
@@ -305,110 +394,6 @@ pub fn read_all_device_artifacts(paths: &Paths) -> Vec<crate::model::DeviceArtif
     out
 }
 
-// ---------------- TurnDuration JSONL Artifact (per-turn) ----------------
-
-/// Append turn durations to the per-day Artifact (`repo/data/<deviceId>/turns-<day>.jsonl`).
-pub fn append_turn_jsonl(paths: &Paths, device_id: &str, turns: &[TurnDuration]) -> AppResult<()> {
-    use std::collections::BTreeMap;
-    let mut by_day: BTreeMap<String, Vec<&TurnDuration>> = BTreeMap::new();
-    for t in turns {
-        by_day.entry(t.day.clone()).or_default().push(t);
-    }
-    for (day, rows) in by_day {
-        let path = paths
-            .device_data_dir(device_id)
-            .join(format!("turns-{day}.jsonl"));
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        match write_turn_day(&path, &rows) {
-            Ok(()) => {}
-            Err(e) => eprintln!("[vaultone] turn jsonl append failed for {day}: {e}"),
-        }
-    }
-    Ok(())
-}
-
-fn write_turn_day(path: &Path, rows: &[&TurnDuration]) -> std::io::Result<()> {
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    for t in rows {
-        let line = serde_json::to_string(t).map_err(std::io::Error::other)?;
-        writeln!(file, "{line}")?;
-    }
-    Ok(())
-}
-
-/// Read all turn durations from a single turns JSONL Artifact file.
-pub fn read_turn_jsonl_file(path: &Path) -> AppResult<Vec<TurnDuration>> {
-    let text = std::fs::read_to_string(path)?;
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(t) = serde_json::from_str::<TurnDuration>(line) {
-            out.push(t);
-        }
-    }
-    Ok(out)
-}
-
-/// Read every turns JSONL Artifact for a device (only `turns-*.jsonl`).
-pub fn read_device_turn_artifacts(paths: &Paths, device_id: &str) -> AppResult<Vec<TurnDuration>> {
-    let dir = paths.device_data_dir(device_id);
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(&dir)? {
-        let entry = entry?;
-        let p = entry.path();
-        if is_turn_artifact(&p) {
-            out.extend(read_turn_jsonl_file(&p)?);
-        }
-    }
-    Ok(out)
-}
-
-/// Read every device's turn-duration artifacts.
-pub fn read_all_turn_artifacts(paths: &Paths) -> AppResult<Vec<TurnDuration>> {
-    let root = &paths.repo_data;
-    if !root.exists() {
-        return Ok(Vec::new());
-    }
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(root)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            if let Some(name) = entry.file_name().to_str() {
-                if crate::config::is_valid_device_id(name) {
-                    out.extend(read_device_turn_artifacts(paths, name)?);
-                }
-            }
-        }
-    }
-    Ok(out)
-}
-
-fn is_usage_artifact(path: &Path) -> bool {
-    path.extension().and_then(|e| e.to_str()) == Some("jsonl")
-        && path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|n| n.starts_with("usage-"))
-            .unwrap_or(false)
-}
-
-fn is_turn_artifact(path: &Path) -> bool {
-    path.extension().and_then(|e| e.to_str()) == Some("jsonl")
-        && path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|n| n.starts_with("turns-"))
-            .unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -481,7 +466,7 @@ mod tests {
         let r1 = recordify(&raw("a", "glm-5.2"), "0123456789ab", &book);
         let r2 = recordify(&raw("b", "glm-5.2"), "0123456789ab", &book);
         append_jsonl(&paths, "0123456789ab", &[r1, r2]).unwrap();
-        let read = read_device_artifacts(&paths, "0123456789ab").unwrap();
+        let read = read_device_artifacts_of::<UsageGrain>(&paths, "0123456789ab").unwrap();
         assert_eq!(read.len(), 2);
         assert_eq!(read[0].uuid, "a");
         assert_eq!(read[1].uuid, "b");
@@ -526,8 +511,8 @@ mod tests {
         };
         ingest_collected(&store, &paths, "0123456789ab", &book, result).unwrap();
         // usage read must NOT pick up turns-*.jsonl, and vice versa.
-        let usage = read_device_artifacts(&paths, "0123456789ab").unwrap();
-        let turns = read_device_turn_artifacts(&paths, "0123456789ab").unwrap();
+        let usage = read_device_artifacts_of::<UsageGrain>(&paths, "0123456789ab").unwrap();
+        let turns = read_device_artifacts_of::<TurnGrain>(&paths, "0123456789ab").unwrap();
         assert_eq!(usage.len(), 1);
         assert_eq!(turns.len(), 2);
     }
@@ -551,7 +536,7 @@ mod tests {
         // turn was re-appended each collect under full rescans).
         let rep = ingest_collected(&store, &paths, "0123456789ab", &book, result).unwrap();
         assert_eq!(rep.turn_durations_inserted, 0);
-        let turns = read_device_turn_artifacts(&paths, "0123456789ab").unwrap();
+        let turns = read_device_artifacts_of::<TurnGrain>(&paths, "0123456789ab").unwrap();
         assert_eq!(turns.len(), 2, "JSONL holds each turn once, not doubled");
     }
 

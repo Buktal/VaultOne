@@ -53,12 +53,6 @@ impl Paths {
         self.repo_data.join(device_id)
     }
 
-    /// JSONL Artifact path for a given day: `repo/data/<deviceId>/usage-<day>.jsonl`.
-    pub fn artifact_path(&self, device_id: &str, day: &str) -> PathBuf {
-        self.device_data_dir(device_id)
-            .join(format!("usage-{day}.jsonl"))
-    }
-
     /// Cloud pricing config: `repo/config/pricing.json`.
     pub fn pricing_json(&self) -> PathBuf {
         self.repo_config.join("pricing.json")
@@ -436,16 +430,6 @@ mod tests {
             );
             assert!(is_valid_device_id(&id));
         }
-    }
-
-    #[test]
-    fn artifact_path_shape() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = Paths::resolve(tmp.path());
-        let p = paths.artifact_path("0123456789ab", "2026-07-13");
-        let s = p.to_string_lossy().into_owned();
-        assert!(s.contains("0123456789ab"), "{s}");
-        assert!(s.ends_with("usage-2026-07-13.jsonl"), "{s}");
     }
 
     #[test]
