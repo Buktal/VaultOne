@@ -13,6 +13,7 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{Emitter, Manager};
 use tauri_specta::Builder;
 
+mod cloud_config;
 mod commands;
 mod config;
 mod db;

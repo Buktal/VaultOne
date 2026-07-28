@@ -21,7 +21,8 @@ use crate::model::{
 };
 use crate::pricing;
 use crate::providers::{ClaudeCodeProvider, Provider};
-use crate::sync::{ConfigConflictResolution, ConfigSyncOutcome, SyncReport, VerifyReport};
+use crate::cloud_config::{ConfigConflictResolution, ConfigSyncOutcome};
+use crate::sync::{SyncReport, VerifyReport};
 
 /// App-wide managed state: the Local Store + local config, wrapped
 /// in `Arc` so blocking tasks can take owned clones.
@@ -297,7 +298,7 @@ pub async fn sync_config(state: State<'_, AppState>) -> AppResult<ConfigSyncOutc
             ));
         }
         let paths = config.paths();
-        crate::sync::sync_config(&store, &paths, &cfg)
+        crate::cloud_config::sync_config(&store, &paths, &cfg)
     })
     .await
     .map_err(|e| AppError::Internal(format!("config sync task failed: {e}")))?
@@ -322,7 +323,7 @@ pub async fn resolve_config_conflict(
             ));
         }
         let paths = config.paths();
-        crate::sync::resolve_config_conflict(&store, &paths, &cfg, &choices)
+        crate::cloud_config::resolve_config_conflict(&store, &paths, &cfg, &choices)
     })
     .await
     .map_err(|e| AppError::Internal(format!("config resolve task failed: {e}")))?
