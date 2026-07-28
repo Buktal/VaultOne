@@ -196,7 +196,9 @@ pub fn forget_device(state: State<'_, AppState>, device_id: String) -> AppResult
     })?;
     let dir = state.config.paths().device_data_dir(&device_id);
     if dir.exists() {
-        let _ = std::fs::remove_dir_all(&dir);
+        if let Err(e) = std::fs::remove_dir_all(&dir) {
+            eprintln!("[vaultone] forget_device: failed to remove {}: {e}", dir.display());
+        }
     }
     Ok(())
 }
@@ -219,6 +221,12 @@ pub fn collect_into(store: &Store, config: &ConfigStore) -> AppResult<IngestRepo
     let book = store.load_pricing_book()?;
     let paths = config.paths();
     let report = ingest::ingest_collected(store, &paths, &cfg.device_id, &book, result)?;
+    // Self-heal: backfill device rows for any device that has usage but was
+    // never published (no name artifact) so it still appears in the picker. Runs
+    // here, on the collect path — not on the read-only list_devices command — so
+    // a query never mutates the DB. Worst-case latency to surface a new device
+    // is one collect interval.
+    store.discover_devices_from_usage()?;
     store.save_scan_progress(&delta)?;
     // Drop devices the local repo no longer backs (e.g. a peer deleted itself
     // and its data is gone, or a regenerated-id residue). The local repo
@@ -394,9 +402,6 @@ pub fn query_distinct_models(state: State<'_, AppState>) -> AppResult<Vec<String
 #[tauri::command]
 #[specta::specta]
 pub fn list_devices(state: State<'_, AppState>) -> AppResult<Vec<DeviceInfo>> {
-    // Self-heal: a peer that has usage rows but never published its name
-    // artifact gets a fallback `Device-<prefix>` row so it appears in the picker.
-    state.store.discover_devices_from_usage()?;
     let mut devices = state.store.list_devices()?;
     let cfg = state.config.get();
     for d in &mut devices {
