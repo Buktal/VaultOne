@@ -30,12 +30,13 @@
 // Refresh is free: providers.tsx invalidates the Usage tags on every
 // `usage_changed`, and the filter matches the dashboard's "today" preset.
 
-import { getCurrentWindow } from "@tauri-apps/api/window"
 import dayjs from "dayjs"
 import { Airplay, AlignHorizontalJustifyEnd, ChevronDown } from "lucide-react"
-import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef } from "react"
 import { useTranslation } from "react-i18next"
 import { useLightweightTuck } from "@/app/shell/use-lightweight-tuck"
+import { useTuckDrag } from "@/app/shell/use-tuck-drag"
+import { useTuckDrawer } from "@/app/shell/use-tuck-drawer"
 import {
   useDevicesQuery,
   usePreferencesQuery,
@@ -43,7 +44,7 @@ import {
   ZERO_STATS,
 } from "@/app/store/api"
 import { useAppDispatch, useAppSelector } from "@/app/store/hooks"
-import { patchFilter, toFilter } from "@/app/store/slices/filterSlice"
+import { patchFilter, todayFilter } from "@/app/store/slices/filterSlice"
 import { setMode } from "@/app/store/slices/viewSlice"
 import { formatTokens } from "@/lib/format"
 import { cn } from "@/lib/utils"
@@ -51,56 +52,14 @@ import { cn } from "@/lib/utils"
 import { DeviceScopeControl } from "./device-scope-control"
 import { TokenHero } from "./token-hero"
 
-const appWindow = getCurrentWindow()
-/** Square of the move distance (CSS px) that distinguishes a drag from a click
- *  on the tucked bar. 4px — small enough to feel instant, large enough that a
- *  click's natural jitter doesn't start a drag. */
-const DRAG_THRESHOLD_SQ = 16
-
 export function LightweightCard() {
   const { t } = useTranslation()
   const dispatch = useAppDispatch()
   const { phase, expand, tuck, setCardHeight, setTuckDrawer } =
     useLightweightTuck()
-  // Tucked hover-drawer (two-step): hover the mini-bar → a Select-like trigger
-  // appears directly below it (full-width, top border as the divider — not a
-  // floating card inset); clicking the trigger opens the device list.
-  // device_scope in the small window. Disabled when hover-expand is chosen
-  // (hover then means "go to the mid window") or with ≤1 device.
-  const [drawerHover, setDrawerHover] = useState(false)
-  const [listOpen, setListOpen] = useState(false)
-  // Hover-leave 关闭延迟: tucked 窗口 resize (抽屉展开/收起) 时鼠标可能瞬间越过
-  // 窗口边界 → mouseleave → 立即收起 → 鼠标又回窗口 → mouseenter → 再展开, 形成抖动
-  // 循环。延迟 180ms 关闭, 期间 mouseenter 取消定时器, 打破循环。
-  const leaveTimer = useRef<number | undefined>(undefined)
-
-  // Whole-bar drag for the tucked mini-bar. startDragging() is a JS call, not
-  // data-tauri-drag-region, so it does NOT swallow the number's click — a press
-  // that moves > DRAG_THRESHOLD starts a window drag, a press that doesn't is a
-  // plain click → expand. →大 stops propagation to stay a pure click. This is
-  // why the whole bar (number + gutters) is draggable, not just a tiny grip.
-  const dragArmed = useRef(false)
-  const dragStart = useRef({ x: 0, y: 0 })
-  const dragged = useRef(false)
-  const armDrag = (e: MouseEvent) => {
-    if (e.button !== 0) return
-    dragArmed.current = true
-    dragged.current = false
-    dragStart.current = { x: e.screenX, y: e.screenY }
-  }
-  const maybeDrag = (e: MouseEvent) => {
-    if (!dragArmed.current || dragged.current) return
-    const dx = e.screenX - dragStart.current.x
-    const dy = e.screenY - dragStart.current.y
-    if (dx * dx + dy * dy > DRAG_THRESHOLD_SQ) {
-      dragged.current = true
-      dragArmed.current = false
-      void appWindow.startDragging()
-    }
-  }
-  const disarm = () => {
-    dragArmed.current = false
-  }
+  // Whole-bar drag for the tucked mini-bar (>4px move = window drag, else a
+  // plain click → expand). See use-tuck-drag.ts.
+  const { armDrag, maybeDrag, disarm, dragged } = useTuckDrag()
   // Hover-to-expand is opt-in: the default is click. When hover is
   // chosen, the tucked number area also expands on mouse-enter.
   const { data: prefs } = usePreferencesQuery()
@@ -120,64 +79,31 @@ export function LightweightCard() {
   const drawerEnabled = devices.length > 1 && !hoverExpand
   const TRIGGER_H = 28
   const listH = drawerEnabled ? (devices.length + 1) * 26 + 10 : 0
-  const closeDrawer = () => {
-    if (leaveTimer.current) {
-      window.clearTimeout(leaveTimer.current)
-      leaveTimer.current = undefined
-    }
-    setDrawerHover(false)
-    setListOpen(false)
-    setTuckDrawer(0)
-  }
-  const openDrawer = () => {
-    if (leaveTimer.current) {
-      window.clearTimeout(leaveTimer.current)
-      leaveTimer.current = undefined
-    }
-    if (!drawerEnabled) return
-    setDrawerHover(true)
-    setTuckDrawer(TRIGGER_H)
-  }
-  // 延迟关闭 (见 leaveTimer 注释): 取代 onMouseLeave 内的立即 closeDrawer, 避开
-  // resize 越界导致的 leave → close → enter → open 抖动循环。
-  const scheduleClose = () => {
-    disarm()
-    if (leaveTimer.current) window.clearTimeout(leaveTimer.current)
-    leaveTimer.current = window.setTimeout(closeDrawer, 180)
-  }
-  const toggleList = () => {
-    const next = !listOpen
-    setListOpen(next)
-    setTuckDrawer(next ? TRIGGER_H + listH : TRIGGER_H)
-  }
-  // Reset the drawer when leaving tucked (e.g. →大 to full): otherwise it
-  // would reopen the next time the mini-bar shows.
-  useEffect(() => {
-    if (phase !== "tucked") {
-      if (leaveTimer.current) {
-        window.clearTimeout(leaveTimer.current)
-        leaveTimer.current = undefined
-      }
-      setDrawerHover(false)
-      setListOpen(false)
-      setTuckDrawer(0)
-    }
-  }, [phase, setTuckDrawer])
-  const todayFilter = useMemo(
-    () =>
-      toFilter({
-        from_day: today,
-        to_day: today,
-        model: "",
-        source: "",
-        device_scope: deviceScope,
-      }),
-    [today, deviceScope],
+  // Tucked hover-drawer (two-step): hover → trigger slides out; click trigger →
+  // device list. Geometry + window-height sync are passed in; the open/close
+  // sequencing + 180ms anti-jitter leave live in the hook. See use-tuck-drawer.ts.
+  const {
+    drawerHover,
+    listOpen,
+    openDrawer,
+    closeDrawer,
+    scheduleClose,
+    toggleList,
+  } = useTuckDrawer({
+    enabled: drawerEnabled,
+    triggerH: TRIGGER_H,
+    listH,
+    setTuckDrawer,
+    phase,
+  })
+  const todayUsageFilter = useMemo(
+    () => todayFilter(deviceScope, today),
+    [deviceScope, today],
   )
 
   // tucked reads total_tokens here; expanded reuses <TokenHero> which runs its
   // own queries. ZERO_STATS keeps the first paint sane before data lands.
-  const { data: stats } = useStatsQuery(todayFilter)
+  const { data: stats } = useStatsQuery(todayUsageFilter)
   const s = stats ?? ZERO_STATS
 
   // Measure the expanded card's natural height and tell the hook, so the
@@ -219,7 +145,10 @@ export function LightweightCard() {
         onMouseMove={maybeDrag}
         onMouseUp={disarm}
         onMouseEnter={openDrawer}
-        onMouseLeave={scheduleClose}
+        onMouseLeave={() => {
+          disarm()
+          scheduleClose()
+        }}
         className="bg-background flex h-screen w-screen flex-col animate-in fade-in slide-in-from-right-2 cursor-grab overflow-hidden duration-150 motion-reduce:animate-none"
       >
         {/* h-10 = TUCKED_HEIGHT (40px): 固定占满 tucked 高度 + items-center 让
@@ -358,7 +287,7 @@ export function LightweightCard() {
       {/* TokenHero 卡保留横向 p-3 呼吸 (圆角不贴窗口边); 上内边距收到 pt-2,
           收紧与上方 selector 行的间距。 */}
       <div className="px-3 pb-3 pt-2">
-        <TokenHero filter={todayFilter} />
+        <TokenHero filter={todayUsageFilter} />
       </div>
     </div>
   )
