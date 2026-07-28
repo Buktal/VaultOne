@@ -40,7 +40,7 @@ import {
 import { useFreshness } from "@/hooks/use-freshness"
 import { cn } from "@/lib/utils"
 import { useDeviceOptions } from "../use-device-options"
-import { DeviceChip } from "./device-chip"
+import { DeviceScopeControl } from "./device-scope-control"
 
 const ALL = "__all__"
 
@@ -269,7 +269,7 @@ export function ControlCard() {
           </Row>
           {multiDevice ? (
             <Row label={t("usage.deviceScope.label")}>
-              <DeviceChip align="end" />
+              <DeviceScopeControl align="end" />
             </Row>
           ) : null}
           <div className="bg-border my-2 h-px" />
@@ -296,7 +296,7 @@ export function ControlBar() {
     <div className="flex flex-wrap items-center gap-2">
       <DateRangeChip align="start" />
       <ModelChip />
-      <DeviceChip align="start" />
+      <DeviceScopeControl />
       <div className="flex-1" />
       <DataFreshness />
       <Button size="sm" disabled={collecting} onClick={onCollect}>
