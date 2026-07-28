@@ -320,7 +320,7 @@ export function LightweightCard() {
           right-pinned mini-bar that shrink lands on. */}
       <div
         data-tauri-drag-region
-        className="text-muted-foreground flex h-8 shrink-0 items-center justify-between ps-3 pe-1 text-xs select-none"
+        className="text-muted-foreground flex h-9 shrink-0 items-center justify-between ps-3 pe-1 text-xs select-none"
       >
         <span data-tauri-drag-region>{t("usage.lightweight.header")}</span>
         <div className="flex items-center">
@@ -347,12 +347,11 @@ export function LightweightCard() {
           square edge so the card's rounded corners don't sit flush against a
           square window border — the full dashboard gives the same card the
           same breathing room via the main-area padding/gap. */}
-      {/* 设备视角切换 — drag-bar 下方右对齐。selector 顶部留 mt-4(16) 呼吸, 与
-          大窗口 dashboard selector 行同间距 → 两窗口 selector 离窗口顶都是 32+16
-          =48, 完全对齐, 且与下方使用趋势的 gap-4 节奏一致 (不再紧贴顶部栏显偏
-          上)。px-3 右缩进与 TokenHero 卡右边平齐。单设备不渲染。 */}
+      {/* 设备视角切换 — drag-bar 下方右对齐。drag-bar 增高到 h-9(36) 后,
+          selector 顶部收到 mt-2(8), 贴近 title bar、收紧上半区呼吸 (原先
+          mt-3 偏空)。px-3 右缩进与 TokenHero 卡右边平齐。单设备不渲染。 */}
       {devices.length > 1 ? (
-        <div className="flex justify-end px-3 mt-3">
+        <div className="flex justify-end px-3 mt-2">
           <DeviceScopeControl compact />
         </div>
       ) : null}

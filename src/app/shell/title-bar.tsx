@@ -38,7 +38,7 @@ export function TitleBar() {
   return (
     <div
       data-tauri-drag-region
-      className="flex h-8 shrink-0 select-none items-center justify-end gap-1 pe-2"
+      className="flex h-9 shrink-0 select-none items-center justify-end gap-1 pe-2"
     >
       {/* Lightweight entries: →中 (the 5-field glance card) and →小
           (the docked mini-bar). Both enter lightweight; the phase picks which
