@@ -12,8 +12,8 @@ use git2::{Oid, Repository, Status};
 use crate::config::ConfigData;
 use crate::error::{AppError, AppResult};
 use crate::sync::{
-    author_email, commit_all, fetch_origin, has_changes, open_or_clone_for_device, pull,
-    push, reload_devices_into_store, require_synced,
+    author_email, commit_all, fetch_origin, has_changes, open_or_clone_for_device, pull, push,
+    reload_devices_into_store, require_synced,
 };
 
 /// A cloud-config file under `repo/config/`. Crosses the boundary as

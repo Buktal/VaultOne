@@ -279,11 +279,7 @@ pub fn append_jsonl(paths: &Paths, device_id: &str, records: &[UsageRecord]) -> 
 }
 
 /// Append turn durations to the per-day Artifact.
-pub fn append_turn_jsonl(
-    paths: &Paths,
-    device_id: &str,
-    turns: &[TurnDuration],
-) -> AppResult<()> {
+pub fn append_turn_jsonl(paths: &Paths, device_id: &str, turns: &[TurnDuration]) -> AppResult<()> {
     append_artifact_jsonl::<TurnGrain>(paths, device_id, turns)
 }
 

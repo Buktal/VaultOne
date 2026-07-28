@@ -392,7 +392,12 @@ impl Store {
              ON CONFLICT(device_id) DO UPDATE SET
                display_name=excluded.display_name,
                is_self=excluded.is_self",
-            params![device_id, display_name, is_self as i64, crate::time::now_iso()],
+            params![
+                device_id,
+                display_name,
+                is_self as i64,
+                crate::time::now_iso()
+            ],
         )?;
         Ok(())
     }

@@ -754,7 +754,7 @@ pub fn reconcile_devices(
 mod tests {
     use super::*;
     use crate::cloud_config::{
-        sync_config, resolve_config_conflict, ConfigConflictResolution, ConfigFile,
+        resolve_config_conflict, sync_config, ConfigConflictResolution, ConfigFile,
         ConfigSyncChoice,
     };
 
