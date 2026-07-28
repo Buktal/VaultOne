@@ -142,7 +142,10 @@ impl CostCalculator {
 }
 
 fn dec(s: &str) -> Decimal {
-    Decimal::from_str_exact(s).unwrap_or(Decimal::ZERO)
+    // Used only on compile-time string literals (built-in seed + heuristic
+    // coefficients + tests). A typo must panic at startup, not silently zero
+    // the rate and skew every cost calculation.
+    Decimal::from_str_exact(s).expect("seed literal: not a valid decimal")
 }
 
 /// Normalize a model key for matching: lowercase, strip `[...]` brackets and

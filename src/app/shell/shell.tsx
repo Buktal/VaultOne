@@ -149,7 +149,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const { t } = useTranslation()
   const dispatch = useAppDispatch()
   const view = useAppSelector((s) => s.view.view)
-  const { data: info } = useAppInfoQuery(undefined, { pollingInterval: 0 })
+  const { data: info } = useAppInfoQuery()
   const synced = info?.mode === "synced"
   const { openReleases } = useUpdateCheck()
 
