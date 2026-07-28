@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+#[cfg(debug_assertions)]
 use specta_typescript::Typescript;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
