@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-07-28
+
+### Changed
+
+- **Source filter visibility** — the Source dropdown now renders whenever any source data exists, so a single-source user still sees the filter (previously it required ≥2 collected sources).
+- **Filter chip sizing** — the logs control bar now sizes its filter chips by typical content (model `w-48`, source `w-40`, device `w-36`) instead of a uniform width; the dashboard card column stays uniform at `w-36`.
+
+### Fixed
+
+- **Release completeness** — `v1.3.0` was tagged two commits early, so the Source-filter and chip-sizing changes above never shipped in the 1.3.0 installers. `v1.3.1` tags the current `main` to include them.
+
 ## [1.3.0] - 2026-07-28
 
 ### Added
@@ -73,7 +84,8 @@ First public, open-source release.
 - **macOS**: Apple Silicon (arm64) only; builds are unsigned — right-click → **Open** on first launch (or `xattr -dr com.apple.quarantine /Applications/VaultOne.app`). Intel Mac users can build from source.
 - **Providers**: Claude Code only; additional providers (Codex, Cursor, …) are planned.
 
-[Unreleased]: https://github.com/Buktal/VaultOne/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/Buktal/VaultOne/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/Buktal/VaultOne/releases/tag/v1.3.1
 [1.3.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.3.0
 [1.2.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.2.0
 [1.1.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.1.0
