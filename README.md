@@ -2,7 +2,7 @@
 
 > **VaultOne doesn't store your AI data. It helps you understand and manage data you already own.**
 
-> A local-first desktop dashboard for your Claude Code token usage and cost — read straight from the session logs Claude Code already writes, with optional multi-device sync through a GitHub repo you control.
+A local-first desktop dashboard for your AI CLI token usage and cost — read straight from the session logs your tools already write (**Claude Code, Codex, Gemini CLI, OpenCode**), with optional multi-device sync through a GitHub repo you control.
 
 [![Version](https://img.shields.io/github/v/release/Buktal/VaultOne?color=blue&label=version)](https://github.com/Buktal/VaultOne/releases)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/Buktal/VaultOne/releases)
@@ -17,21 +17,21 @@
 
 ## Why VaultOne?
 
-Every time Claude Code runs, it writes session logs to disk. VaultOne turns those logs into a clear usage picture — **tokens, cost, cache efficiency, trends** — without a proxy, an API key, or sending anything anywhere.
+Every time an AI CLI runs, it writes session logs to disk. VaultOne turns those logs into a clear usage picture — **tokens, cost, cache efficiency, trends** — without a proxy, an API key, or sending anything anywhere.
 
 Two stances shape the whole product:
 
 - **Local-first.** The dashboard works with zero network — reading your own logs is all it needs.
-- **Read-only.** VaultOne only ever *reads* the session logs; it never modifies them and never touches Claude Code's behavior. Claude Code keeps running exactly as before.
+- **Read-only.** VaultOne only ever *reads* the session logs; it never modifies them and never touches the tools' behavior. They keep running exactly as before.
 
 Multi-device sync is a purely **opt-in** layer on top — never a precondition.
 
 ## Highlights
 
-- **Reads logs your tools already produce** — parses Claude Code session logs straight off disk. No proxy, no API key, no network.
-- **Token economics that match your bill** — four-bucket consumption (input / output / cache creation / cache read), cache-hit rate, and cost frozen at collection time.
-- **Multi-device sync through your own GitHub repo** — plain-text artifacts partitioned by device and date, in a repo you own. No third party in the middle.
-- **Lightweight glance mode** — tuck a mini-bar to the screen edge that always shows today's total, or expand into a floating card mirroring the dashboard. Switch full ⇄ expanded ⇄ tucked from any shape.
+- **Reads logs from four AI CLIs** — Claude Code, Codex, Gemini CLI, and OpenCode, each parsed straight off disk in its native format. No proxy, no API key, no network.
+- **Token economics that match your bill** — four-bucket consumption (input / output / cache creation / cache read), cache-hit rate, and cost frozen at collection time. Source quirks (e.g. Codex's cache-inclusive input) are normalized away into one consistent model.
+- **Multi-device sync through your own GitHub repo** — plain-text artifacts partitioned by device and date, in a repo you own. No third party in the middle. Then scope any view to a single device.
+- **Lightweight glance mode** — tuck a mini-bar to the screen edge that always shows today's total, or expand into a floating card mirroring the dashboard. Switch full ⇄ expanded ⇄ tucked from any shape; each shape remembers its own placement.
 - **Multi-skin theming** — five accent + chart palettes (Neutral, Sage, Azure, Crimson, Mauve); recolor the whole app without touching content.
 - **Tray-resident background collection** — an incremental scanner keeps the dashboard fresh behind the scenes.
 - **Auto-update & three languages** — install signed updates straight from GitHub Releases; UI in English, 简体中文, or 日本語.
@@ -54,7 +54,7 @@ Grab the installer for your OS from the **[Releases](https://github.com/Buktal/V
 | **macOS** | `.dmg` (Apple Silicon, arm64) |
 | **Linux** | `.deb`, `.AppImage` (`.rpm` where available) |
 
-**First run:** launch VaultOne — it scans your local Claude Code session logs and the dashboard fills in. No account, no sign-in, no network. To see usage across machines, enable sync in **Settings** and point VaultOne at a GitHub repo you control.
+**First run:** launch VaultOne — it scans your local AI CLI session logs and the dashboard fills in. No account, no sign-in, no network. To see usage across machines, enable sync in **Settings** and point VaultOne at a GitHub repo you control.
 
 > **macOS note:** builds are currently unsigned. On first launch, right-click the app → **Open**, or strip the quarantine attribute:
 > ```bash
@@ -69,20 +69,22 @@ Grab the installer for your OS from the **[Releases](https://github.com/Buktal/V
 - **Cache-hit rate** — `cache_read / (input + cache_creation + cache_read)`, aligned with how upstream usage is counted.
 - **Requests & cost** — total request count and total cost (USD), frozen at collection time.
 - **Usage trends** — multi-line token-vs-cost chart over time, one series per metric.
-- **Per-call request log** — model, token breakdown, cost, turn duration, and `stop_reason` / `service_tier` chips.
+- **Per-call request log** — source, model, token breakdown, cost, turn duration, and `stop_reason` / `service_tier` chips.
 - **Per-turn view** — whole-turn cost and wall-clock duration, separate from single-call timing.
 
 ### Collection
 
-- **Read-only source** — parses the session logs Claude Code already writes; never modifies them.
+- **Read-only source** — parses the session logs the CLIs already write; never modifies them.
 - **Incremental scan** — a cursor-based scanner picks up only what changed.
 - **Tray-resident scheduler** — collects on a timer without keeping a window open.
-- **Pluggable providers** — Claude Code today, more planned.
+- **Pluggable providers** — Claude Code, Codex, Gemini CLI, and OpenCode today. Each is parsed from its native log format (JSONL, JSON, or SQLite) with token semantics normalized to one four-bucket model.
 
 ### Sync (optional)
 
 - **Standalone mode** — full dashboard, zero network.
 - **Synced mode** — align usage across devices through a GitHub repo you own.
+- **Device-scoped** — filter the dashboard, the glance card, and the tucked bar to a single device; forget a peer locally, and stale peers auto-clear.
+- **System-proxy aware** — push/fetch follows the OS proxy (Clash/Mihomo, corporate gateways), so Synced mode just works behind one.
 - **Plain-text artifacts** — partitioned by device and date (`data/<device>/usage-YYYY-MM-DD.jsonl`), so diffs stay readable and reviewable.
 
 ### Cost & pricing
@@ -92,7 +94,7 @@ Grab the installer for your OS from the **[Releases](https://github.com/Buktal/V
 
 ### Experience
 
-- **Lightweight glance mode** — edge-tucked mini-bar + expandable floating card.
+- **Lightweight glance mode** — edge-tucked mini-bar + expandable floating card, each shape remembering its own placement.
 - **Multi-skin theming** — five palettes; Neutral (greyscale) by default.
 - **Auto-update** — signed installers straight from GitHub Releases, with a manual check in Settings.
 - **Light / dark theme, three languages, private by default** — usage data stays on your machines unless you opt into sync.
@@ -100,7 +102,8 @@ Grab the installer for your OS from the **[Releases](https://github.com/Buktal/V
 ## How it works
 
 ```
-  Claude Code session logs
+  AI CLI session logs
+  (Claude Code · Codex · Gemini CLI · OpenCode)
           │  (read-only)
           ▼
        Collect ──────▶ Local store ──────▶ Dashboard
@@ -115,7 +118,7 @@ Grab the installer for your OS from the **[Releases](https://github.com/Buktal/V
      Other devices
 ```
 
-A [Tauri 2](https://tauri.app/) app: a Rust backend handles collection, the local store, and optional Git-repo sync; a React frontend renders the dashboard through generated, type-safe IPC bindings. The collector is a pluggable provider model (Claude Code today), the local store is the dashboard's single read source, and sync is an opt-in projection of that store into plain-text artifacts partitioned by device and date.
+A [Tauri 2](https://tauri.app/) app: a Rust backend handles collection, the local store, and optional Git-repo sync; a React frontend renders the dashboard through generated, type-safe IPC bindings. The collector is a pluggable provider model (Claude Code, Codex, Gemini CLI, OpenCode), the local store is the dashboard's single read source, and sync is an opt-in projection of that store into plain-text artifacts partitioned by device and date.
 
 ## Build from source
 
