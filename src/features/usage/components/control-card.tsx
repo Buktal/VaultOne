@@ -10,7 +10,7 @@
 //
 // 横排 ControlBar 的 chip 走 labeled (内嵌「label · 值」自带身份), 纵卡
 // ControlCard 靠左 Row label, chip 只显值. 来源 (source) 维度在多来源
-// (sources.length > 1) 时才出现, 与设备维度单设备隐藏同理.
+// (sources.length > 0) 时才出现 —— 采到任意来源就显示, 与设备维度同理.
 
 import dayjs from "dayjs"
 import { Activity, CalendarRange, ChevronDown } from "lucide-react"
@@ -252,7 +252,9 @@ function ModelChip({
       <SelectTrigger
         className={cn(
           "border-border bg-card hover:bg-muted/60 h-8 w-36 rounded-md",
-          labeled && "w-44",
+          // 模型名最长且不可控 → labeled 时给最宽; 三个 chip 按维度差异化
+          // (模型 w-48 > 来源 w-40 > 设备 w-36), 贴合各自典型内容长度.
+          labeled && "w-48",
         )}
         aria-label={t("usage.control.model")}
       >
@@ -306,7 +308,8 @@ function SourceChip({
       <SelectTrigger
         className={cn(
           "border-border bg-card hover:bg-muted/60 h-8 w-36 rounded-md",
-          labeled && "w-44",
+          // 来源值固定短 (Claude Code / Gemini CLI) → labeled 时 w-40.
+          labeled && "w-40",
         )}
         aria-label={t("usage.control.source")}
       >
@@ -344,7 +347,7 @@ export function ControlCard() {
   const { onCollect, collecting } = useCollectAction()
   const multiDevice = useDeviceOptions().length > 0
   const { data: sources = [] } = useDistinctSourcesQuery()
-  const multiSource = sources.length > 1
+  const hasSources = sources.length > 0
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     if (typeof localStorage === "undefined") return false
     return localStorage.getItem(CONTROL_COLLAPSE_KEY) === "1"
@@ -381,7 +384,7 @@ export function ControlCard() {
           <Row label={t("usage.control.dateRange")}>
             <DateRangeChip />
           </Row>
-          {multiSource ? (
+          {hasSources ? (
             <Row label={t("usage.control.source")}>
               <SourceChip align="end" />
             </Row>
@@ -415,11 +418,11 @@ export function ControlBar() {
   const { t } = useTranslation()
   const { onCollect, collecting } = useCollectAction()
   const { data: sources = [] } = useDistinctSourcesQuery()
-  const multiSource = sources.length > 1
+  const hasSources = sources.length > 0
   return (
     <div className="flex flex-wrap items-center gap-2">
       <DateRangeChip align="start" />
-      {multiSource ? <SourceChip labeled /> : null}
+      {hasSources ? <SourceChip labeled /> : null}
       <ModelChip labeled />
       <DeviceScopeControl labeled />
       <div className="flex-1" />
