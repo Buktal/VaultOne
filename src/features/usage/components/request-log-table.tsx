@@ -212,6 +212,12 @@ function providerLabel(source: string): string {
   switch (source) {
     case "claude_code":
       return "Claude (Session)"
+    case "codex_cli":
+      return "Codex (Session)"
+    case "gemini_cli":
+      return "Gemini CLI (Session)"
+    case "opencode":
+      return "OpenCode (Session)"
     default:
       return source || "—"
   }

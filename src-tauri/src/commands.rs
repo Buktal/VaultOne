@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use tauri::{Emitter, Manager, State};
 
+use crate::cloud_config::{ConfigConflictResolution, ConfigSyncOutcome};
 use crate::config::{CloseBehavior, ConfigStore, Language, LightweightExpand, Skin};
 use crate::db::Store;
 use crate::error::{AppError, AppResult};
@@ -20,8 +21,6 @@ use crate::model::{
     UsageFilter, UsageLogRow, UsageStats,
 };
 use crate::pricing;
-use crate::providers::{ClaudeCodeProvider, Provider};
-use crate::cloud_config::{ConfigConflictResolution, ConfigSyncOutcome};
 use crate::sync::{SyncReport, VerifyReport};
 
 /// App-wide managed state: the Local Store + local config, wrapped
@@ -197,7 +196,10 @@ pub fn forget_device(state: State<'_, AppState>, device_id: String) -> AppResult
     let dir = state.config.paths().device_data_dir(&device_id);
     if dir.exists() {
         if let Err(e) = std::fs::remove_dir_all(&dir) {
-            eprintln!("[vaultone] forget_device: failed to remove {}: {e}", dir.display());
+            eprintln!(
+                "[vaultone] forget_device: failed to remove {}: {e}",
+                dir.display()
+            );
         }
     }
     Ok(())
@@ -208,32 +210,51 @@ pub fn forget_device(state: State<'_, AppState>, device_id: String) -> AppResult
 /// Parse Source → Local Store (+ JSONL Artifact). No network.
 /// Shared by the manual `collect_now` command and the background scheduler so
 /// both follow the exact same ingest path.
+///
+/// Iterates every enabled provider. The per-file cursor table is loaded once
+/// and shared (keys are file paths, disjoint across providers); each provider's
+/// cursor advances are merged and persisted AFTER all ingests — so a failed
+/// ingest leaves cursors untouched (next collect re-parses the same lines; the
+/// ledger dedups). First run / empty table ⇒ full scan.
 pub fn collect_into(store: &Store, config: &ConfigStore) -> AppResult<IngestReport> {
-    let provider = ClaudeCodeProvider::new()?;
-    // Incremental collect: load per-file cursors, parse only new
-    // lines, then persist the advanced cursors AFTER ingest — so a failed
-    // ingest leaves the cursor untouched (next collect re-parses the same
-    // lines; the ledger dedups). First run / empty table ⇒ full scan.
+    let providers = crate::providers::all_providers()?;
     let progress = store.load_scan_progress()?;
-    let (result, delta) = provider.collect_incremental(&progress)?;
     let cfg = config.get();
     store.upsert_device(&cfg.device_id, &cfg.display_name, true)?;
     let book = store.load_pricing_book()?;
     let paths = config.paths();
-    let report = ingest::ingest_collected(store, &paths, &cfg.device_id, &book, result)?;
+
+    let mut merged = IngestReport::default();
+    let mut merged_delta = crate::providers::ScanProgressDelta::new();
+    let mut sources_with_rows: Vec<String> = Vec::new();
+    for provider in &providers {
+        let (result, delta) = provider.collect_incremental(&progress)?;
+        let report = ingest::ingest_collected(store, &paths, &cfg.device_id, &book, result)?;
+        if report.rows_inserted > 0 {
+            sources_with_rows.push(report.source.clone());
+        }
+        merged.events_collected += report.events_collected;
+        merged.rows_inserted += report.rows_inserted;
+        merged.turn_durations_collected += report.turn_durations_collected;
+        merged.turn_durations_inserted += report.turn_durations_inserted;
+        merged.files_scanned += report.files_scanned;
+        merged.lines_skipped += report.lines_skipped;
+        merged_delta.extend(delta);
+    }
+    merged.source = sources_with_rows.join(",");
     // Self-heal: backfill device rows for any device that has usage but was
     // never published (no name artifact) so it still appears in the picker. Runs
     // here, on the collect path — not on the read-only list_devices command — so
     // a query never mutates the DB. Worst-case latency to surface a new device
     // is one collect interval.
     store.discover_devices_from_usage()?;
-    store.save_scan_progress(&delta)?;
+    store.save_scan_progress(&merged_delta)?;
     // Drop devices the local repo no longer backs (e.g. a peer deleted itself
     // and its data is gone, or a regenerated-id residue). The local repo
     // filesystem is the source of truth and is always available, so this runs
     // on every collect — not only on a sync pull.
     crate::sync::reconcile_devices(store, &paths, &cfg)?;
-    Ok(report)
+    Ok(merged)
 }
 
 /// Best-effort push of the current Artifact to the sync repo (Synced only).

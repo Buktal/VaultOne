@@ -258,6 +258,13 @@ pub fn builtin_seed() -> Vec<ModelPricing> {
         // OpenAI (approx).
         row("gpt-5.6", "GPT-5.6", "2.50", "10.00", "0.25", "2.50"),
         row("gpt-4o", "GPT-4o", "2.50", "10.00", "1.25", "2.50"),
+        // OpenAI Codex variants (gpt-5.x) — base names; the prefix-fallback in
+        // `resolve` maps variant suffixes (`-codex`, `-low/medium/high/…`) back
+        // to these. Codex logs never expose cache_creation, so it is 0 here and
+        // the cache-write heuristic does not affect Codex cost.
+        row("gpt-5.5", "GPT-5.5", "5", "30", "0.50", "0"),
+        row("gpt-5.4", "GPT-5.4", "2.50", "15", "0.25", "0"),
+        row("gpt-5.2", "GPT-5.2", "1.75", "14", "0.175", "0"),
         // Google (approx).
         row(
             "gemini-2.5-pro",
@@ -267,6 +274,26 @@ pub fn builtin_seed() -> Vec<ModelPricing> {
             "0.125",
             "1.25",
         ),
+        // DeepSeek (OpenCode's common backend). Values from CC-Switch's table;
+        // v4 and newer are not listed here — they fall to cost 0 and are
+        // top-up rebilled once a price is added via the Pricing UI / LiteLLM.
+        row(
+            "deepseek-v3.2",
+            "DeepSeek V3.2",
+            "0.28",
+            "0.42",
+            "0.028",
+            "0",
+        ),
+        row(
+            "deepseek-v3.1",
+            "DeepSeek V3.1",
+            "0.55",
+            "1.67",
+            "0.055",
+            "0",
+        ),
+        row("deepseek-v3", "DeepSeek V3", "0.28", "1.11", "0.028", "0"),
     ]
 }
 

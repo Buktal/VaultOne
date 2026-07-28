@@ -9,7 +9,7 @@
 //! or pricing. That is applied by the ingest layer, so the same provider output
 //! can land in the Local Store (Standalone) and the JSONL Artifact.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::{AppError, AppResult};
 use crate::model::{ServerToolUse, TokenCounts};
@@ -111,6 +111,19 @@ pub trait Provider: Send + Sync {
     }
 }
 
+/// All enabled Source-log providers, in collection order. A provider whose
+/// source dir is absent simply discovers no files (not an error), so every
+/// provider is always instantiated; the shared `scan_progress` table keys by
+/// file path, which is naturally disjoint across providers.
+pub fn all_providers() -> AppResult<Vec<Box<dyn Provider>>> {
+    Ok(vec![
+        Box::new(ClaudeCodeProvider::new()?),
+        Box::new(CodexProvider::new()?),
+        Box::new(GeminiCliProvider::new()?),
+        Box::new(OpenCodeProvider::new()?),
+    ])
+}
+
 // ---------------------------------------------------------------------------
 // Claude Code provider
 // ---------------------------------------------------------------------------
@@ -164,7 +177,20 @@ impl ClaudeCodeProvider {
                 match ev.classify() {
                     Parsed::Usage(u) => {
                         let key = mid.unwrap_or_else(|| u.uuid.clone());
-                        events_by_mid.entry(key).or_insert(u);
+                        // One message id ⇒ one record, but pick the BEST snapshot:
+                        // a `message_start` event (output=1, no stop_reason) often
+                        // lands before the final block (full output + stop_reason).
+                        // First-wins would freeze the snapshot and systematically
+                        // undercount output. Prefer a non-empty stop_reason; on a
+                        // tie take the larger output_tokens.
+                        events_by_mid
+                            .entry(key)
+                            .and_modify(|e| {
+                                if should_replace(e, &u) {
+                                    *e = u.clone();
+                                }
+                            })
+                            .or_insert(u);
                     }
                     Parsed::TurnDuration(td) => turn_durations.push(td),
                     Parsed::Skip => {}
@@ -345,6 +371,1158 @@ impl Provider for ClaudeCodeProvider {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Codex provider
+// ---------------------------------------------------------------------------
+
+/// Codex (`~/.codex`) session-log provider.
+///
+/// Reads `<codex_dir>/sessions/**/*.jsonl` (depth ≤ 3, i.e. `YYYY/MM/DD`) and
+/// `<codex_dir>/archived_sessions/*.jsonl` (flat). Only `session_meta`,
+/// `turn_context`, and `event_msg` (subtype `token_count`) events are consumed.
+///
+/// Codex's `total_token_usage` is **cumulative** and its `input_tokens` is
+/// cache-inclusive, so the provider computes per-call deltas and subtracts
+/// `cache_read` to yield a fresh `input` — Codex is the one cache-inclusive
+/// source (parse-time fresh-input normalization). Sub-agent / fork logs replay
+/// the parent thread's history before their own usage; that replay only
+/// re-establishes the cumulative baseline and is never emitted.
+pub struct CodexProvider {
+    codex_dir: PathBuf,
+}
+
+impl CodexProvider {
+    /// Default provider rooted at `~/.codex`.
+    pub fn new() -> AppResult<Self> {
+        let home =
+            dirs::home_dir().ok_or_else(|| AppError::Provider("cannot resolve home dir".into()))?;
+        Ok(Self {
+            codex_dir: home.join(".codex"),
+        })
+    }
+
+    /// Test/override constructor with an explicit codex dir.
+    #[cfg(test)]
+    pub(crate) fn with_dir(dir: PathBuf) -> Self {
+        Self { codex_dir: dir }
+    }
+
+    fn discover_in(&self) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        let sessions = self.codex_dir.join("sessions");
+        if sessions.is_dir() {
+            collect_codex_jsonl_recursive(&sessions, &mut files, 0, 3);
+        }
+        let archived = self.codex_dir.join("archived_sessions");
+        if archived.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&archived) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                        files.push(path);
+                    }
+                }
+            }
+        }
+        files
+    }
+}
+
+impl Provider for CodexProvider {
+    fn name(&self) -> &'static str {
+        "codex_cli"
+    }
+
+    fn discover(&self) -> AppResult<Vec<PathBuf>> {
+        if !self.codex_dir.exists() {
+            return Ok(Vec::new());
+        }
+        Ok(self.discover_in())
+    }
+
+    fn parse(&self, files: &[PathBuf]) -> AppResult<CollectResult> {
+        let mut events = Vec::new();
+        let mut skipped = 0u32;
+        for file in files {
+            let text = match std::fs::read_to_string(file) {
+                Ok(t) => t,
+                Err(_) => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+            let (identity, boundary) = prescan_codex_text(&text);
+            let parsed = parse_codex_text(&text, identity, boundary, 0);
+            events.extend(parsed.events);
+            skipped += parsed.skipped;
+        }
+        events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
+        Ok(CollectResult {
+            source: self.name().to_string(),
+            events,
+            turn_durations: Vec::new(),
+            files_scanned: files.len() as u32,
+            lines_skipped: skipped,
+        })
+    }
+
+    /// Incremental collect: mtime-gate unchanged files; for a changed file,
+    /// re-parse it fully to rebuild the cumulative baseline + event_index, but
+    /// only EMIT events past the recorded cursor. The baseline cannot be cached
+    /// (it depends on every prior line), so old lines are still parsed — the
+    /// saving is skipping unchanged files entirely + not re-emitting seen rows.
+    fn collect_incremental(
+        &self,
+        progress: &ScanProgress,
+    ) -> AppResult<(CollectResult, ScanProgressDelta)> {
+        let files = self.discover()?;
+        let mut events = Vec::new();
+        let mut skipped = 0u32;
+        let mut delta = ScanProgressDelta::new();
+        for file in &files {
+            let path_str = file.to_string_lossy().into_owned();
+            let metadata = match std::fs::metadata(file) {
+                Ok(m) => m,
+                Err(_) => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+            let mtime = metadata_modified_nanos(&metadata);
+            let prev = progress.get(&path_str).copied().unwrap_or_default();
+            if prev.last_modified != 0 && mtime <= prev.last_modified {
+                continue;
+            }
+            let text = match std::fs::read_to_string(file) {
+                Ok(t) => t,
+                Err(_) => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+            let (identity, boundary) = prescan_codex_text(&text);
+            let parsed = parse_codex_text(&text, identity, boundary, prev.last_line_offset);
+            events.extend(parsed.events);
+            skipped += parsed.skipped;
+            // Partial-last-line guard: a file with no trailing newline may be
+            // mid-write — don't advance past the last complete line.
+            let total_lines = parsed.total_lines;
+            let new_offset = if parsed.ends_clean {
+                total_lines
+            } else if total_lines > prev.last_line_offset {
+                total_lines - 1
+            } else {
+                prev.last_line_offset
+            };
+            delta.insert(
+                path_str,
+                FileCursor {
+                    last_modified: mtime,
+                    last_line_offset: new_offset,
+                },
+            );
+        }
+        events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
+        let result = CollectResult {
+            source: self.name().to_string(),
+            events,
+            turn_durations: Vec::new(),
+            files_scanned: files.len() as u32,
+            lines_skipped: skipped,
+        };
+        Ok((result, delta))
+    }
+}
+
+// ---- Codex parsing internals (pure, ported from CC-Switch's scanner) ----
+
+/// Cumulative token usage tracked across a file (the `total_token_usage` field).
+#[derive(Debug, Clone, Default)]
+struct CumulativeTokens {
+    input: u64,
+    cached_input: u64,
+    output: u64,
+}
+
+/// Per-call delta derived from two cumulative snapshots.
+#[derive(Debug)]
+struct DeltaTokens {
+    input: u32,
+    cached_input: u32,
+    output: u32,
+}
+
+impl DeltaTokens {
+    fn is_zero(&self) -> bool {
+        self.input == 0 && self.cached_input == 0 && self.output == 0
+    }
+}
+
+/// Per-file parse state advanced line by line.
+struct CodexFileState {
+    thread_id: Option<String>,
+    current_model: String,
+    prev_total: Option<CumulativeTokens>,
+    event_index: u32,
+}
+
+/// A Codex session's identity: its unique thread id + whether it carries a
+/// replayed parent-thread history snapshot (sub-agent or fork).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CodexSessionIdentity {
+    thread_id: String,
+    carries_history_snapshot: bool,
+}
+
+/// Result of parsing one Codex file's text.
+struct CodexParsed {
+    events: Vec<RawUsage>,
+    /// History-replay snapshot events beyond the emit cursor (diagnostic).
+    skipped: u32,
+    total_lines: i64,
+    ends_clean: bool,
+}
+
+/// One pre-scan pass over the file text: recover the session identity (first
+/// `session_meta`) and — only if that session carries a history snapshot — the
+/// 1-based line number of the first takeover event (`thread_settings_applied`
+/// or `inter_agent_communication*`), before which token events are replay.
+fn prescan_codex_text(text: &str) -> (Option<CodexSessionIdentity>, Option<i64>) {
+    let mut identity = None;
+    let mut boundary = None;
+    for (index, line) in text.lines().enumerate() {
+        if identity.is_none() && line.contains("\"session_meta\"") {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                if value.get("type").and_then(|v| v.as_str()) == Some("session_meta") {
+                    if let Some(id) = value.get("payload").and_then(parse_codex_session_identity) {
+                        identity = Some(id);
+                    }
+                }
+            }
+        }
+        if boundary.is_none()
+            && (line.contains("\"thread_settings_applied\"")
+                || line.contains("\"inter_agent_communication"))
+        {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(event_type) = value.get("type").and_then(|v| v.as_str()) {
+                    let is_boundary = event_type.starts_with("inter_agent_communication")
+                        || (event_type == "event_msg"
+                            && value
+                                .get("payload")
+                                .and_then(|p| p.get("type"))
+                                .and_then(|v| v.as_str())
+                                == Some("thread_settings_applied"));
+                    if is_boundary {
+                        boundary = Some(index as i64 + 1);
+                    }
+                }
+            }
+        }
+    }
+    let boundary = identity.as_ref().and_then(|id| {
+        if id.carries_history_snapshot {
+            boundary
+        } else {
+            None
+        }
+    });
+    (identity, boundary)
+}
+
+/// Parse a file's text into raw events. `emit_after_line` is the 1-based cursor:
+/// events at or before it rebuild state but are not re-emitted (0 ⇒ emit all).
+fn parse_codex_text(
+    text: &str,
+    identity: Option<CodexSessionIdentity>,
+    history_replay_boundary: Option<i64>,
+    emit_after_line: i64,
+) -> CodexParsed {
+    let lines: Vec<&str> = text.lines().collect();
+    let total_lines = lines.len() as i64;
+    let ends_clean = text.ends_with('\n') || text.ends_with('\r');
+
+    let mut state = CodexFileState {
+        thread_id: identity.map(|i| i.thread_id),
+        current_model: "unknown".to_string(),
+        prev_total: None,
+        event_index: 0,
+    };
+    let mut events = Vec::new();
+    let mut skipped = 0u32;
+
+    for (idx, line) in lines.iter().enumerate() {
+        let line_offset = idx as i64 + 1; // 1-based, matching the cursor
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // Fast filter before serde.
+        let is_event_msg = line.contains("\"event_msg\"");
+        let is_turn_context = line.contains("\"turn_context\"");
+        let is_session_meta = line.contains("\"session_meta\"");
+        if !is_event_msg && !is_turn_context && !is_session_meta {
+            continue;
+        }
+        if is_event_msg && !line.contains("\"token_count\"") {
+            continue;
+        }
+
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(event_type) = value.get("type").and_then(|t| t.as_str()) else {
+            continue;
+        };
+
+        match event_type {
+            "session_meta" if state.thread_id.is_none() => {
+                state.thread_id = value
+                    .get("payload")
+                    .and_then(parse_codex_session_identity)
+                    .map(|i| i.thread_id);
+            }
+            "turn_context" => {
+                if let Some(payload) = value.get("payload") {
+                    if let Some(model) = payload
+                        .get("model")
+                        .or_else(|| payload.get("info").and_then(|i| i.get("model")))
+                        .and_then(|v| v.as_str())
+                    {
+                        state.current_model = normalize_codex_model(model);
+                    }
+                }
+            }
+            "event_msg" => {
+                let Some(payload) = value.get("payload") else {
+                    continue;
+                };
+                if payload.get("type").and_then(|t| t.as_str()) != Some("token_count") {
+                    continue;
+                }
+                let info = match payload.get("info") {
+                    Some(i) if !i.is_null() => i,
+                    _ => continue, // first event often has null info
+                };
+                if let Some(model) = info
+                    .get("model")
+                    .or_else(|| info.get("model_name"))
+                    .or_else(|| payload.get("model"))
+                    .and_then(|v| v.as_str())
+                {
+                    state.current_model = normalize_codex_model(model);
+                }
+                // Prefer cumulative total_token_usage; fall back to last_token_usage
+                // (already a per-call delta).
+                let (cumulative, is_total) = if let Some(total) = info.get("total_token_usage") {
+                    (parse_cumulative_tokens(total), true)
+                } else if let Some(last) = info.get("last_token_usage") {
+                    (parse_cumulative_tokens(last), false)
+                } else {
+                    continue;
+                };
+                let Some(cumulative) = cumulative else {
+                    continue;
+                };
+                let mut delta = if is_total {
+                    let d = compute_delta(&state.prev_total, &cumulative);
+                    state.prev_total = Some(cumulative);
+                    d
+                } else {
+                    DeltaTokens {
+                        input: cumulative.input as u32,
+                        cached_input: cumulative.cached_input as u32,
+                        output: cumulative.output as u32,
+                    }
+                };
+                // Clamp: cache_read must not exceed the cache-inclusive input.
+                delta.cached_input = delta.cached_input.min(delta.input);
+                if delta.is_zero() {
+                    continue; // task-boundary snapshot, no new usage
+                }
+                // Every non-zero event occupies a stable sequence number — line
+                // numbers drift if the file is edited, this does not.
+                state.event_index += 1;
+
+                // History replay only re-establishes the baseline — never emit.
+                if is_history_snapshot_event(history_replay_boundary, line_offset) {
+                    if line_offset > emit_after_line {
+                        skipped += 1;
+                    }
+                    continue;
+                }
+                // Already-synced lines rebuild state but are not re-emitted.
+                if line_offset <= emit_after_line {
+                    continue;
+                }
+
+                let thread_id = state.thread_id.as_deref().unwrap_or("unknown");
+                let timestamp = value
+                    .get("timestamp")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                // Fresh input = cache-inclusive input − cache_read.
+                let fresh_input = delta.input.saturating_sub(delta.cached_input);
+                events.push(RawUsage {
+                    uuid: format!("codex:thread-v1:{thread_id}:{}", state.event_index),
+                    timestamp: timestamp.unwrap_or_else(crate::time::now_iso),
+                    model: state.current_model.clone(),
+                    source: "codex_cli".to_string(),
+                    tokens: TokenCounts {
+                        input: fresh_input,
+                        output: delta.output,
+                        cache_creation: 0,
+                        cache_read: delta.cached_input,
+                    },
+                    server_tool_use: ServerToolUse::default(),
+                    stop_reason: String::new(),
+                    service_tier: String::new(),
+                    iterations: 0,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    CodexParsed {
+        events,
+        skipped,
+        total_lines,
+        ends_clean,
+    }
+}
+
+fn is_history_snapshot_event(boundary: Option<i64>, line_offset: i64) -> bool {
+    boundary.is_some_and(|b| line_offset < b)
+}
+
+/// Recursive `.jsonl` discovery with a depth cap (Codex nests `YYYY/MM/DD`).
+fn collect_codex_jsonl_recursive(dir: &Path, files: &mut Vec<PathBuf>, depth: u32, max_depth: u32) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() && depth < max_depth {
+            collect_codex_jsonl_recursive(&path, files, depth + 1, max_depth);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            files.push(path);
+        }
+    }
+}
+
+/// Extract the session identity from a `session_meta` payload. The `id` is the
+/// unique thread id; `session_id` points at the parent thread for sub-agents.
+fn parse_codex_session_identity(payload: &serde_json::Value) -> Option<CodexSessionIdentity> {
+    let thread_id = payload
+        .get("id")
+        .or_else(|| payload.get("thread_id"))
+        .or_else(|| payload.get("threadId"))
+        .or_else(|| payload.get("session_id"))
+        .or_else(|| payload.get("sessionId"))
+        .and_then(|v| v.as_str())?
+        .to_string();
+    let session_id = payload
+        .get("session_id")
+        .or_else(|| payload.get("sessionId"))
+        .and_then(|v| v.as_str());
+    let carries_history_snapshot = payload
+        .get("forked_from_id")
+        .and_then(|v| v.as_str())
+        .is_some_and(|v| !v.is_empty())
+        || payload
+            .get("source")
+            .and_then(|s| s.get("subagent"))
+            .is_some()
+        || session_id.is_some_and(|sid| sid != thread_id);
+    Some(CodexSessionIdentity {
+        thread_id,
+        carries_history_snapshot,
+    })
+}
+
+/// Normalize a Codex model name: lowercase → strip `provider/` prefix → strip
+/// `-YYYY-MM-DD` / `-YYYYMMDD` date suffix. Required for pricing-table hits.
+fn normalize_codex_model(raw: &str) -> String {
+    let mut name = raw.to_lowercase();
+    if let Some(pos) = name.rfind('/') {
+        name = name[pos + 1..].to_string();
+    }
+    // Strip ISO date suffix -YYYY-MM-DD (exactly 11 chars).
+    if name.len() > 11 && name.is_char_boundary(name.len() - 11) {
+        let suffix = &name[name.len() - 11..];
+        if suffix.is_ascii()
+            && suffix.as_bytes()[0] == b'-'
+            && suffix[1..5].chars().all(|c| c.is_ascii_digit())
+            && suffix.as_bytes()[5] == b'-'
+            && suffix[6..8].chars().all(|c| c.is_ascii_digit())
+            && suffix.as_bytes()[8] == b'-'
+            && suffix[9..11].chars().all(|c| c.is_ascii_digit())
+        {
+            name.truncate(name.len() - 11);
+        }
+    }
+    // Strip compact date suffix -YYYYMMDD (exactly 8 chars after last '-').
+    if name.len() > 9 {
+        let parts: Vec<&str> = name.rsplitn(2, '-').collect();
+        if parts.len() == 2 {
+            if let Some(suffix) = parts.first() {
+                if suffix.len() == 8 && suffix.chars().all(|c| c.is_ascii_digit()) {
+                    name = parts[1].to_string();
+                }
+            }
+        }
+    }
+    name
+}
+
+/// Delta between two cumulative snapshots (saturating to guard against the
+/// current falling below the previous — abnormal but non-fatal).
+fn compute_delta(prev: &Option<CumulativeTokens>, current: &CumulativeTokens) -> DeltaTokens {
+    match prev {
+        None => DeltaTokens {
+            input: current.input as u32,
+            cached_input: current.cached_input as u32,
+            output: current.output as u32,
+        },
+        Some(p) => DeltaTokens {
+            input: current.input.saturating_sub(p.input) as u32,
+            cached_input: current.cached_input.saturating_sub(p.cached_input) as u32,
+            output: current.output.saturating_sub(p.output) as u32,
+        },
+    }
+}
+
+/// Extract cumulative tokens from a `total_token_usage` / `last_token_usage`
+/// object. `cached_input_tokens` and `cache_read_input_tokens` are both
+/// accepted (field name varies across Codex versions).
+fn parse_cumulative_tokens(total_usage: &serde_json::Value) -> Option<CumulativeTokens> {
+    if total_usage.is_null() || !total_usage.is_object() {
+        return None;
+    }
+    Some(CumulativeTokens {
+        input: total_usage
+            .get("input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        cached_input: total_usage
+            .get("cached_input_tokens")
+            .or_else(|| total_usage.get("cache_read_input_tokens"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        output: total_usage
+            .get("output_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Gemini CLI provider
+// ---------------------------------------------------------------------------
+
+/// Gemini CLI (`~/.gemini`) session-log provider.
+///
+/// Reads `<gemini_dir>/tmp/<project_hash>/chats/session-*.json`. Each file is a
+/// single JSON object with a `messages` array; only `type:"gemini"` messages
+/// carrying a `tokens` object are consumed. The CLI pre-normalizes tokens, so
+/// `input` is already fresh, `cached` is cache_read, and `thoughts` is folded
+/// into `output` (thinking tokens are billed as output). `cache_creation` is
+/// always 0 — Gemini uses implicit caching and does not expose a write bucket.
+pub struct GeminiCliProvider {
+    gemini_dir: PathBuf,
+}
+
+impl GeminiCliProvider {
+    /// Default provider rooted at `~/.gemini`.
+    pub fn new() -> AppResult<Self> {
+        let home =
+            dirs::home_dir().ok_or_else(|| AppError::Provider("cannot resolve home dir".into()))?;
+        Ok(Self {
+            gemini_dir: home.join(".gemini"),
+        })
+    }
+
+    /// Test/override constructor with an explicit gemini dir.
+    #[cfg(test)]
+    pub(crate) fn with_dir(dir: PathBuf) -> Self {
+        Self { gemini_dir: dir }
+    }
+
+    fn discover_in(&self) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        let tmp = self.gemini_dir.join("tmp");
+        if !tmp.is_dir() {
+            return files;
+        }
+        let Ok(project_dirs) = std::fs::read_dir(&tmp) else {
+            return files;
+        };
+        for entry in project_dirs.flatten() {
+            let chats = entry.path().join("chats");
+            if !chats.is_dir() {
+                continue;
+            }
+            let Ok(chat_files) = std::fs::read_dir(&chats) else {
+                continue;
+            };
+            for fe in chat_files.flatten() {
+                let path = fe.path();
+                let is_session = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("session-") && n.ends_with(".json"))
+                    .unwrap_or(false);
+                if is_session {
+                    files.push(path);
+                }
+            }
+        }
+        files
+    }
+}
+
+impl Provider for GeminiCliProvider {
+    fn name(&self) -> &'static str {
+        "gemini_cli"
+    }
+
+    fn discover(&self) -> AppResult<Vec<PathBuf>> {
+        if !self.gemini_dir.exists() {
+            return Ok(Vec::new());
+        }
+        Ok(self.discover_in())
+    }
+
+    fn parse(&self, files: &[PathBuf]) -> AppResult<CollectResult> {
+        let mut events = Vec::new();
+        let mut skipped = 0u32;
+        for file in files {
+            let text = match std::fs::read_to_string(file) {
+                Ok(t) => t,
+                Err(_) => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+            events.extend(parse_gemini_text(&text));
+        }
+        events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
+        Ok(CollectResult {
+            source: self.name().to_string(),
+            events,
+            turn_durations: Vec::new(),
+            files_scanned: files.len() as u32,
+            lines_skipped: skipped,
+        })
+    }
+
+    /// Incremental collect: a Gemini session file is a single JSON object, so
+    /// there is no line cursor — mtime-gate unchanged files and full re-parse
+    /// the rest. The ledger dedups already-seen message ids; a CLI rewrite that
+    /// changes an existing message's tokens is NOT re-costed (freeze + top-up
+    /// only), which matches the session-log contract.
+    fn collect_incremental(
+        &self,
+        progress: &ScanProgress,
+    ) -> AppResult<(CollectResult, ScanProgressDelta)> {
+        let files = self.discover()?;
+        let mut events = Vec::new();
+        let mut skipped = 0u32;
+        let mut delta = ScanProgressDelta::new();
+        for file in &files {
+            let path_str = file.to_string_lossy().into_owned();
+            let metadata = match std::fs::metadata(file) {
+                Ok(m) => m,
+                Err(_) => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+            let mtime = metadata_modified_nanos(&metadata);
+            let prev = progress.get(&path_str).copied().unwrap_or_default();
+            if prev.last_modified != 0 && mtime <= prev.last_modified {
+                continue;
+            }
+            let text = match std::fs::read_to_string(file) {
+                Ok(t) => t,
+                Err(_) => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+            events.extend(parse_gemini_text(&text));
+            // No line cursor for a single-JSON file; offset stays 0.
+            delta.insert(
+                path_str,
+                FileCursor {
+                    last_modified: mtime,
+                    last_line_offset: 0,
+                },
+            );
+        }
+        events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
+        let result = CollectResult {
+            source: self.name().to_string(),
+            events,
+            turn_durations: Vec::new(),
+            files_scanned: files.len() as u32,
+            lines_skipped: skipped,
+        };
+        Ok((result, delta))
+    }
+}
+
+/// Parsed token fields from a Gemini `tokens` object (pre-thoughts-merge).
+struct GeminiTokens {
+    input: u32,
+    output: u32,
+    cached: u32,
+    thoughts: u32,
+}
+
+impl GeminiTokens {
+    fn is_all_zero(&self) -> bool {
+        self.input == 0 && self.output == 0 && self.thoughts == 0 && self.cached == 0
+    }
+}
+
+fn parse_gemini_tokens(tokens: &serde_json::Value) -> GeminiTokens {
+    let n = |k: &str| tokens.get(k).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    GeminiTokens {
+        input: n("input"),
+        output: n("output"),
+        cached: n("cached"),
+        thoughts: n("thoughts"),
+    }
+}
+
+/// Parse one Gemini session file's JSON text into raw events.
+fn parse_gemini_text(text: &str) -> Vec<RawUsage> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Vec::new();
+    };
+    let session_id = value
+        .get("sessionId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let Some(messages) = value.get("messages").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    let mut events = Vec::new();
+    for msg in messages {
+        if msg.get("type").and_then(|t| t.as_str()) != Some("gemini") {
+            continue;
+        }
+        let Some(tokens_obj) = msg.get("tokens") else {
+            continue;
+        };
+        if !tokens_obj.is_object() {
+            continue;
+        }
+        let tokens = parse_gemini_tokens(tokens_obj);
+        if tokens.is_all_zero() {
+            continue;
+        }
+        let message_id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let model = msg
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let timestamp = msg
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        events.push(RawUsage {
+            uuid: format!("gemini:{session_id}:{message_id}"),
+            timestamp: timestamp.unwrap_or_else(crate::time::now_iso),
+            model: model.to_string(),
+            source: "gemini_cli".to_string(),
+            tokens: TokenCounts {
+                input: tokens.input,
+                output: tokens.output + tokens.thoughts,
+                cache_creation: 0,
+                cache_read: tokens.cached,
+            },
+            server_tool_use: ServerToolUse::default(),
+            stop_reason: String::new(),
+            service_tier: String::new(),
+            iterations: 0,
+        });
+    }
+    events
+}
+
+// ---------------------------------------------------------------------------
+// OpenCode provider (SQLite)
+// ---------------------------------------------------------------------------
+
+/// OpenCode (`~/.local/share/opencode/opencode.db`) session-log provider.
+///
+/// OpenCode stores sessions in a SQLite db (WAL mode). `message.data` is a JSON
+/// string with Anthropic-style tokens: `input` is fresh, `cache.{read,write}`
+/// are separate, `reasoning` folds into `output`. The provider opens the db
+/// read-only and queries per session. The main db file only updates on
+/// checkpoint, so fresh commits in `-wal` are merged into the mtime gate; a
+/// two-level watermark (file + per-session `time_updated`) skips unchanged work.
+pub struct OpenCodeProvider {
+    db_path: Option<PathBuf>,
+}
+
+impl OpenCodeProvider {
+    /// Default provider rooted at the resolved opencode db path (absent ⇒ the
+    /// provider discovers nothing).
+    pub fn new() -> AppResult<Self> {
+        Ok(Self {
+            db_path: opencode_db_path(),
+        })
+    }
+
+    /// Test/override constructor with an explicit db path.
+    #[cfg(test)]
+    pub(crate) fn with_db(path: PathBuf) -> Self {
+        Self {
+            db_path: Some(path),
+        }
+    }
+}
+
+impl Provider for OpenCodeProvider {
+    fn name(&self) -> &'static str {
+        "opencode"
+    }
+
+    fn discover(&self) -> AppResult<Vec<PathBuf>> {
+        match &self.db_path {
+            Some(p) if p.exists() => Ok(vec![p.clone()]),
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    fn parse(&self, files: &[PathBuf]) -> AppResult<CollectResult> {
+        let mut events = Vec::new();
+        let mut skipped = 0u32;
+        let mut files_scanned = 0u32;
+        for db_path in files {
+            files_scanned += 1;
+            let conn = match open_opencode_readonly(db_path) {
+                Ok(c) => c,
+                Err(_) => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+            match collect_all_messages(&conn) {
+                Ok(ev) => events.extend(ev),
+                Err(_) => skipped += 1,
+            }
+        }
+        events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
+        Ok(CollectResult {
+            source: self.name().to_string(),
+            events,
+            turn_durations: Vec::new(),
+            files_scanned,
+            lines_skipped: skipped,
+        })
+    }
+
+    /// Two-level watermark incremental: file-level mtime gate (db + `-wal`
+    /// merged) skips an unchanged db; per-session `time_updated` skips sessions
+    /// already synced. A session with an in-progress message (no `time.completed`)
+    /// does not advance its cursor, so it retries next collect.
+    fn collect_incremental(
+        &self,
+        progress: &ScanProgress,
+    ) -> AppResult<(CollectResult, ScanProgressDelta)> {
+        let mut result = CollectResult {
+            source: self.name().to_string(),
+            ..CollectResult::default()
+        };
+        let mut delta = ScanProgressDelta::new();
+        let Some(db_path) = &self.db_path else {
+            return Ok((result, delta));
+        };
+        let db_path_str = db_path.to_string_lossy().into_owned();
+
+        let Some(merged_mtime) = merged_db_mtime(db_path) else {
+            return Ok((result, delta));
+        };
+        result.files_scanned = 1;
+        let prev_file = progress.get(&db_path_str).copied().unwrap_or_default();
+        if prev_file.last_modified != 0 && merged_mtime <= prev_file.last_modified {
+            return Ok((result, delta));
+        }
+
+        let conn = match open_opencode_readonly(db_path) {
+            Ok(c) => c,
+            Err(_) => {
+                result.lines_skipped = 1;
+                return Ok((result, delta));
+            }
+        };
+        let sessions = match query_sessions(&conn) {
+            Ok(s) => s,
+            Err(_) => {
+                result.lines_skipped = 1;
+                return Ok((result, delta));
+            }
+        };
+        for (session_id, watermark) in &sessions {
+            let sync_key = format!("{db_path_str}:{session_id}");
+            let prev_sess = progress.get(&sync_key).copied().unwrap_or_default();
+            if *watermark <= prev_sess.last_modified {
+                continue;
+            }
+            match query_assistant_messages(&conn, session_id) {
+                Ok(qr) => {
+                    for (message_id, msg) in &qr.messages {
+                        result
+                            .events
+                            .push(opencode_raw_usage(session_id, message_id, msg));
+                    }
+                    if !qr.has_incomplete_usage {
+                        delta.insert(
+                            sync_key.clone(),
+                            FileCursor {
+                                last_modified: *watermark,
+                                last_line_offset: 0,
+                            },
+                        );
+                    }
+                }
+                Err(_) => result.lines_skipped += 1,
+            }
+        }
+        result
+            .events
+            .sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
+        delta.insert(
+            db_path_str,
+            FileCursor {
+                last_modified: merged_mtime,
+                last_line_offset: 0,
+            },
+        );
+        Ok((result, delta))
+    }
+}
+
+/// Resolve the opencode db path: `OPENCODE_DB` (absolute) > `XDG_DATA_HOME` >
+/// `~/.local/share/opencode/opencode.db`. OpenCode uses xdg-basedir uniformly
+/// across platforms, so this is the same path on Windows as on Linux.
+fn opencode_db_path() -> Option<PathBuf> {
+    if let Ok(v) = std::env::var("OPENCODE_DB") {
+        let p = PathBuf::from(v);
+        if p.is_absolute() {
+            return Some(p);
+        }
+    }
+    if let Ok(v) = std::env::var("XDG_DATA_HOME") {
+        let p = PathBuf::from(v);
+        if p.is_absolute() {
+            return Some(p.join("opencode").join("opencode.db"));
+        }
+    }
+    let home = dirs::home_dir()?;
+    Some(
+        home.join(".local")
+            .join("share")
+            .join("opencode")
+            .join("opencode.db"),
+    )
+}
+
+/// max(db mtime, db-wal mtime) — the main db only updates on checkpoint, so
+/// fresh commits in the `-wal` side file must be considered or they're missed.
+fn merged_db_mtime(db_path: &Path) -> Option<i64> {
+    let db_meta = std::fs::metadata(db_path).ok()?;
+    let mut m = metadata_modified_nanos(&db_meta);
+    let wal = db_path.with_extension("db-wal");
+    if let Ok(wal_meta) = std::fs::metadata(&wal) {
+        m = m.max(metadata_modified_nanos(&wal_meta));
+    }
+    Some(m)
+}
+
+fn open_opencode_readonly(db_path: &Path) -> AppResult<rusqlite::Connection> {
+    rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| AppError::Db(format!("cannot open opencode.db read-only: {e}")))
+}
+
+/// All sessions' completed assistant messages (full scan, no watermark gate).
+fn collect_all_messages(conn: &rusqlite::Connection) -> AppResult<Vec<RawUsage>> {
+    let sessions = query_sessions(conn)?;
+    let mut events = Vec::new();
+    for (session_id, _) in &sessions {
+        if let Ok(qr) = query_assistant_messages(conn, session_id) {
+            for (message_id, msg) in &qr.messages {
+                events.push(opencode_raw_usage(session_id, message_id, msg));
+            }
+        }
+    }
+    Ok(events)
+}
+
+/// Per-session (id, sync watermark) — the max of the session's own
+/// `time_updated` and all its messages' `time_updated`.
+fn query_sessions(conn: &rusqlite::Connection) -> AppResult<Vec<(String, i64)>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.id,
+                    MAX(s.time_updated, COALESCE(MAX(m.time_updated), s.time_updated)) AS sync_watermark
+             FROM session s
+             LEFT JOIN message m ON m.session_id = s.id
+             GROUP BY s.id
+             ORDER BY sync_watermark",
+        )
+        .map_err(|e| AppError::Db(format!("opencode session query prepare: {e}")))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(|e| AppError::Db(format!("opencode session query: {e}")))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| AppError::Db(format!("opencode session row: {e}")))?);
+    }
+    Ok(out)
+}
+
+/// A session's completed assistant messages, plus whether an in-progress
+/// message (no `time.completed`) was seen — the caller retries that session.
+struct OpenCodeMessageQuery {
+    messages: Vec<(String, OpenCodeMessageData)>,
+    has_incomplete_usage: bool,
+}
+
+/// Parsed `message.data` token fields (Anthropic-style: fresh input, cache split).
+struct OpenCodeMessageData {
+    input_tokens: u32,
+    output_tokens: u32,
+    reasoning_tokens: u32,
+    cache_read_tokens: u32,
+    cache_write_tokens: u32,
+    model_id: String,
+    timestamp_ms: i64,
+}
+
+fn query_assistant_messages(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+) -> AppResult<OpenCodeMessageQuery> {
+    let mut stmt = conn
+        .prepare("SELECT id, data FROM message WHERE session_id = ?1 ORDER BY time_created")
+        .map_err(|e| AppError::Db(format!("opencode message query prepare: {e}")))?;
+    let rows = stmt
+        .query_map([session_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| AppError::Db(format!("opencode message query: {e}")))?;
+    let mut messages = Vec::new();
+    let mut has_incomplete_usage = false;
+    for row in rows {
+        let (message_id, data_json) =
+            row.map_err(|e| AppError::Db(format!("opencode message row: {e}")))?;
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&data_json) else {
+            continue;
+        };
+        if value.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+            continue;
+        }
+        if value.get("tokens").is_none() {
+            continue;
+        }
+        // In-progress messages carry half-formed tokens and no `time.completed`;
+        // skip them and signal the caller to retry the session.
+        if value.get("time").and_then(|t| t.get("completed")).is_none() {
+            has_incomplete_usage = true;
+            continue;
+        }
+        if let Some(msg) = parse_opencode_message_data(&value) {
+            messages.push((message_id, msg));
+        }
+    }
+    Ok(OpenCodeMessageQuery {
+        messages,
+        has_incomplete_usage,
+    })
+}
+
+/// Parse a `message.data` JSON value into token fields. Returns `None` for an
+/// all-zero message. OpenCode's self-reported `cost` is deliberately ignored —
+/// VaultOne recomputes cost from its own pricing so the four-bucket split stays
+/// consistent across providers.
+fn parse_opencode_message_data(value: &serde_json::Value) -> Option<OpenCodeMessageData> {
+    let tokens = value.get("tokens")?;
+    let n = |k: &str| tokens.get(k).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let input_tokens = n("input");
+    let output_tokens = n("output");
+    let reasoning_tokens = n("reasoning");
+    let cache_obj = tokens.get("cache");
+    let cache_read_tokens = cache_obj
+        .and_then(|c| c.get("read"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    let cache_write_tokens = cache_obj
+        .and_then(|c| c.get("write"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    if input_tokens == 0
+        && output_tokens == 0
+        && reasoning_tokens == 0
+        && cache_read_tokens == 0
+        && cache_write_tokens == 0
+    {
+        return None;
+    }
+    let model_id = value
+        .get("modelID")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let timestamp_ms = value
+        .get("time")
+        .and_then(|t| t.get("created"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    Some(OpenCodeMessageData {
+        input_tokens,
+        output_tokens,
+        reasoning_tokens,
+        cache_read_tokens,
+        cache_write_tokens,
+        model_id,
+        timestamp_ms,
+    })
+}
+
+fn opencode_raw_usage(session_id: &str, message_id: &str, msg: &OpenCodeMessageData) -> RawUsage {
+    let timestamp = if msg.timestamp_ms > 0 {
+        chrono::DateTime::from_timestamp_millis(msg.timestamp_ms)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_else(crate::time::now_iso)
+    } else {
+        crate::time::now_iso()
+    };
+    RawUsage {
+        uuid: format!("opencode:{session_id}:{message_id}"),
+        timestamp,
+        model: msg.model_id.clone(),
+        source: "opencode".to_string(),
+        tokens: TokenCounts {
+            input: msg.input_tokens,
+            output: msg.output_tokens + msg.reasoning_tokens,
+            cache_creation: msg.cache_write_tokens,
+            cache_read: msg.cache_read_tokens,
+        },
+        server_tool_use: ServerToolUse::default(),
+        stop_reason: String::new(),
+        service_tier: String::new(),
+        iterations: 0,
+    }
+}
+
 // ---- Lenient session-log deserialization ----
 //
 // Tolerant by design: every field is optional and unknown fields are ignored,
@@ -467,6 +1645,23 @@ impl SessionEvent {
     }
 }
 
+/// Message-id dedup winner policy: prefer the snapshot with a non-empty
+/// stop_reason (the final block of an assistant response); on a tie (both or
+/// neither have one) take the larger `output_tokens`. Mirrors CC-Switch's
+/// Claude session dedup — a `message_start` snapshot otherwise freezes early
+/// and undercounts output.
+fn should_replace(existing: &RawUsage, candidate: &RawUsage) -> bool {
+    let cand_has_reason = !candidate.stop_reason.is_empty();
+    let existing_has_reason = !existing.stop_reason.is_empty();
+    if cand_has_reason && !existing_has_reason {
+        true
+    } else if cand_has_reason == existing_has_reason {
+        candidate.tokens.output > existing.tokens.output
+    } else {
+        false
+    }
+}
+
 /// File mtime in nanos since UNIX_EPOCH, for the incremental mtime gate. Clamped
 /// to `i64::MAX` (the SQLite column is INTEGER). Returns 0 if mtime is
 /// unavailable — then the gate never skips (safe, just re-parses).
@@ -584,6 +1779,32 @@ mod tests {
         assert_eq!(result.events[0].tokens.input, 100);
         assert_eq!(result.events[0].tokens.cache_read, 1000);
         assert_eq!(result.events[1].tokens.input, 200);
+    }
+
+    #[test]
+    fn dedup_picks_final_block_over_message_start_snapshot() {
+        // One assistant call (msg_A) written as a `message_start` snapshot
+        // (output=1, no stop_reason) followed by the final block (full output +
+        // stop_reason). The snapshot must NOT win — otherwise output is frozen
+        // at 1 and systematically undercounted.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("s.jsonl");
+        let start = r#"{"type":"assistant","timestamp":"2026-07-21T15:56:07.000Z","uuid":"u1","message":{"id":"msg_A","model":"glm-5.2","usage":{"input_tokens":100,"output_tokens":1,"cache_read_input_tokens":1000}}}"#;
+        let final_block = r#"{"type":"assistant","timestamp":"2026-07-21T15:56:08.000Z","uuid":"u2","message":{"id":"msg_A","model":"glm-5.2","stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":1349,"cache_read_input_tokens":1000}}}"#;
+        // Snapshot first, then final.
+        write_lines(&file, &[start, final_block]);
+        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].tokens.output, 1349);
+        assert_eq!(result.events[0].stop_reason, "end_turn");
+
+        // Order-independent: final block first, then a late snapshot — final still wins.
+        write_lines(&file, &[final_block, start]);
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].tokens.output, 1349);
+        assert_eq!(result.events[0].stop_reason, "end_turn");
     }
 
     #[test]
@@ -724,5 +1945,607 @@ mod tests {
             result.events.is_empty(),
             "default impl still yields a full-parse result"
         );
+    }
+
+    // ===================== Codex provider =====================
+
+    fn write_jsonl(path: &Path, values: &[serde_json::Value]) {
+        let contents = values
+            .iter()
+            .map(serde_json::Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(path, contents).unwrap();
+    }
+
+    fn codex_session_meta(thread_id: &str, session_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "timestamp": "2026-07-10T03:00:00Z",
+            "type": "session_meta",
+            "payload": {
+                "id": thread_id,
+                "session_id": session_id,
+                "source": if thread_id == session_id {
+                    serde_json::Value::String("cli".to_string())
+                } else {
+                    serde_json::json!({ "subagent": {} })
+                }
+            }
+        })
+    }
+
+    fn codex_turn_context(model: &str) -> serde_json::Value {
+        serde_json::json!({
+            "timestamp": "2026-07-10T03:00:01Z",
+            "type": "turn_context",
+            "payload": { "model": model }
+        })
+    }
+
+    fn codex_token_count(input: u64, cached: u64, output: u64) -> serde_json::Value {
+        serde_json::json!({
+            "timestamp": "2026-07-10T03:00:02Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": { "total_token_usage": {
+                    "input_tokens": input,
+                    "cached_input_tokens": cached,
+                    "output_tokens": output
+                }}
+            }
+        })
+    }
+
+    #[test]
+    fn codex_normalize_model_lowercase_prefix_and_dates() {
+        assert_eq!(normalize_codex_model("GLM-4.6"), "glm-4.6");
+        assert_eq!(normalize_codex_model("openai/gpt-5.4"), "gpt-5.4");
+        assert_eq!(normalize_codex_model("OPENAI/GPT-5.4"), "gpt-5.4");
+        assert_eq!(normalize_codex_model("gpt-5.4-2026-03-05"), "gpt-5.4");
+        assert_eq!(
+            normalize_codex_model("gpt-5.4-pro-2026-03-05"),
+            "gpt-5.4-pro"
+        );
+        assert_eq!(normalize_codex_model("gpt-5.4-20260305"), "gpt-5.4");
+        assert_eq!(
+            normalize_codex_model("claude-opus-4-6-20260206"),
+            "claude-opus-4-6"
+        );
+        assert_eq!(
+            normalize_codex_model("openai/GPT-5.4-2026-03-05"),
+            "gpt-5.4"
+        );
+        assert_eq!(normalize_codex_model("openai/gpt-5.4-20260305"), "gpt-5.4");
+        assert_eq!(normalize_codex_model("gpt-5.2-codex"), "gpt-5.2-codex");
+        assert_eq!(normalize_codex_model("o3"), "o3");
+    }
+
+    #[test]
+    fn codex_compute_delta_first_subsequent_zero_saturating() {
+        let first = compute_delta(
+            &None,
+            &CumulativeTokens {
+                input: 17934,
+                cached_input: 9600,
+                output: 454,
+            },
+        );
+        assert_eq!(first.input, 17934);
+        assert_eq!(first.cached_input, 9600);
+        assert_eq!(first.output, 454);
+        let next = compute_delta(
+            &Some(CumulativeTokens {
+                input: 17934,
+                cached_input: 9600,
+                output: 454,
+            }),
+            &CumulativeTokens {
+                input: 36722,
+                cached_input: 27904,
+                output: 804,
+            },
+        );
+        assert_eq!(next.input, 36722 - 17934);
+        assert_eq!(next.cached_input, 27904 - 9600);
+        assert_eq!(next.output, 804 - 454);
+        // task boundary: identical cumulative ⇒ zero delta.
+        let zero = compute_delta(
+            &Some(CumulativeTokens {
+                input: 58346,
+                cached_input: 46976,
+                output: 1045,
+            }),
+            &CumulativeTokens {
+                input: 58346,
+                cached_input: 46976,
+                output: 1045,
+            },
+        );
+        assert!(zero.is_zero());
+        // abnormal: current < previous ⇒ saturates to zero.
+        let sat = compute_delta(
+            &Some(CumulativeTokens {
+                input: 100,
+                cached_input: 50,
+                output: 30,
+            }),
+            &CumulativeTokens {
+                input: 80,
+                cached_input: 40,
+                output: 20,
+            },
+        );
+        assert!(sat.is_zero());
+    }
+
+    #[test]
+    fn codex_parse_cumulative_tokens_variants() {
+        let v: serde_json::Value = serde_json::json!({
+            "input_tokens": 17934, "cached_input_tokens": 9600, "output_tokens": 454,
+            "reasoning_output_tokens": 233, "total_tokens": 18388
+        });
+        let t = parse_cumulative_tokens(&v).unwrap();
+        assert_eq!(t.input, 17934);
+        assert_eq!(t.cached_input, 9600);
+        assert_eq!(t.output, 454);
+        assert!(parse_cumulative_tokens(&serde_json::Value::Null).is_none());
+        // alt field name cache_read_input_tokens.
+        let alt: serde_json::Value = serde_json::json!({
+            "input_tokens": 1000, "cache_read_input_tokens": 500, "output_tokens": 200
+        });
+        assert_eq!(parse_cumulative_tokens(&alt).unwrap().cached_input, 500);
+    }
+
+    #[test]
+    fn codex_cached_clamped_to_input() {
+        let prev = Some(CumulativeTokens {
+            input: 100,
+            cached_input: 0,
+            output: 50,
+        });
+        let current = CumulativeTokens {
+            input: 110,
+            cached_input: 80,
+            output: 60,
+        };
+        let mut delta = compute_delta(&prev, &current);
+        // before clamp: input delta 10, cached delta 80 (abnormal, > input)
+        assert_eq!(delta.input, 10);
+        assert_eq!(delta.cached_input, 80);
+        delta.cached_input = delta.cached_input.min(delta.input);
+        assert_eq!(delta.cached_input, 10);
+    }
+
+    #[test]
+    fn codex_discover_missing_dir_returns_empty() {
+        let base = tempfile::tempdir().unwrap();
+        let p = CodexProvider::with_dir(base.path().join("nope"));
+        assert!(p.discover().unwrap().is_empty());
+    }
+
+    #[test]
+    fn codex_subagent_identity_prefers_unique_thread_id() {
+        let id = parse_codex_session_identity(
+            codex_session_meta("child", "parent")
+                .get("payload")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(id.thread_id, "child");
+        assert!(id.carries_history_snapshot);
+    }
+
+    /// CC-Switch's `test_subagent_replay_only_establishes_token_baseline`:
+    /// the replayed history (lines before `thread_settings_applied`) only sets
+    /// the cumulative baseline; the child's own usage is the post-boundary delta.
+    /// CC-Switch stores input=100 (cache-inclusive); VaultOne normalizes to
+    /// fresh at parse ⇒ input = 100 − 50 = 50 (the documented Codex divergence).
+    #[test]
+    fn codex_subagent_replay_emits_only_child_usage_with_fresh_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let child = dir
+            .path()
+            .join("sessions")
+            .join("2026")
+            .join("07")
+            .join("child.jsonl");
+        std::fs::create_dir_all(child.parent().unwrap()).unwrap();
+        write_jsonl(
+            &child,
+            &[
+                codex_session_meta("child", "parent"),
+                codex_turn_context("gpt-5.6-sol"),
+                codex_token_count(1_000, 900, 100),
+                codex_token_count(1_200, 1_000, 120),
+                serde_json::json!({
+                    "timestamp": "2026-07-10T03:00:03Z",
+                    "type": "event_msg",
+                    "payload": { "type": "thread_settings_applied" }
+                }),
+                codex_token_count(1_300, 1_050, 150),
+            ],
+        );
+        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(result.source, "codex_cli");
+        assert_eq!(
+            result.events.len(),
+            1,
+            "only the post-boundary event is emitted"
+        );
+        // 2 replay snapshots counted as skipped.
+        assert_eq!(result.lines_skipped, 2);
+        let ev = &result.events[0];
+        assert_eq!(ev.uuid, "codex:thread-v1:child:3");
+        assert_eq!(ev.model, "gpt-5.6-sol");
+        // fresh input = cache-inclusive delta (100) − cache_read (50).
+        assert_eq!(ev.tokens.input, 50);
+        assert_eq!(ev.tokens.cache_read, 50);
+        assert_eq!(ev.tokens.output, 30);
+        assert_eq!(ev.tokens.cache_creation, 0);
+    }
+
+    #[test]
+    fn codex_subagents_under_same_parent_get_distinct_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let a = sessions.join("a.jsonl");
+        let b = sessions.join("b.jsonl");
+        write_jsonl(
+            &a,
+            &[
+                codex_session_meta("child-a", "parent"),
+                codex_turn_context("gpt-5.6-sol"),
+                codex_token_count(100, 50, 10),
+            ],
+        );
+        write_jsonl(
+            &b,
+            &[
+                codex_session_meta("child-b", "parent"),
+                codex_turn_context("gpt-5.6-sol"),
+                codex_token_count(200, 100, 20),
+            ],
+        );
+        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        let mut uuids: Vec<String> = result.events.iter().map(|e| e.uuid.clone()).collect();
+        uuids.sort();
+        assert_eq!(
+            uuids,
+            vec![
+                "codex:thread-v1:child-a:1".to_string(),
+                "codex:thread-v1:child-b:1".to_string()
+            ]
+        );
+        // fresh inputs: 100−50=50, 200−100=100.
+        let by_thread: std::collections::HashMap<&str, u32> = result
+            .events
+            .iter()
+            .map(|e| (e.uuid.rsplit(':').nth(1).unwrap(), e.tokens.input))
+            .collect();
+        assert_eq!(by_thread["child-a"], 50);
+        assert_eq!(by_thread["child-b"], 100);
+    }
+
+    #[test]
+    fn codex_incremental_emits_only_appended_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sessions").join("s.jsonl");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        write_jsonl(
+            &file,
+            &[
+                codex_session_meta("t", "t"),
+                codex_turn_context("gpt-5.6-sol"),
+                codex_token_count(100, 50, 10),
+            ],
+        );
+        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let (r1, delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
+        assert_eq!(r1.events.len(), 1);
+        let progress: ScanProgress = delta;
+        // Append a second token event — content change bumps mtime past the gate.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&file)
+                .unwrap();
+            writeln!(f, "{}", codex_token_count(300, 100, 40)).unwrap();
+        }
+        let (r2, _) = p.collect_incremental(&progress).unwrap();
+        // Only the appended event is emitted (fresh input 200−50=150).
+        assert_eq!(r2.events.len(), 1);
+        assert!(r2.events[0].uuid.ends_with(":2"));
+        assert_eq!(r2.events[0].tokens.input, 150);
+        assert_eq!(r2.events[0].tokens.cache_read, 50);
+        assert_eq!(r2.events[0].tokens.output, 30);
+    }
+
+    // ===================== Gemini CLI provider =====================
+
+    fn write_gemini_session(dir: &Path, hash: &str, filename: &str, json: &str) -> PathBuf {
+        let path = dir.join("tmp").join(hash).join("chats").join(filename);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, json).unwrap();
+        path
+    }
+
+    #[test]
+    fn gemini_parse_tokens_variants() {
+        let full: serde_json::Value = serde_json::json!({
+            "input": 8522, "output": 29, "cached": 3138, "thoughts": 405, "tool": 0, "total": 8956
+        });
+        let t = parse_gemini_tokens(&full);
+        assert_eq!(t.input, 8522);
+        assert_eq!(t.output, 29);
+        assert_eq!(t.cached, 3138);
+        assert_eq!(t.thoughts, 405);
+        // missing fields ⇒ 0.
+        let partial: serde_json::Value = serde_json::json!({ "input": 100, "output": 50 });
+        let t = parse_gemini_tokens(&partial);
+        assert_eq!(t.cached, 0);
+        assert_eq!(t.thoughts, 0);
+        // all-zero ⇒ skipped by the parse loop.
+        let zero: serde_json::Value =
+            serde_json::json!({ "input": 0, "output": 0, "cached": 0, "thoughts": 0 });
+        assert!(parse_gemini_tokens(&zero).is_all_zero());
+        // cache-only ⇒ NOT all-zero ⇒ kept.
+        let cache_only: serde_json::Value =
+            serde_json::json!({ "input": 0, "output": 0, "cached": 5000, "thoughts": 0 });
+        assert!(!parse_gemini_tokens(&cache_only).is_all_zero());
+    }
+
+    #[test]
+    fn gemini_discover_missing_dir_returns_empty() {
+        let base = tempfile::tempdir().unwrap();
+        let p = GeminiCliProvider::with_dir(base.path().join("nope"));
+        assert!(p.discover().unwrap().is_empty());
+    }
+
+    /// Four-bucket mapping vs CC-Switch (field-for-field equal): input is fresh
+    /// as-is, output folds in thoughts, cache_read = cached, cache_creation = 0.
+    /// Cache-only messages are kept; all-zero and non-gemini messages dropped.
+    #[test]
+    fn gemini_parses_session_into_fresh_four_buckets() {
+        let dir = tempfile::tempdir().unwrap();
+        let json = r#"{
+            "sessionId": "s1",
+            "messages": [
+                {"type":"gemini","id":"m1","model":"gemini-2.5-pro","timestamp":"2026-07-15T12:34:56.789Z","tokens":{"input":8522,"output":29,"cached":3138,"thoughts":405,"tool":0,"total":8956}},
+                {"type":"gemini","id":"m2","model":"gemini-2.5-pro","timestamp":"2026-07-15T12:35:00.000Z","tokens":{"input":0,"output":0,"cached":5000,"thoughts":0}},
+                {"type":"gemini","id":"m3","model":"gemini-2.5-pro","timestamp":"2026-07-15T12:35:01.000Z","tokens":{"input":0,"output":0,"cached":0,"thoughts":0}},
+                {"type":"user","id":"u1","message":"hi"}
+            ]
+        }"#;
+        write_gemini_session(dir.path(), "hashA", "session-1.json", json);
+        let p = GeminiCliProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(result.source, "gemini_cli");
+        assert_eq!(
+            result.events.len(),
+            2,
+            "m3 all-zero + user dropped; m1/m2 kept"
+        );
+        let by_id: std::collections::HashMap<&str, &RawUsage> =
+            result.events.iter().map(|e| (e.uuid.as_str(), e)).collect();
+        let m1 = by_id["gemini:s1:m1"];
+        assert_eq!(m1.tokens.input, 8522);
+        assert_eq!(m1.tokens.output, 434, "output folds in thoughts (29 + 405)");
+        assert_eq!(m1.tokens.cache_read, 3138);
+        assert_eq!(m1.tokens.cache_creation, 0);
+        assert_eq!(m1.model, "gemini-2.5-pro");
+        let m2 = by_id["gemini:s1:m2"];
+        assert_eq!(m2.tokens.cache_read, 5000, "cache-only message kept");
+        assert_eq!(m2.tokens.input, 0);
+        assert_eq!(m2.tokens.output, 0);
+    }
+
+    #[test]
+    fn gemini_incremental_mtime_gates_unchanged_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let json = r#"{"sessionId":"s1","messages":[{"type":"gemini","id":"m1","model":"gemini-2.5-pro","timestamp":"2026-07-15T12:34:56.789Z","tokens":{"input":10,"output":1,"cached":2,"thoughts":0}}]}"#;
+        let path = write_gemini_session(dir.path(), "h", "session-1.json", json);
+        let p = GeminiCliProvider::with_dir(dir.path().to_path_buf());
+        let (r1, delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
+        assert_eq!(r1.events.len(), 1);
+        let progress: ScanProgress = delta;
+        // Unchanged file ⇒ mtime gate skips it entirely.
+        let (r2, delta2) = p.collect_incremental(&progress).unwrap();
+        assert_eq!(r2.events.len(), 0);
+        assert!(delta2.is_empty());
+        // Rewrite (new mtime) ⇒ full re-parse; the seen id is re-emitted (the
+        // ledger dedups at ingest, not here).
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&path, json).unwrap();
+        let (r3, _) = p.collect_incremental(&progress).unwrap();
+        assert_eq!(r3.events.len(), 1);
+    }
+
+    // ===================== OpenCode provider (SQLite) =====================
+
+    fn opencode_data_json(
+        input: u32,
+        output: u32,
+        reasoning: u32,
+        cache_read: u32,
+        cache_write: u32,
+        model: &str,
+        completed: bool,
+    ) -> String {
+        let time = if completed {
+            r#""time":{"created":1779755333700,"completed":1779755350639}"#.to_string()
+        } else {
+            r#""time":{"created":1779755333700}"#.to_string()
+        };
+        format!(
+            r#"{{"role":"assistant","tokens":{{"input":{input},"output":{output},"reasoning":{reasoning},"cache":{{"read":{cache_read},"write":{cache_write}}}}},"modelID":"{model}",{time}}}"#
+        )
+    }
+
+    #[test]
+    fn opencode_parse_message_data_variants() {
+        let full: serde_json::Value = serde_json::json!({
+            "role": "assistant",
+            "tokens": { "total": 56554, "input": 3272, "output": 383, "reasoning": 419,
+                        "cache": { "write": 0, "read": 52480 } },
+            "modelID": "deepseek-v4-pro",
+            "providerID": "deepseek",
+            "time": { "created": 1779755333700i64, "completed": 1779755350639i64 }
+        });
+        let d = parse_opencode_message_data(&full).unwrap();
+        assert_eq!(d.input_tokens, 3272);
+        assert_eq!(d.output_tokens, 383);
+        assert_eq!(d.reasoning_tokens, 419);
+        assert_eq!(d.cache_read_tokens, 52480);
+        assert_eq!(d.cache_write_tokens, 0);
+        assert_eq!(d.model_id, "deepseek-v4-pro");
+        assert_eq!(d.timestamp_ms, 1779755333700);
+        // missing cache ⇒ zeros.
+        let no_cache: serde_json::Value = serde_json::json!({
+            "role": "assistant", "tokens": { "input": 1000, "output": 200 },
+            "modelID": "m", "time": { "created": 1, "completed": 2 }
+        });
+        let d = parse_opencode_message_data(&no_cache).unwrap();
+        assert_eq!(d.cache_read_tokens, 0);
+        assert_eq!(d.cache_write_tokens, 0);
+        // all-zero ⇒ None.
+        let zero: serde_json::Value = serde_json::json!({
+            "role": "assistant",
+            "tokens": { "input": 0, "output": 0, "reasoning": 0, "cache": { "read": 0, "write": 0 } },
+            "modelID": "t", "time": { "created": 1, "completed": 2 }
+        });
+        assert!(parse_opencode_message_data(&zero).is_none());
+    }
+
+    #[test]
+    fn opencode_query_skips_incomplete_messages() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT);",
+        )
+        .unwrap();
+        let done = opencode_data_json(1000, 200, 0, 0, 0, "m", true);
+        let wip = opencode_data_json(500, 0, 0, 0, 0, "m", false);
+        conn.execute(
+            "INSERT INTO message VALUES ('done','s1',1,?1),('wip','s1',2,?2)",
+            rusqlite::params![done, wip],
+        )
+        .unwrap();
+        let qr = query_assistant_messages(&conn, "s1").unwrap();
+        assert_eq!(qr.messages.len(), 1);
+        assert_eq!(qr.messages[0].0, "done");
+        assert!(qr.has_incomplete_usage);
+    }
+
+    #[test]
+    fn opencode_query_sessions_uses_message_watermark() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session (id TEXT, time_updated INTEGER);
+             CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+             INSERT INTO session VALUES ('s1', 100);
+             INSERT INTO message VALUES ('m1', 's1', 90, 200, '{}');",
+        )
+        .unwrap();
+        let sessions = query_sessions(&conn).unwrap();
+        assert_eq!(sessions, vec![("s1".to_string(), 200)]);
+    }
+
+    #[test]
+    fn opencode_parses_db_into_four_buckets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("opencode.db");
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE session (id TEXT, time_updated INTEGER);
+                 CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+                 INSERT INTO session VALUES ('s1', 100);
+                 INSERT INTO message (id, session_id, time_created, time_updated) VALUES ('m1','s1',90,200);
+                 INSERT INTO message (id, session_id, time_created, time_updated) VALUES ('m2','s1',91,201);",
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE message SET data = ?1 WHERE id = 'm1'",
+                rusqlite::params![opencode_data_json(
+                    3272,
+                    383,
+                    419,
+                    52480,
+                    0,
+                    "deepseek-v4-pro",
+                    true
+                )],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE message SET data = ?1 WHERE id = 'm2'",
+                rusqlite::params![opencode_data_json(
+                    10,
+                    5,
+                    0,
+                    0,
+                    100,
+                    "anthropic/claude-opus-4-6",
+                    true
+                )],
+            )
+            .unwrap();
+        }
+        let p = OpenCodeProvider::with_db(db.clone());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(result.source, "opencode");
+        assert_eq!(result.events.len(), 2);
+        let by_id: std::collections::HashMap<&str, &RawUsage> =
+            result.events.iter().map(|e| (e.uuid.as_str(), e)).collect();
+        let m1 = by_id["opencode:s1:m1"];
+        assert_eq!(m1.tokens.input, 3272);
+        assert_eq!(
+            m1.tokens.output, 802,
+            "output folds in reasoning (383 + 419)"
+        );
+        assert_eq!(m1.tokens.cache_read, 52480);
+        assert_eq!(m1.tokens.cache_creation, 0);
+        assert_eq!(m1.model, "deepseek-v4-pro");
+        let m2 = by_id["opencode:s1:m2"];
+        assert_eq!(
+            m2.tokens.cache_creation, 100,
+            "cache.write maps to cache_creation"
+        );
+    }
+
+    #[test]
+    fn opencode_incremental_skips_already_synced_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("opencode.db");
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE session (id TEXT, time_updated INTEGER);
+                 CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+                 INSERT INTO session VALUES ('s1', 100);
+                 INSERT INTO message (id, session_id, time_created, time_updated) VALUES ('m1','s1',90,200);",
+            )
+            .unwrap();
+            let data = opencode_data_json(3272, 383, 419, 52480, 0, "deepseek-v4-pro", true);
+            conn.execute(
+                "UPDATE message SET data = ?1 WHERE id = 'm1'",
+                rusqlite::params![data],
+            )
+            .unwrap();
+        }
+        let p = OpenCodeProvider::with_db(db);
+        let (r1, delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
+        assert_eq!(r1.events.len(), 1);
+        let progress: ScanProgress = delta;
+        // Same db, no changes ⇒ file mtime gate skips it entirely.
+        let (r2, _) = p.collect_incremental(&progress).unwrap();
+        assert_eq!(r2.events.len(), 0);
     }
 }
