@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "yarn tauri:dev",
     "check": "yarn web:check && yarn rust:check",
-    "test": "yarn rust:test",
+    "test": "yarn web:test && yarn rust:test",
+    "web:test": "vitest run",
     "fix": "yarn web:fix && yarn rust:fix",
     "ci": "yarn run check && yarn test && yarn web:build",
     "dist": "yarn tauri:build",
@@ -58,6 +59,7 @@
     "cross-env": "^10.1.0",
     "tailwindcss": "^4.3.2",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "vite": "^7.0.4",
+    "vitest": "^3.2.0"
   }
 }
