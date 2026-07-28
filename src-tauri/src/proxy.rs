@@ -74,6 +74,7 @@ fn normalize_proxy_url(raw: &str) -> String {
     }
 }
 
+#[cfg(windows)]
 /// Parse the Windows `ProxyServer` registry value: either a bare `host:port` or
 /// a `;`-separated list of `scheme=host:port` (`http=`, `https=`, `ftp=`,
 /// `socks=`). Prefer the `https=` entry (GitHub is HTTPS), else the first
@@ -127,6 +128,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn parse_bare_host_port() {
         assert_eq!(
@@ -135,6 +137,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn parse_prefers_https_entry() {
         let raw = "http=127.0.0.1:8080;https=127.0.0.1:8443";
@@ -144,6 +147,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn parse_falls_back_to_http_then_generic() {
         // no https= ⇒ use http=
@@ -158,6 +162,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn parse_case_insensitive_scheme() {
         assert_eq!(
@@ -166,6 +171,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn parse_empty_returns_none() {
         assert_eq!(parse_proxy_server(""), None);
