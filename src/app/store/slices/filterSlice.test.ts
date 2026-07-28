@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
   EMPTY_FILTER,
   type FilterState,
+  todayFilter,
   toFilter,
 } from "@/app/store/slices/filterSlice"
 
@@ -48,5 +49,21 @@ describe("toFilter", () => {
   it("omits the timestamp bound when the day is blank", () => {
     expect(toFilter(base({ to_day: "" })).to_ts).toBeNull()
     expect(toFilter(base({ from_day: "" })).from_ts).toBeNull()
+  })
+})
+
+describe("todayFilter", () => {
+  it("scopes to the given day + device, blanking model/source", () => {
+    const f = todayFilter("abc123def456", "2026-07-28")
+    expect(f.device_scope).toBe("abc123def456")
+    expect(f.model).toBeNull()
+    expect(f.source).toBeNull()
+    // local-day → ISO timestamp bounds (same path as toFilter).
+    expect(f.from_ts).not.toBeNull()
+    expect(f.to_ts).not.toBeNull()
+  })
+
+  it("treats an empty device scope as all-devices (null)", () => {
+    expect(todayFilter("", "2026-07-28").device_scope).toBeNull()
   })
 })

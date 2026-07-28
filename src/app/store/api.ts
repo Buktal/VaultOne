@@ -50,15 +50,6 @@ export function filterId(f: UsageFilter): string {
   return [f.from_ts, f.to_ts, f.model, f.source, f.device_scope].join("|")
 }
 
-/** Default filter = the active dashboard scope. */
-export const EMPTY_FILTER: UsageFilter = {
-  from_ts: null,
-  to_ts: null,
-  model: null,
-  source: null,
-  device_scope: null,
-}
-
 /** Zero-value UsageStats — shared UI fallback for loading/empty. */
 export const ZERO_STATS: UsageStats = {
   request_count: 0,

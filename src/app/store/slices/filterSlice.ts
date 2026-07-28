@@ -9,7 +9,9 @@
 
 import { createSlice, type PayloadAction } from "@reduxjs/toolkit"
 import dayjs from "dayjs"
+import { useMemo } from "react"
 
+import { useAppSelector } from "@/app/store/hooks"
 import type { UsageFilter } from "@/types/generated/bindings"
 
 export const FILTER_STORAGE_KEY = "vaultone:usage-filter"
@@ -63,6 +65,32 @@ export function toFilter(s: FilterState): UsageFilter {
     source: s.source || null,
     device_scope: s.device_scope || null,
   }
+}
+
+/**
+ * The active dashboard filter as an API-level UsageFilter (selector + toFilter).
+ * Replaces the per-view `useMemo(() => toFilter(filter), [filter])` repetition —
+ * the dashboard / logs / recent-requests views all bind the same filter, so the
+ * selector + memo live once here.
+ */
+export function useUsageFilter(): UsageFilter {
+  const filter = useAppSelector((s) => s.filter.filter)
+  return useMemo(() => toFilter(filter), [filter])
+}
+
+/**
+ * A "today only" UsageFilter scoped to one device — the lightweight card's
+ * per-device today snapshot. `today` is passed in (not derived here) so the
+ * caller controls when the day rolls over and tests can pin a date. Reuses
+ * toFilter so the local-day → UTC bounds match the dashboard's "today" preset.
+ */
+export function todayFilter(deviceScope: string, today: string): UsageFilter {
+  return toFilter({
+    ...EMPTY_FILTER,
+    from_day: today,
+    to_day: today,
+    device_scope: deviceScope,
+  })
 }
 
 interface FilterSliceState {

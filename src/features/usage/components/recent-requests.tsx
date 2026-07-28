@@ -4,11 +4,10 @@
 // path from the dashboard into the full ledger. Polls with the shared interval.
 
 import { ArrowRight } from "lucide-react"
-import { useMemo } from "react"
 import { useTranslation } from "react-i18next"
 import { useCountQuery, useLogsQuery } from "@/app/store/api"
-import { useAppDispatch, useAppSelector } from "@/app/store/hooks"
-import { toFilter } from "@/app/store/slices/filterSlice"
+import { useAppDispatch } from "@/app/store/hooks"
+import { useUsageFilter } from "@/app/store/slices/filterSlice"
 import { setView } from "@/app/store/slices/viewSlice"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { formatCost, formatInt, formatTime } from "@/lib/format"
@@ -22,8 +21,7 @@ const LIMIT = 5
 export function RecentRequests() {
   const { t } = useTranslation()
   const dispatch = useAppDispatch()
-  const filter = useAppSelector((s) => s.filter.filter)
-  const usageFilter = useMemo(() => toFilter(filter), [filter])
+  const usageFilter = useUsageFilter()
   const deviceLabel = useDeviceLabelMap()
   const { data: rows = [] } = useLogsQuery({
     filter: usageFilter,

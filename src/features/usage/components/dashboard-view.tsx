@@ -5,10 +5,8 @@
 // CommandBar 收敛进右栏 ControlCard；时间/模型/设备维度都进控制卡，中栏
 // 顶部不再空旷。device_scope 也在此统一控制 (单设备时控制卡自动隐藏)。
 
-import { useMemo } from "react"
-
-import { useAppDispatch, useAppSelector } from "@/app/store/hooks"
-import { patchFilter, toFilter } from "@/app/store/slices/filterSlice"
+import { useAppDispatch } from "@/app/store/hooks"
+import { patchFilter, useUsageFilter } from "@/app/store/slices/filterSlice"
 
 import { ControlCard } from "./control-card"
 import { KpiStrip } from "./kpi-strip"
@@ -19,8 +17,7 @@ import { UsageTrendChart } from "./usage-trend-chart"
 
 export function DashboardView() {
   const dispatch = useAppDispatch()
-  const filter = useAppSelector((s) => s.filter.filter)
-  const usageFilter = useMemo(() => toFilter(filter), [filter])
+  const usageFilter = useUsageFilter()
 
   return (
     <div className="flex flex-col gap-4">
