@@ -10,6 +10,9 @@
 //  - LightweightCard expanded (lightweight-card.tsx): compact (11px) 适配小窗。
 //
 // device_scope 在全局 filter, 故 logs / lightweight 的 todayFilter 一并跟随。
+//
+// labeled: 横排 ControlBar 没有外置 label, 传 labeled 让 trigger 内嵌「设备 · 值」
+// 自带身份。compact (lightweight 小窗) 太窄, 不内嵌。
 
 import { useTranslation } from "react-i18next"
 
@@ -32,9 +35,11 @@ const ALL = "__all__"
 export function DeviceScopeControl({
   compact = false,
   align = "start",
+  labeled = false,
 }: {
   compact?: boolean
   align?: "start" | "end"
+  labeled?: boolean
 }) {
   const { t } = useTranslation()
   const dispatch = useAppDispatch()
@@ -57,16 +62,37 @@ export function DeviceScopeControl({
       <SelectTrigger
         className={cn(
           "border-border bg-card hover:bg-muted/60 h-8 w-36 rounded-md",
+          labeled && !compact && "w-44",
           compact && "text-[11px]",
         )}
         aria-label={t("usage.deviceScope.label")}
       >
         <SelectValue className="min-w-0">
-          {(value: string) =>
-            value === ALL
+          {(value: string) => {
+            const isAll = value === ALL
+            const display = isAll
               ? t("usage.control.all")
               : (options.find((o) => o.id === value)?.label ?? value)
-          }
+            // compact (lightweight 小窗) 不内嵌 label; labeled (横排 ControlBar)
+            // 加「设备 · 值」让控件自带身份. 纵卡 ControlCard 靠左 Row label, 不走.
+            if (!(labeled && !compact)) return display
+            return (
+              <>
+                <span className="text-muted-foreground">
+                  {t("usage.deviceScope.label")}
+                </span>
+                <span className="text-muted-foreground">·</span>
+                <span
+                  className={cn(
+                    "truncate",
+                    isAll ? "text-muted-foreground" : "text-foreground",
+                  )}
+                >
+                  {display}
+                </span>
+              </>
+            )
+          }}
         </SelectValue>
       </SelectTrigger>
       {/* alignItemWithTrigger=false: 弹出层从 trigger 底部往下展开(列表顶对齐

@@ -203,6 +203,7 @@
   "usage.control.last30d": "30d",
   "usage.control.last7d": "7d",
   "usage.control.model": "Model",
+  "usage.control.source": "Source",
   "usage.control.start": "Start",
   "usage.control.title": "Controls",
   "usage.control.today": "Today",

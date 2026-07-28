@@ -7,6 +7,10 @@
 //   - <ControlBar/>   横向条   (logs 顶部): chip 横排 + 采集按钮居右.
 // Replaces the old <UsageToolbar/> + the collect/sync buttons in <CommandBar/>.
 // Sync stays in Settings (config concern); collect lives here (data-refresh).
+//
+// 横排 ControlBar 的 chip 走 labeled (内嵌「label · 值」自带身份), 纵卡
+// ControlCard 靠左 Row label, chip 只显值. 来源 (source) 维度在多来源
+// (sources.length > 1) 时才出现, 与设备维度单设备隐藏同理.
 
 import dayjs from "dayjs"
 import { Activity, CalendarRange, ChevronDown } from "lucide-react"
@@ -14,7 +18,11 @@ import { type ReactNode, useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 import { DataFreshness } from "@/app/shell/data-freshness"
-import { useCollectMutation, useDistinctModelsQuery } from "@/app/store/api"
+import {
+  useCollectMutation,
+  useDistinctModelsQuery,
+  useDistinctSourcesQuery,
+} from "@/app/store/api"
 import { useAppDispatch, useAppSelector } from "@/app/store/hooks"
 import { type FilterState, patchFilter } from "@/app/store/slices/filterSlice"
 import { Button } from "@/components/ui/button"
@@ -39,6 +47,7 @@ import {
 } from "@/components/ui/select"
 import { useFreshness } from "@/hooks/use-freshness"
 import { cn } from "@/lib/utils"
+import { sourceLabel } from "../source-labels"
 import { useDeviceOptions } from "../use-device-options"
 import { DeviceScopeControl } from "./device-scope-control"
 
@@ -191,7 +200,44 @@ function DateRangeChip({ align = "end" }: { align?: "start" | "end" }) {
   )
 }
 
-function ModelChip({ align = "start" }: { align?: "start" | "end" }) {
+/**
+ * 内嵌「label · value」的 trigger 内容 — 横排 ControlBar 没有外置 Row label,
+ * 靠它让每个下拉自带身份 (模型 / 来源 / 设备). 未选 (=全部) 时值用 muted, 选了
+ * 具体值转 foreground, 一眼看出哪个维度被激活. 纵卡 ControlCard 有左 Row label,
+ * 不走这条.
+ */
+function LabeledSelectValue({
+  label,
+  value,
+  isAll,
+}: {
+  label: string
+  value: string
+  isAll: boolean
+}) {
+  return (
+    <>
+      <span className="text-muted-foreground">{label}</span>
+      <span className="text-muted-foreground">·</span>
+      <span
+        className={cn(
+          "truncate",
+          isAll ? "text-muted-foreground" : "text-foreground",
+        )}
+      >
+        {value}
+      </span>
+    </>
+  )
+}
+
+function ModelChip({
+  align = "start",
+  labeled = false,
+}: {
+  align?: "start" | "end"
+  labeled?: boolean
+}) {
   const { t } = useTranslation()
   const dispatch = useAppDispatch()
   const filter = useAppSelector((s) => s.filter.filter)
@@ -204,11 +250,26 @@ function ModelChip({ align = "start" }: { align?: "start" | "end" }) {
       }
     >
       <SelectTrigger
-        className="border-border bg-card hover:bg-muted/60 h-8 w-36 rounded-md"
+        className={cn(
+          "border-border bg-card hover:bg-muted/60 h-8 w-36 rounded-md",
+          labeled && "w-44",
+        )}
         aria-label={t("usage.control.model")}
       >
         <SelectValue className="min-w-0">
-          {(value: string) => (value === ALL ? t("usage.control.all") : value)}
+          {(value: string) => {
+            const isAll = value === ALL
+            const display = isAll ? t("usage.control.all") : value
+            return labeled ? (
+              <LabeledSelectValue
+                label={t("usage.control.model")}
+                value={display}
+                isAll={isAll}
+              />
+            ) : (
+              display
+            )
+          }}
         </SelectValue>
       </SelectTrigger>
       <SelectContent alignItemWithTrigger={false} align={align}>
@@ -223,11 +284,67 @@ function ModelChip({ align = "start" }: { align?: "start" | "end" }) {
   )
 }
 
+/** 来源 (provider) 维度筛选 — 与 ModelChip 对称, 选项来自 queryDistinctSources. */
+function SourceChip({
+  align = "start",
+  labeled = false,
+}: {
+  align?: "start" | "end"
+  labeled?: boolean
+}) {
+  const { t } = useTranslation()
+  const dispatch = useAppDispatch()
+  const filter = useAppSelector((s) => s.filter.filter)
+  const { data: sources = [] } = useDistinctSourcesQuery()
+  return (
+    <Select
+      value={filter.source || ALL}
+      onValueChange={(v) =>
+        dispatch(patchFilter({ source: v && v !== ALL ? v : "" }))
+      }
+    >
+      <SelectTrigger
+        className={cn(
+          "border-border bg-card hover:bg-muted/60 h-8 w-36 rounded-md",
+          labeled && "w-44",
+        )}
+        aria-label={t("usage.control.source")}
+      >
+        <SelectValue className="min-w-0">
+          {(value: string) => {
+            const isAll = value === ALL
+            const display = isAll ? t("usage.control.all") : sourceLabel(value)
+            return labeled ? (
+              <LabeledSelectValue
+                label={t("usage.control.source")}
+                value={display}
+                isAll={isAll}
+              />
+            ) : (
+              display
+            )
+          }}
+        </SelectValue>
+      </SelectTrigger>
+      <SelectContent alignItemWithTrigger={false} align={align}>
+        <SelectItem value={ALL}>{t("usage.control.all")}</SelectItem>
+        {sources.map((s) => (
+          <SelectItem key={s} value={s}>
+            {sourceLabel(s)}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
+
 /** 纵向卡片版 — 看板右栏。标题行带主题切换 + 折叠。 */
 export function ControlCard() {
   const { t } = useTranslation()
   const { onCollect, collecting } = useCollectAction()
   const multiDevice = useDeviceOptions().length > 0
+  const { data: sources = [] } = useDistinctSourcesQuery()
+  const multiSource = sources.length > 1
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     if (typeof localStorage === "undefined") return false
     return localStorage.getItem(CONTROL_COLLAPSE_KEY) === "1"
@@ -264,6 +381,11 @@ export function ControlCard() {
           <Row label={t("usage.control.dateRange")}>
             <DateRangeChip />
           </Row>
+          {multiSource ? (
+            <Row label={t("usage.control.source")}>
+              <SourceChip align="end" />
+            </Row>
+          ) : null}
           <Row label={t("usage.control.model")}>
             <ModelChip align="end" />
           </Row>
@@ -292,11 +414,14 @@ export function ControlCard() {
 export function ControlBar() {
   const { t } = useTranslation()
   const { onCollect, collecting } = useCollectAction()
+  const { data: sources = [] } = useDistinctSourcesQuery()
+  const multiSource = sources.length > 1
   return (
     <div className="flex flex-wrap items-center gap-2">
       <DateRangeChip align="start" />
-      <ModelChip />
-      <DeviceScopeControl />
+      {multiSource ? <SourceChip labeled /> : null}
+      <ModelChip labeled />
+      <DeviceScopeControl labeled />
       <div className="flex-1" />
       <DataFreshness />
       <Button size="sm" disabled={collecting} onClick={onCollect}>
