@@ -1,8 +1,9 @@
 //! VaultOne Tauri backend library.
 //!
-//! Module tree: config / db / providers / ingest / pricing /
-//! commands / window_geom, behind a tauri-specta typed contract. First start
-//! bootstraps the local data dir + deviceId and defaults to Standalone
+//! Module tree: config / db / providers / ingest / pricing / sync /
+//! cloud_config / proxy / commands / window_geom, behind a tauri-specta typed
+//! contract. First start bootstraps the local data dir + deviceId and defaults
+//! to Standalone
 //!.
 
 use std::sync::Arc;
@@ -22,6 +23,7 @@ mod ingest;
 mod model;
 mod pricing;
 mod providers;
+mod proxy;
 mod sync;
 mod time;
 mod window_geom;
