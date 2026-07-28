@@ -6,7 +6,7 @@
 // CTA so the user isn't bounced to the command bar to seed the first rows.
 
 import { FileText } from "lucide-react"
-import { type ReactNode, useState } from "react"
+import { type ReactNode, useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 
@@ -56,6 +56,10 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
   const { t } = useTranslation()
   const deviceLabel = useDeviceLabelMap()
   const [offset, setOffset] = useState(0)
+  // Reset to page 1 when the filter changes — otherwise a narrower filter
+  // (e.g. fewer rows after switching model/device) can land on an empty page.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional — offset resets on filter change; the body needs no filter value
+  useEffect(() => setOffset(0), [filter])
   const {
     data: rows = [],
     isLoading,

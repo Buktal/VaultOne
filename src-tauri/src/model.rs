@@ -189,7 +189,7 @@ pub struct TurnDuration {
 // ---- Device-name sync artifact ----
 
 /// A device's published identity, materialized one-per-file at
-/// `config/devices/<device_id>.json`. Each device writes ONLY its own file, so
+/// `config/devices_<device_id>.json` (flattened — no `devices/` subdir). Each device writes ONLY its own file, so
 /// concurrent edits by different devices never collide (zero Git merge
 /// conflict). Only the authoritative self-name syncs; per-device aliases stay
 /// local (`config.json`, never in the repo).
