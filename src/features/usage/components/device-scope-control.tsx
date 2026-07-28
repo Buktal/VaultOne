@@ -62,7 +62,9 @@ export function DeviceScopeControl({
       <SelectTrigger
         className={cn(
           "border-border bg-card hover:bg-muted/60 h-8 w-36 rounded-md",
-          labeled && !compact && "w-44",
+          // 横排 ControlBar: 设备值域短 (本机 / 短设备名), 收到 base 宽度 (与纵卡
+          // 同宽), 模型 / 来源仍 w-44, 三个 chip 有长短层次. 长设备名靠 truncate.
+          labeled && !compact && "w-36",
           compact && "text-[11px]",
         )}
         aria-label={t("usage.deviceScope.label")}
