@@ -26,19 +26,27 @@ export function zeroTrendPoint(day: string): TrendPoint {
 }
 
 /**
- * Pad an hourly trend so the x-axis spans local 00:00 → `now`'s hour, not only
- * the hours that happen to have records (the backend GROUP BY omits empty
- * buckets). `now` is injected — not read from the clock — so the output is
- * deterministic and testable. An empty input is returned unchanged so the
- * caller keeps its empty state. Only call this for an hourly (single-day)
- * range; a multi-day range is the backend's per-day buckets as-is.
+ * Pad an hourly trend so the x-axis spans the selected local day in full, not
+ * only the hours that happen to have records (the backend GROUP BY omits empty
+ * buckets). For the current day the axis stops at `now`'s hour (no future
+ * buckets); for a past day it runs 00:00 → 23:00 so the whole day is visible.
+ * `target` (the selected day) and `now` (the clock) are both injected — never
+ * read inside — so the output is deterministic and testable. An empty input is
+ * returned unchanged so the caller keeps its empty state. Only call this for
+ * an hourly (single-day) range; a multi-day range is the backend's per-day
+ * buckets as-is.
  */
-export function zeroFillTrend(rawData: TrendPoint[], now: Dayjs): TrendPoint[] {
+export function zeroFillTrend(
+  rawData: TrendPoint[],
+  target: Dayjs,
+  now: Dayjs,
+): TrendPoint[] {
   if (rawData.length === 0) return rawData
   const byKey = new Map(rawData.map((p) => [p.day, p]))
   const out: TrendPoint[] = []
-  let cur = now.startOf("day")
-  while (!cur.isAfter(now, "hour")) {
+  const end = target.isSame(now, "day") ? now : target.endOf("day")
+  let cur = target.startOf("day")
+  while (!cur.isAfter(end, "hour")) {
     const key = cur.format("YYYY-MM-DDTHH")
     out.push(byKey.get(key) ?? zeroTrendPoint(key))
     cur = cur.add(1, "hour")

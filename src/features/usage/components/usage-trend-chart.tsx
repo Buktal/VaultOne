@@ -98,16 +98,17 @@ export function UsageTrendChart({ filter }: { filter: UsageFilter }) {
     bucket,
   })
 
-  // Hourly (today) zero-fill: pin the x-axis to local 00:00 → current hour
-  // instead of the first→last bucket that has records. The backend GROUP BY
-  // only emits buckets with rows, so without padding the 00:00→first-record
-  // stretch is swallowed and the range looks truncated. Day buckets (7d/30d/
-  // all) are left as-is; an entirely empty today stays empty so QueryState
-  // shows its empty state rather than a flat zero line.
+  // Hourly zero-fill: pin the x-axis to the selected local day instead of the
+  // first→last bucket that has records. The backend GROUP BY only emits
+  // buckets with rows, so without padding the 00:00→first-record stretch is
+  // swallowed and the range looks truncated. For the current day the axis
+  // stops at the current hour; a past single day fills the full 24h. Day
+  // buckets (7d/30d/all) are left as-is; an entirely empty day stays empty so
+  // QueryState shows its empty state rather than a flat zero line.
   const data = useMemo(() => {
-    if (!hourly) return rawData
-    return zeroFillTrend(rawData, dayjs())
-  }, [hourly, rawData])
+    if (!hourly || !filter.from_ts) return rawData
+    return zeroFillTrend(rawData, dayjs(filter.from_ts), dayjs())
+  }, [hourly, rawData, filter.from_ts])
 
   // ChartConfig keys MUST equal the dataKeys (input_tokens …) so the shadcn
   // legend helper resolves label + color from payload.dataKey. stroke / dot
