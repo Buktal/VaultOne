@@ -221,6 +221,21 @@ fn collect_jsonl_incremental(
     Ok((result, delta))
 }
 
+/// Normalize a cache-inclusive `input` — one whose value already contains its
+/// `cache_read` portion — into VaultOne's fresh-input representation: subtract
+/// `cache_read` (floored at 0) and clamp `cache_read` so it can never exceed
+/// `input`. Returns `(fresh_input, clamped_cache_read)`.
+///
+/// Cache-inclusive sources (Codex, Gemini, Grok) call this at parse time so the
+/// `RawUsage.input` they emit is always fresh — the one hard contract every
+/// provider must satisfy. Fresh sources (Claude, OpenCode) carry fresh input
+/// natively and skip this step.
+fn normalize_cache_inclusive(input: u32, cache_read: u32) -> (u32, u32) {
+    let clamped = cache_read.min(input);
+    let fresh = input.saturating_sub(clamped);
+    (fresh, clamped)
+}
+
 // ---------------------------------------------------------------------------
 // Claude Code provider
 // ---------------------------------------------------------------------------
@@ -722,7 +737,9 @@ fn parse_codex_text(
                         output: cumulative.output as u32,
                     }
                 };
-                // Clamp: cache_read must not exceed the cache-inclusive input.
+                // Clamp before the zero-gate below: an abnormal delta (input 0,
+                // cached > 0) must read as zero so it is skipped. The shared
+                // normalizer re-clamps (idempotently) when building the event.
                 delta.cached_input = delta.cached_input.min(delta.input);
                 if delta.is_zero() {
                     continue; // task-boundary snapshot, no new usage
@@ -748,8 +765,10 @@ fn parse_codex_text(
                     .get("timestamp")
                     .and_then(|v| v.as_str())
                     .map(str::to_string);
-                // Fresh input = cache-inclusive input − cache_read.
-                let fresh_input = delta.input.saturating_sub(delta.cached_input);
+                // Codex input is cache-inclusive — normalize to fresh via the
+                // shared helper (clamp already applied above for the zero-gate).
+                let (fresh_input, clamped_cache_read) =
+                    normalize_cache_inclusive(delta.input, delta.cached_input);
                 events.push(RawUsage {
                     uuid: format!("codex:thread-v1:{thread_id}:{}", state.event_index),
                     timestamp: timestamp.unwrap_or_else(crate::time::now_iso),
@@ -759,7 +778,7 @@ fn parse_codex_text(
                         input: fresh_input,
                         output: delta.output,
                         cache_creation: 0,
-                        cache_read: delta.cached_input,
+                        cache_read: clamped_cache_read,
                     },
                     server_tool_use: ServerToolUse::default(),
                     stop_reason: String::new(),
@@ -1673,6 +1692,28 @@ mod tests {
         for l in lines {
             writeln!(f, "{}", l.as_ref()).unwrap();
         }
+    }
+
+    // ===================== shared normalizer =====================
+
+    #[test]
+    fn normalize_cache_inclusive_subtracts_and_clamps() {
+        // Typical inclusive source: input already contains cache_read.
+        let (fresh, cached) = normalize_cache_inclusive(8522, 3138);
+        assert_eq!(fresh, 5384);
+        assert_eq!(cached, 3138);
+        // cache_read within input ⇒ both unchanged.
+        let (fresh, cached) = normalize_cache_inclusive(100, 30);
+        assert_eq!(fresh, 70);
+        assert_eq!(cached, 30);
+        // Abnormal: cache_read exceeds input (delta arithmetic) ⇒ clamped down,
+        // fresh input floored at 0.
+        let (fresh, cached) = normalize_cache_inclusive(10, 80);
+        assert_eq!(fresh, 0);
+        assert_eq!(cached, 10);
+        // Both zero ⇒ both zero.
+        let (fresh, cached) = normalize_cache_inclusive(0, 0);
+        assert_eq!((fresh, cached), (0, 0));
     }
 
     #[test]
