@@ -433,10 +433,10 @@ impl Provider for ClaudeCodeProvider {
 ///
 /// Codex's `total_token_usage` is **cumulative** and its `input_tokens` is
 /// cache-inclusive, so the provider computes per-call deltas and subtracts
-/// `cache_read` to yield a fresh `input` — Codex is the one cache-inclusive
-/// source (parse-time fresh-input normalization). Sub-agent / fork logs replay
-/// the parent thread's history before their own usage; that replay only
-/// re-establishes the cumulative baseline and is never emitted.
+/// `cache_read` to yield a fresh `input` (parse-time fresh-input
+/// normalization). Sub-agent / fork logs replay the parent thread's history
+/// before their own usage; that replay only re-establishes the cumulative
+/// baseline and is never emitted.
 pub struct CodexProvider {
     codex_dir: PathBuf,
 }
@@ -926,10 +926,11 @@ fn parse_cumulative_tokens(total_usage: &serde_json::Value) -> Option<Cumulative
 ///
 /// Reads `<gemini_dir>/tmp/<project_hash>/chats/session-*.json`. Each file is a
 /// single JSON object with a `messages` array; only `type:"gemini"` messages
-/// carrying a `tokens` object are consumed. The CLI pre-normalizes tokens, so
-/// `input` is already fresh, `cached` is cache_read, and `thoughts` is folded
-/// into `output` (thinking tokens are billed as output). `cache_creation` is
-/// always 0 — Gemini uses implicit caching and does not expose a write bucket.
+/// carrying a `tokens` object are consumed. The CLI's `input` is
+/// cache-inclusive (it contains `cached`), so it is normalized to fresh at
+/// parse; `cached` is cache_read, and `thoughts` is folded into `output`
+/// (thinking tokens are billed as output). `cache_creation` is always 0 —
+/// Gemini uses implicit caching and does not expose a write bucket.
 pub struct GeminiCliProvider {
     gemini_dir: PathBuf,
 }
@@ -1125,6 +1126,17 @@ fn parse_gemini_text(text: &str) -> Vec<RawUsage> {
         if tokens.is_all_zero() {
             continue;
         }
+        // Gemini's `input` is cache-inclusive (it already contains `cached`);
+        // normalize to fresh so RawUsage.input matches the fresh-input contract.
+        let (fresh_input, clamped_cache_read) =
+            normalize_cache_inclusive(tokens.input, tokens.cached);
+        let output = tokens.output + tokens.thoughts;
+        // A row that normalizes to nothing (e.g. a malformed cache-only row
+        // whose `cached` exceeds its inclusive `input`, clamped down to 0)
+        // carries no billable tokens — skip it rather than emit a zero event.
+        if fresh_input == 0 && output == 0 && clamped_cache_read == 0 {
+            continue;
+        }
         let message_id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
         let model = msg
             .get("model")
@@ -1140,10 +1152,10 @@ fn parse_gemini_text(text: &str) -> Vec<RawUsage> {
             model: model.to_string(),
             source: "gemini_cli".to_string(),
             tokens: TokenCounts {
-                input: tokens.input,
-                output: tokens.output + tokens.thoughts,
+                input: fresh_input,
+                output,
                 cache_creation: 0,
-                cache_read: tokens.cached,
+                cache_read: clamped_cache_read,
             },
             server_tool_use: ServerToolUse::default(),
             stop_reason: String::new(),
@@ -2362,9 +2374,11 @@ mod tests {
         assert!(p.discover().unwrap().is_empty());
     }
 
-    /// Four-bucket mapping vs CC-Switch (field-for-field equal): input is fresh
-    /// as-is, output folds in thoughts, cache_read = cached, cache_creation = 0.
-    /// Cache-only messages are kept; all-zero and non-gemini messages dropped.
+    /// Four-bucket mapping: Gemini's `input` is cache-inclusive in the source —
+    /// normalized to fresh (input − cache_read, clamped) at parse — output folds
+    /// in thoughts, cache_creation = 0. The fixture's `total` (8522 + 29 + 405
+    /// = 8956) must round-trip to parsed.total() once input is de-cached.
+    /// Cache-only / all-zero / non-gemini messages are dropped.
     #[test]
     fn gemini_parses_session_into_fresh_four_buckets() {
         let dir = tempfile::tempdir().unwrap();
@@ -2372,7 +2386,7 @@ mod tests {
             "sessionId": "s1",
             "messages": [
                 {"type":"gemini","id":"m1","model":"gemini-2.5-pro","timestamp":"2026-07-15T12:34:56.789Z","tokens":{"input":8522,"output":29,"cached":3138,"thoughts":405,"tool":0,"total":8956}},
-                {"type":"gemini","id":"m2","model":"gemini-2.5-pro","timestamp":"2026-07-15T12:35:00.000Z","tokens":{"input":0,"output":0,"cached":5000,"thoughts":0}},
+                {"type":"gemini","id":"m2","model":"gemini-2.5-pro","timestamp":"2026-07-15T12:35:00.000Z","tokens":{"input":5000,"output":0,"cached":5000,"thoughts":0}},
                 {"type":"gemini","id":"m3","model":"gemini-2.5-pro","timestamp":"2026-07-15T12:35:01.000Z","tokens":{"input":0,"output":0,"cached":0,"thoughts":0}},
                 {"type":"user","id":"u1","message":"hi"}
             ]
@@ -2389,11 +2403,19 @@ mod tests {
         let by_id: std::collections::HashMap<&str, &RawUsage> =
             result.events.iter().map(|e| (e.uuid.as_str(), e)).collect();
         let m1 = by_id["gemini:s1:m1"];
-        assert_eq!(m1.tokens.input, 8522);
+        // Fresh input = inclusive input (8522) − cache_read (3138).
+        assert_eq!(m1.tokens.input, 5384, "input de-cached: 8522 - 3138");
         assert_eq!(m1.tokens.output, 434, "output folds in thoughts (29 + 405)");
         assert_eq!(m1.tokens.cache_read, 3138);
         assert_eq!(m1.tokens.cache_creation, 0);
         assert_eq!(m1.model, "gemini-2.5-pro");
+        // Invariant: de-caching preserves the fixture total (fresh input +
+        // output + cache_read == inclusive input + output + thoughts).
+        assert_eq!(
+            m1.tokens.total(),
+            8956,
+            "fresh input + output + cache_read == fixture total"
+        );
         let m2 = by_id["gemini:s1:m2"];
         assert_eq!(m2.tokens.cache_read, 5000, "cache-only message kept");
         assert_eq!(m2.tokens.input, 0);
