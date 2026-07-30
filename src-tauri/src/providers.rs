@@ -124,6 +124,103 @@ pub fn all_providers() -> AppResult<Vec<Box<dyn Provider>>> {
     ])
 }
 
+/// One JSONL file's parse result. The provider's per-file parser returns this;
+/// the shared incremental driver below handles everything else (mtime gate,
+/// truncation self-heal, partial-last-line guard, cursor advance, ordering).
+struct FileParseOutcome {
+    events: Vec<RawUsage>,
+    turn_durations: Vec<RawTurnDuration>,
+    skipped: u32,
+}
+
+/// Shared incremental collect for append-only JSONL sources (Claude Code,
+/// Codex). Walks every discovered file: mtime-gates unchanged ones, re-reads
+/// changed ones past their line cursor, and hands the file text + start line to
+/// `parse_file` — the only thing that differs across JSONL providers is "how a
+/// file's lines become events". `parse_file` receives the 1-based start line
+/// (already self-healed on truncation) and must skip lines at or before it.
+/// Gemini (single JSON object, no line cursor) and OpenCode (SQLite, two-level
+/// watermark) keep their own `collect_incremental` — their source shapes do not
+/// fit this driver.
+fn collect_jsonl_incremental(
+    provider: &dyn Provider,
+    progress: &ScanProgress,
+    parse_file: impl Fn(&str, i64) -> FileParseOutcome,
+) -> AppResult<(CollectResult, ScanProgressDelta)> {
+    let files = provider.discover()?;
+    let mut events: Vec<RawUsage> = Vec::new();
+    let mut turn_durations: Vec<RawTurnDuration> = Vec::new();
+    let mut skipped = 0u32;
+    let mut delta = ScanProgressDelta::new();
+
+    for file in &files {
+        let path_str = file.to_string_lossy().into_owned();
+        // mtime gate — one stat; unchanged files do no IO/serde.
+        let metadata = match std::fs::metadata(file) {
+            Ok(m) => m,
+            Err(_) => {
+                skipped += 1;
+                continue;
+            }
+        };
+        let mtime = metadata_modified_nanos(&metadata);
+        let prev = progress.get(&path_str).copied().unwrap_or_default();
+        // `prev.last_modified != 0` lets a never-seen file parse in full.
+        if prev.last_modified != 0 && mtime <= prev.last_modified {
+            continue;
+        }
+        let text = match std::fs::read_to_string(file) {
+            Ok(t) => t,
+            Err(_) => {
+                skipped += 1;
+                continue;
+            }
+        };
+        let total_lines = text.lines().count() as i64;
+        // Truncation self-heal: if the file shrank below the last known offset,
+        // re-read from the start (would otherwise silently drop post-truncation
+        // appends).
+        let start_line = if total_lines < prev.last_line_offset {
+            0
+        } else {
+            prev.last_line_offset
+        };
+        let outcome = parse_file(&text, start_line);
+        events.extend(outcome.events);
+        turn_durations.extend(outcome.turn_durations);
+        skipped += outcome.skipped;
+        // Partial-last-line guard: no trailing newline ⇒ the last line may be
+        // mid-write; don't advance past it or the next collect skips it.
+        let ends_clean = text.ends_with('\n') || text.ends_with('\r');
+        let new_offset = if ends_clean {
+            total_lines
+        } else if total_lines > start_line {
+            total_lines - 1
+        } else {
+            start_line
+        };
+        delta.insert(
+            path_str,
+            FileCursor {
+                last_modified: mtime,
+                last_line_offset: new_offset,
+            },
+        );
+    }
+
+    // Deterministic order (timestamp, then uuid).
+    events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
+    // files_scanned stays "discovered count" — do not redefine to "parsed count".
+    let result = CollectResult {
+        source: provider.name().to_string(),
+        events,
+        turn_durations,
+        files_scanned: files.len() as u32,
+        lines_skipped: skipped,
+    };
+    Ok((result, delta))
+}
+
 // ---------------------------------------------------------------------------
 // Claude Code provider
 // ---------------------------------------------------------------------------
@@ -282,53 +379,17 @@ impl Provider for ClaudeCodeProvider {
         &self,
         progress: &ScanProgress,
     ) -> AppResult<(CollectResult, ScanProgressDelta)> {
-        let files = self.discover()?;
-        // Same message-id dedup as `parse` — one assistant response may span
-        // several content-block events that all repeat the full usage.
-        let mut events_by_mid: std::collections::HashMap<String, RawUsage> =
-            std::collections::HashMap::new();
-        let mut turn_durations = Vec::new();
-        let mut skipped = 0u32;
-        let mut delta = ScanProgressDelta::new();
-
-        for file in &files {
-            let path_str = file.to_string_lossy().into_owned();
-            // mtime gate — one stat; unchanged files do no IO/serde.
-            let metadata = match std::fs::metadata(file) {
-                Ok(m) => m,
-                Err(_) => {
-                    skipped += 1;
-                    continue;
-                }
-            };
-            let mtime = metadata_modified_nanos(&metadata);
-            let prev = progress.get(&path_str).copied().unwrap_or_default();
-            // `prev.last_modified != 0` lets a never-seen file parse in full.
-            if prev.last_modified != 0 && mtime <= prev.last_modified {
-                continue;
-            }
-            let text = match std::fs::read_to_string(file) {
-                Ok(t) => t,
-                Err(_) => {
-                    skipped += 1;
-                    continue;
-                }
-            };
-            // Truncation self-heal: if the file shrank below the last known
-            // offset, re-read from the start. (CC-Switch lacks this — it would
-            // silently drop anything appended after a truncation.)
-            let total_lines = text.lines().count() as i64;
-            let start_line = if total_lines < prev.last_line_offset {
-                0
-            } else {
-                prev.last_line_offset
-            };
-            // Skip lines already processed (line_no <= start_line); the per-line
-            // parse + message-id dedup is shared with `parse` via fold_line.
-            // NOTE: the stored uuid stays the event uuid (not the message id) —
-            // re-keying would cause a mass migration duplicate on first run.
+        collect_jsonl_incremental(self, progress, |text, start_line| {
+            // Same message-id dedup as `parse` — one assistant response may span
+            // several content-block events that all repeat the full usage. The
+            // stored uuid stays the event uuid (not the message id); re-keying
+            // would cause a mass migration duplicate on first run.
+            let mut events_by_mid: std::collections::HashMap<String, RawUsage> =
+                std::collections::HashMap::new();
+            let mut turn_durations = Vec::new();
+            let mut skipped = 0u32;
             for (idx, line) in text.lines().enumerate() {
-                let line_no = idx as i64 + 1; // 1-based, matching CC-Switch
+                let line_no = idx as i64 + 1; // 1-based
                 if line_no <= start_line {
                     continue;
                 }
@@ -336,38 +397,12 @@ impl Provider for ClaudeCodeProvider {
                     skipped += 1;
                 }
             }
-            // Partial-last-line guard: if the file has no trailing newline the
-            // last line may be mid-write (Claude streaming) — don't advance past
-            // it, else the next collect skips it. Improvement over CC-Switch.
-            let ends_clean = text.ends_with('\n') || text.ends_with('\r');
-            let new_offset = if ends_clean {
-                total_lines
-            } else if total_lines > start_line {
-                total_lines - 1
-            } else {
-                start_line // no new complete line — don't regress
-            };
-            delta.insert(
-                path_str,
-                FileCursor {
-                    last_modified: mtime,
-                    last_line_offset: new_offset,
-                },
-            );
-        }
-
-        // Deterministic order (timestamp, then uuid) — same as `parse`.
-        let mut events: Vec<RawUsage> = events_by_mid.into_values().collect();
-        events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
-        let result = CollectResult {
-            source: self.name().to_string(),
-            events,
-            turn_durations,
-            // files_scanned stays "discovered count" — do not redefine to "parsed count".
-            files_scanned: files.len() as u32,
-            lines_skipped: skipped,
-        };
-        Ok((result, delta))
+            FileParseOutcome {
+                events: events_by_mid.into_values().collect(),
+                turn_durations,
+                skipped,
+            }
+        })
     }
 }
 
@@ -475,62 +510,18 @@ impl Provider for CodexProvider {
         &self,
         progress: &ScanProgress,
     ) -> AppResult<(CollectResult, ScanProgressDelta)> {
-        let files = self.discover()?;
-        let mut events = Vec::new();
-        let mut skipped = 0u32;
-        let mut delta = ScanProgressDelta::new();
-        for file in &files {
-            let path_str = file.to_string_lossy().into_owned();
-            let metadata = match std::fs::metadata(file) {
-                Ok(m) => m,
-                Err(_) => {
-                    skipped += 1;
-                    continue;
-                }
-            };
-            let mtime = metadata_modified_nanos(&metadata);
-            let prev = progress.get(&path_str).copied().unwrap_or_default();
-            if prev.last_modified != 0 && mtime <= prev.last_modified {
-                continue;
+        collect_jsonl_incremental(self, progress, |text, start_line| {
+            let (identity, boundary) = prescan_codex_text(text);
+            // `start_line` is the cursor (self-healed on truncation by the
+            // driver); parse_codex_text's `emit_after_line` has the same "skip
+            // lines at or before it" semantics.
+            let parsed = parse_codex_text(text, identity, boundary, start_line);
+            FileParseOutcome {
+                events: parsed.events,
+                turn_durations: Vec::new(),
+                skipped: parsed.skipped,
             }
-            let text = match std::fs::read_to_string(file) {
-                Ok(t) => t,
-                Err(_) => {
-                    skipped += 1;
-                    continue;
-                }
-            };
-            let (identity, boundary) = prescan_codex_text(&text);
-            let parsed = parse_codex_text(&text, identity, boundary, prev.last_line_offset);
-            events.extend(parsed.events);
-            skipped += parsed.skipped;
-            // Partial-last-line guard: a file with no trailing newline may be
-            // mid-write — don't advance past the last complete line.
-            let total_lines = parsed.total_lines;
-            let new_offset = if parsed.ends_clean {
-                total_lines
-            } else if total_lines > prev.last_line_offset {
-                total_lines - 1
-            } else {
-                prev.last_line_offset
-            };
-            delta.insert(
-                path_str,
-                FileCursor {
-                    last_modified: mtime,
-                    last_line_offset: new_offset,
-                },
-            );
-        }
-        events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
-        let result = CollectResult {
-            source: self.name().to_string(),
-            events,
-            turn_durations: Vec::new(),
-            files_scanned: files.len() as u32,
-            lines_skipped: skipped,
-        };
-        Ok((result, delta))
+        })
     }
 }
 
@@ -579,8 +570,6 @@ struct CodexParsed {
     events: Vec<RawUsage>,
     /// History-replay snapshot events beyond the emit cursor (diagnostic).
     skipped: u32,
-    total_lines: i64,
-    ends_clean: bool,
 }
 
 /// One pre-scan pass over the file text: recover the session identity (first
@@ -639,8 +628,6 @@ fn parse_codex_text(
     emit_after_line: i64,
 ) -> CodexParsed {
     let lines: Vec<&str> = text.lines().collect();
-    let total_lines = lines.len() as i64;
-    let ends_clean = text.ends_with('\n') || text.ends_with('\r');
 
     let mut state = CodexFileState {
         thread_id: identity.map(|i| i.thread_id),
@@ -784,12 +771,7 @@ fn parse_codex_text(
         }
     }
 
-    CodexParsed {
-        events,
-        skipped,
-        total_lines,
-        ends_clean,
-    }
+    CodexParsed { events, skipped }
 }
 
 fn is_history_snapshot_event(boundary: Option<i64>, line_offset: i64) -> bool {
@@ -2265,6 +2247,37 @@ mod tests {
         assert_eq!(r2.events[0].tokens.input, 150);
         assert_eq!(r2.events[0].tokens.cache_read, 50);
         assert_eq!(r2.events[0].tokens.output, 30);
+    }
+
+    #[test]
+    fn codex_incremental_truncation_self_heals() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sessions").join("s.jsonl");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        write_jsonl(
+            &file,
+            &[
+                codex_session_meta("t", "t"),
+                codex_turn_context("gpt-5.6-sol"),
+                codex_token_count(100, 50, 10),
+            ],
+        );
+        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let (r1, delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
+        assert_eq!(r1.events.len(), 1);
+        let progress: ScanProgress = delta;
+        // Truncate to fewer lines than the cursor (3) and rewrite with a fresh
+        // token event. Without self-heal the stale cursor would make every line
+        // "already synced" and the new event would be silently dropped.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        write_jsonl(
+            &file,
+            &[codex_session_meta("t", "t"), codex_token_count(200, 0, 20)],
+        );
+        let (r2, _) = p.collect_incremental(&progress).unwrap();
+        assert_eq!(r2.events.len(), 1);
+        assert_eq!(r2.events[0].tokens.input, 200);
+        assert_eq!(r2.events[0].tokens.output, 20);
     }
 
     // ===================== Gemini CLI provider =====================

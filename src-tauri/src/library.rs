@@ -466,28 +466,12 @@ fn count_subtree(dir: &Path) -> DeviceLibrarySummary {
 // commit + push (best-effort, Synced only)
 // ---------------------------------------------------------------------------
 
-/// Stage + commit + push any library change. Standalone is a no-op — the files
-/// already sit in the worktree, nothing to push. Push failures are logged, not
-/// propagated: the next collect/sync round carries the change up.
+/// Stage + commit + push any library change (best-effort, Synced only).
+/// Standalone is a no-op — the files already sit in the worktree, nothing to
+/// push. Delegates to sync's commit+push core; push failures are logged there,
+/// not propagated — the next collect/sync round carries the change up.
 fn commit_push_library(paths: &crate::config::Paths, cfg: &ConfigData) {
-    if !cfg.is_synced() {
-        return;
-    }
-    if let Err(e) = try_commit_push(paths, cfg) {
-        eprintln!("[vaultone] library push failed: {e}");
-    }
-}
-
-fn try_commit_push(paths: &crate::config::Paths, cfg: &ConfigData) -> AppResult<()> {
-    let (url, token) = crate::sync::require_synced(cfg)?;
-    let repo = crate::sync::open_or_clone_for_device(&url, &paths.repo, &token, &cfg.device_id)?;
-    if !crate::sync::has_changes(&repo)? {
-        return Ok(());
-    }
-    let email = format!("{}@devices.vaultone", cfg.device_id);
-    crate::sync::commit_all(&repo, "vaultone: library sync", &cfg.display_name, &email)?;
-    crate::sync::push(&repo, &token)?;
-    Ok(())
+    crate::sync::commit_and_push_best_effort(paths, cfg, "vaultone: library sync");
 }
 
 // ---------------------------------------------------------------------------

@@ -645,17 +645,37 @@ pub fn pull_and_import(
 }
 
 /// Commit any local Artifact/config change and push it (push). A clean
-/// worktree is a no-op (returns `false`). Synced-only.
-pub fn commit_and_push(paths: &crate::config::Paths, cfg: &ConfigData) -> AppResult<bool> {
+/// worktree is a no-op (returns `false`). `message` is the commit body — pass
+/// the semantic of the change so the log reads "vaultone: usage sync" vs
+/// "vaultone: library sync". Errors propagate; for daemon/exit paths that must
+/// not bubble, use [`commit_and_push_best_effort`]. Synced-only.
+pub fn commit_and_push(
+    paths: &crate::config::Paths,
+    cfg: &ConfigData,
+    message: &str,
+) -> AppResult<bool> {
     let (url, token) = require_synced(cfg)?;
     let repo = open_or_clone_for_device(&url, &paths.repo, &token, &cfg.device_id)?;
     if !has_changes(&repo)? {
         return Ok(false);
     }
     let email = author_email(cfg);
-    commit_all(&repo, "vaultone: usage sync", &cfg.display_name, &email)?;
+    commit_all(&repo, message, &cfg.display_name, &email)?;
     push(&repo, &token)?;
     Ok(true)
+}
+
+/// Best-effort commit + push for background/exit paths. Standalone is a no-op;
+/// a push failure is logged, never propagated — the next collect/sync round
+/// carries the change up. The one caller that needs the error surfaced (manual
+/// 「立即同步」) calls [`commit_and_push`] directly.
+pub fn commit_and_push_best_effort(paths: &crate::config::Paths, cfg: &ConfigData, message: &str) {
+    if !cfg.is_synced() {
+        return;
+    }
+    if let Err(e) = commit_and_push(paths, cfg, message) {
+        eprintln!("[vaultone] push failed: {e}");
+    }
 }
 
 /// Manual「立即同步」: pull + import, then commit + push.
@@ -665,7 +685,7 @@ pub fn sync_now(
     cfg: &ConfigData,
 ) -> AppResult<SyncReport> {
     let imported = pull_and_import(store, paths, cfg)?;
-    let pushed = commit_and_push(paths, cfg)?;
+    let pushed = commit_and_push(paths, cfg, "vaultone: usage sync")?;
     Ok(SyncReport { imported, pushed })
 }
 
@@ -1295,7 +1315,7 @@ mod tests {
         let cfg = synced_cfg(&url, "tok");
         // Clone ⇒ clean worktree ⇒ nothing to push.
         let _repo = open_or_clone(&url, &paths.repo, "").unwrap();
-        let pushed = commit_and_push(&paths, &cfg).unwrap();
+        let pushed = commit_and_push(&paths, &cfg, "vaultone: usage sync").unwrap();
         assert!(!pushed, "clean worktree ⇒ no commit/push");
     }
 

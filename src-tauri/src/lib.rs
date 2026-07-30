@@ -1,6 +1,6 @@
 //! VaultOne Tauri backend library.
 //!
-//! Module tree: config / db / providers / ingest / pricing / sync /
+//! Module tree: config / db / providers / ingest / collect / pricing / sync /
 //! cloud_config / proxy / commands / window_geom, behind a tauri-specta typed
 //! contract. First start bootstraps the local data dir + deviceId and defaults
 //! to Standalone
@@ -16,6 +16,7 @@ use tauri::{Emitter, Manager};
 use tauri_specta::Builder;
 
 mod cloud_config;
+mod collect;
 mod commands;
 mod config;
 mod db;
@@ -328,14 +329,14 @@ pub fn run() {
 
                     let now = std::time::Instant::now();
                     if now >= next_collect {
-                        if let Err(e) = commands::collect_into(&store, &config) {
+                        if let Err(e) = collect::collect_into(&store, &config) {
                             eprintln!("[vaultone] scheduled collect failed: {e}");
                         }
                         let _ = app_handle.emit("usage_changed", ());
                         next_collect = now + std::time::Duration::from_secs(collect_secs);
                     }
                     if now >= next_push && cfg.is_synced() {
-                        commands::push_if_synced(&config);
+                        collect::push_if_synced(&config);
                         next_push = now + std::time::Duration::from_secs(push_secs);
                     }
                 }
@@ -347,17 +348,13 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(|app_handle, event| {
-        // Exit flush: push any unpushed Artifact before quitting,
-        // covering the close-A / open-B device switch. Synced only, best-effort.
+        // Exit flush: push any unpushed Artifact before quitting, covering the
+        // close-A / open-B device switch. Synced only, best-effort.
         if let tauri::RunEvent::ExitRequested { .. } = event {
             let state: tauri::State<AppState> = app_handle.state::<AppState>();
             let cfg = state.config.get();
-            if cfg.is_synced() {
-                let paths = state.config.paths();
-                if let Err(e) = crate::sync::commit_and_push(&paths, &cfg) {
-                    eprintln!("[vaultone] exit flush failed: {e}");
-                }
-            }
+            let paths = state.config.paths();
+            crate::sync::commit_and_push_best_effort(&paths, &cfg, "vaultone: usage sync");
         }
     });
 }
