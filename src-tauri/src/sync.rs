@@ -17,8 +17,8 @@ use std::path::Path;
 
 use git2::build::{CheckoutBuilder, RepoBuilder};
 use git2::{
-    Cred, FetchOptions, Index, Oid, ProxyOptions, PushOptions, RemoteCallbacks, Repository,
-    Signature, Status,
+    AnnotatedCommit, Cred, FetchOptions, Index, Oid, ProxyOptions, PushOptions, RemoteCallbacks,
+    Repository, ResetType, Signature, Status,
 };
 
 use crate::config::ConfigData;
@@ -317,11 +317,24 @@ fn pick_origin_branch(repo: &Repository) -> AppResult<Option<(String, Oid)>> {
 // pull (fetch + fast-forward)
 // ---------------------------------------------------------------------------
 
-/// Fetch `origin` and fast-forward the current branch to its tip. Refuses to
-/// auto-merge divergent histories — usage data should never diverge (each
-/// device writes its own `data/<deviceId>/` subtree), and config conflict
-/// handling is deferred to S3.
-pub fn pull(repo: &Repository, token: &str) -> AppResult<()> {
+/// Fetch `origin` and advance the current branch to its tip. Fast-forwards when
+/// possible; if the local branch has commits the remote doesn't (a lost push
+/// race — another device pushed between our last pull and push), rebases the
+/// local-only commits onto the remote tip and pushes, auto-healing a state
+/// fast-forward-only could never recover from. Device isolation
+/// (`data/<deviceId>/`) means a local-only commit only touches files the remote
+/// didn't, so the rebase applies without conflict; shared-config conflicts are
+/// pre-checked and surfaced by `sync_config` before it calls in.
+///
+/// `author_name` / `author_email` are this device's commit identity, reused as
+/// the rebaser's signature (authors of replayed commits are preserved). Synced
+/// callers pass `cfg.display_name` / `author_email(cfg)`.
+pub fn pull(
+    repo: &Repository,
+    token: &str,
+    author_name: &str,
+    author_email: &str,
+) -> AppResult<()> {
     // Unborn HEAD (fresh init, first commit still pending): no local branch to
     // fast-forward, so there is nothing to pull — the first commit+push creates
     // the branch. Covers the Standalone→Synced switch against an empty remote,
@@ -353,15 +366,54 @@ pub fn pull(repo: &Repository, token: &str) -> AppResult<()> {
         return Ok(());
     }
     if !analysis.is_fast_forward() {
-        return Err(AppError::Sync(format!(
-            "pull would diverge on '{branch}'; refusing to auto-merge"
-        )));
+        // Diverged: rebase local-only commits onto the remote tip and push.
+        return rebase_diverged(repo, &upstream, token, author_name, author_email);
     }
     // Fast-forward: move the branch ref to the remote tip, then sync the tree.
     head.set_target(upstream_oid, "pull: fast-forward")?;
     let mut co = CheckoutBuilder::new();
     co.force();
     repo.checkout_head(Some(&mut co))?;
+    Ok(())
+}
+
+/// Rebase this branch's local-only commits onto the remote tip, then push.
+/// Called when [`pull`] finds divergent histories (a prior push lost a race).
+///
+/// `git rebase` needs a clean worktree. Callers snapshot their dirty files and
+/// restore them after `pull` returns, so any in-worktree change here is
+/// regenerable — we hard-reset it away before rebasing. Device isolation
+/// (`data/<deviceId>/`) guarantees the rebase applies without conflict; if it
+/// ever would, we abort and surface the error instead of silently merging, so
+/// the caller reports it as a plain failed sync.
+fn rebase_diverged(
+    repo: &Repository,
+    upstream: &AnnotatedCommit,
+    token: &str,
+    author_name: &str,
+    author_email: &str,
+) -> AppResult<()> {
+    if has_changes(repo)? {
+        let head_oid = repo
+            .head()?
+            .target()
+            .ok_or_else(|| AppError::Sync("HEAD has no target; cannot rebase".into()))?;
+        let head_obj = repo.find_object(head_oid, None)?;
+        repo.reset(&head_obj, ResetType::Hard, None)?;
+    }
+    let committer = Signature::now(author_name, author_email)?;
+    let mut rebase = repo.rebase(None, Some(upstream), Some(upstream), None)?;
+    while let Some(op) = rebase.next() {
+        op?;
+        if let Err(e) = rebase.commit(None, &committer, None) {
+            let _ = rebase.abort();
+            return Err(AppError::Sync(format!(
+                "rebase onto remote tip would conflict; refusing to auto-merge: {e}"
+            )));
+        }
+    }
+    rebase.finish(Some(&committer))?;
+    push(repo, token)?;
     Ok(())
 }
 
@@ -630,7 +682,7 @@ pub fn pull_and_import(
     } else {
         None
     };
-    pull(&repo, &token)?;
+    pull(&repo, &token, &cfg.display_name, &author_email(cfg))?;
     if let Some(s) = snap {
         let _ = s.restore(&own_dir);
     }
@@ -994,7 +1046,7 @@ mod tests {
         let url = remote.to_string_lossy().to_string();
         let local = tmp.path().join("dev");
         let repo = init_with_remote(&url, &local, "", None).unwrap();
-        pull(&repo, "").unwrap();
+        pull(&repo, "", "T", "t@devices.vaultone").unwrap();
     }
 
     /// End-to-end Standalone→Synced against an EMPTY remote: `local` already holds
@@ -1169,14 +1221,14 @@ mod tests {
         std::fs::write(a_data.join("usage-2026-07-17.jsonl"), "{\"uuid\":\"u2\"}\n").unwrap();
         commit_all(&repo_a, "device A day 2", "DevA", "a@devices.vaultone").unwrap();
         push(&repo_a, "").unwrap();
-        pull(&repo_b, "").unwrap();
+        pull(&repo_b, "", "T", "t@devices.vaultone").unwrap();
         assert!(dir_b.join("data/dev_a/usage-2026-07-17.jsonl").exists());
 
         // B's local artifact (its own device subtree) survives the pull untouched.
         let b_data = dir_b.join("data/dev_b");
         std::fs::create_dir_all(&b_data).unwrap();
         std::fs::write(b_data.join("usage-2026-07-16.jsonl"), "{\"uuid\":\"b1\"}\n").unwrap();
-        pull(&repo_b, "").unwrap();
+        pull(&repo_b, "", "T", "t@devices.vaultone").unwrap();
         assert_eq!(
             std::fs::read_to_string(b_data.join("usage-2026-07-16.jsonl")).unwrap(),
             "{\"uuid\":\"b1\"}\n",
@@ -1236,6 +1288,72 @@ mod tests {
         // Re-pulling is a no-op (uuid already in the ledger).
         let n2 = pull_and_import(&store, &paths_b, &cfg_b).unwrap();
         assert_eq!(n2, 0, "re-pull dedups via ledger");
+    }
+
+    /// Regression: `pull` used to be fast-forward-only and errored on divergent
+    /// histories ("pull would diverge on 'main'; refusing to auto-merge") — the
+    /// exact state a lost push race leaves a device in, with no way out. pull now
+    /// rebases local-only commits onto the remote tip and pushes, so BOTH
+    /// devices' data survive on the remote (a soft/reset-only fix would replay
+    /// the local tree verbatim and silently clobber the peer's data).
+    #[test]
+    fn pull_rebases_diverged_local_commits_onto_remote_tip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = tmp.path().join("remote.git");
+        seed_remote(&remote);
+        let url = remote.to_string_lossy().to_string();
+
+        // A: baseline under its own data dir + push (remote = A1).
+        let paths_a = crate::config::Paths::resolve(&tmp.path().join("a"));
+        let repo_a = open_or_clone(&url, &paths_a.repo, "").unwrap();
+        let a_file = paths_a.repo.join("data/aaaaaaaaaaaa/usage-2026-07-30.jsonl");
+        std::fs::create_dir_all(a_file.parent().unwrap()).unwrap();
+        std::fs::write(&a_file, "a-1\n").unwrap();
+        commit_all(&repo_a, "A1", "A", "a@devices.vaultone").unwrap();
+        push(&repo_a, "").unwrap();
+
+        // Peer B pushes under its OWN data dir (remote = B1 on A1).
+        let paths_b = crate::config::Paths::resolve(&tmp.path().join("b"));
+        let repo_b = open_or_clone(&url, &paths_b.repo, "").unwrap();
+        let b_file = paths_b.repo.join("data/bbbbbbbbbbbb/usage-2026-07-30.jsonl");
+        std::fs::create_dir_all(b_file.parent().unwrap()).unwrap();
+        std::fs::write(&b_file, "b-1\n").unwrap();
+        commit_all(&repo_b, "B1", "B", "b@devices.vaultone").unwrap();
+        push(&repo_b, "").unwrap();
+        drop(repo_b);
+
+        // A commits a second local-only change WITHOUT pushing ⇒ diverge.
+        std::fs::write(&a_file, "a-1\na-2\n").unwrap();
+        commit_all(&repo_a, "A2", "A", "a@devices.vaultone").unwrap();
+
+        // Pull self-heals: rebases A2 onto B1 and pushes.
+        pull(&repo_a, "", "A", "a@devices.vaultone").unwrap();
+
+        // A fresh clone sees BOTH devices' data — A's local-only a-2 change
+        // landed on top of B1 without clobbering B (a soft/reset-only fix would
+        // replay A's tree verbatim and B's data would vanish from the remote).
+        let paths_c = crate::config::Paths::resolve(&tmp.path().join("c"));
+        let _repo_c = open_or_clone(&url, &paths_c.repo, "").unwrap();
+        let a_text = std::fs::read_to_string(
+            paths_c
+                .repo
+                .join("data/aaaaaaaaaaaa/usage-2026-07-30.jsonl"),
+        )
+        .unwrap();
+        assert!(
+            a_text.contains("a-2"),
+            "A's local-only change reached the remote: {a_text}"
+        );
+        let b_text = std::fs::read_to_string(
+            paths_c
+                .repo
+                .join("data/bbbbbbbbbbbb/usage-2026-07-30.jsonl"),
+        )
+        .unwrap();
+        assert!(
+            b_text.contains("b-1"),
+            "B's data survived the rebase: {b_text}"
+        );
     }
 
     /// Regression: pull's fast-forward force-checkout used to discard this

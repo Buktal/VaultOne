@@ -195,7 +195,12 @@ fn reload_pricing_into_store(
 /// then write the snapshot back. Because conflicts are pre-excluded, no
 /// snapshot path collides with an incoming change, so restoring cannot clobber a
 /// remote update.
-fn pull_preserving_dirty(repo: &Repository, token: &str) -> AppResult<()> {
+fn pull_preserving_dirty(
+    repo: &Repository,
+    token: &str,
+    author_name: &str,
+    author_email: &str,
+) -> AppResult<()> {
     let dirty: Vec<(String, Vec<u8>)> = {
         let statuses = repo.statuses(None)?;
         let workdir = repo
@@ -215,7 +220,7 @@ fn pull_preserving_dirty(repo: &Repository, token: &str) -> AppResult<()> {
             .collect()
     };
 
-    pull(repo, token)?;
+    pull(repo, token, author_name, author_email)?;
 
     let workdir = repo
         .workdir()
@@ -281,7 +286,7 @@ pub fn sync_config(
 
     // No conflict: pull (preserving unrelated local edits), then commit + push.
     let pricing_before = pricing_fingerprint(paths);
-    pull_preserving_dirty(&repo, &token)?;
+    pull_preserving_dirty(&repo, &token, &cfg.display_name, &author_email(cfg))?;
     let pricing_changed = pricing_before != pricing_fingerprint(paths);
     if pricing_changed {
         reload_pricing_into_store(store, paths)?;
@@ -366,7 +371,7 @@ pub fn resolve_config_conflict(
         }
     }
 
-    pull_preserving_dirty(&repo, &token)?;
+    pull_preserving_dirty(&repo, &token, &cfg.display_name, &author_email(cfg))?;
 
     // Restore local-wins files (overwrite whatever the remote just applied).
     for (file, bytes) in &local_cache {
