@@ -13,7 +13,6 @@
 // chip 只显「全部」. 来源 (source) 维度在多来源 (sources.length > 0) 时才出现
 // —— 采到任意来源就显示, 与设备维度同理.
 
-import dayjs from "dayjs"
 import { Activity, CalendarRange, ChevronDown } from "lucide-react"
 import { type ReactNode, useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
@@ -25,7 +24,11 @@ import {
   useDistinctSourcesQuery,
 } from "@/app/store/api"
 import { useAppDispatch, useAppSelector } from "@/app/store/hooks"
-import { type FilterState, patchFilter } from "@/app/store/slices/filterSlice"
+import {
+  type Preset,
+  patchFilter,
+  presetDays,
+} from "@/app/store/slices/filterSlice"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -56,40 +59,16 @@ const ALL = "__all__"
 
 const CONTROL_COLLAPSE_KEY = "vaultone:control-collapsed"
 
-type Preset = "today" | "7d" | "30d" | "all"
+/** Selectable presets in the popover — "custom" is implied by manual date entry,
+ *  never shown as a button. */
+type SelectablePreset = Exclude<Preset, "custom">
 
-const PRESETS: Array<{ value: Preset; key: string }> = [
+const PRESETS: Array<{ value: SelectablePreset; key: string }> = [
   { value: "today", key: "usage.control.today" },
   { value: "7d", key: "usage.control.last7d" },
   { value: "30d", key: "usage.control.last30d" },
   { value: "all", key: "usage.control.all" },
 ]
-
-function dayStr(offset = 0) {
-  return dayjs().add(offset, "day").format("YYYY-MM-DD")
-}
-
-function derivePreset(f: FilterState): Preset | null {
-  const today = dayStr()
-  if (!f.from_day && !f.to_day) return "all"
-  if (f.from_day === today && f.to_day === today) return "today"
-  if (f.from_day === dayStr(-6) && f.to_day === today) return "7d"
-  if (f.from_day === dayStr(-29) && f.to_day === today) return "30d"
-  return null
-}
-
-function applyPreset(p: Preset): Pick<FilterState, "from_day" | "to_day"> {
-  switch (p) {
-    case "today":
-      return { from_day: dayStr(), to_day: dayStr() }
-    case "7d":
-      return { from_day: dayStr(-6), to_day: dayStr() }
-    case "30d":
-      return { from_day: dayStr(-29), to_day: dayStr() }
-    default:
-      return { from_day: "", to_day: "" }
-  }
-}
 
 /** 采集动作 (触发 collectNow → 失效缓存 → 刷新新鲜度 → toast). */
 function useCollectAction() {
@@ -127,17 +106,20 @@ function DateRangeChip({ align = "end" }: { align?: "start" | "end" }) {
   const { t } = useTranslation()
   const dispatch = useAppDispatch()
   const filter = useAppSelector((s) => s.filter.filter)
-  const preset = derivePreset(filter)
-  const label = preset
-    ? t(
-        PRESETS.find((p) => p.value === preset)?.key ??
-          "usage.control.dateRange",
-      )
-    : filter.from_day || filter.to_day
-      ? filter.from_day === filter.to_day
-        ? filter.from_day || "…"
-        : `${filter.from_day || "…"} → ${filter.to_day || "…"}`
-      : t("usage.control.allTime")
+  const { range_preset, from_day, to_day } = filter
+  const label =
+    range_preset === "all"
+      ? t("usage.control.allTime")
+      : range_preset !== "custom"
+        ? t(
+            PRESETS.find((p) => p.value === range_preset)?.key ??
+              "usage.control.dateRange",
+          )
+        : from_day || to_day
+          ? from_day === to_day
+            ? from_day || "…"
+            : `${from_day || "…"} → ${to_day || "…"}`
+          : t("usage.control.allTime")
 
   return (
     <Popover>
@@ -158,10 +140,17 @@ function DateRangeChip({ align = "end" }: { align?: "start" | "end" }) {
             <button
               key={p.value}
               type="button"
-              onClick={() => dispatch(patchFilter(applyPreset(p.value)))}
+              onClick={() =>
+                dispatch(
+                  patchFilter({
+                    range_preset: p.value,
+                    ...presetDays(p.value),
+                  }),
+                )
+              }
               className={cn(
                 "focus-visible:ring-ring/40 rounded-[5px] px-2.5 py-1 text-xs font-medium transition-colors outline-none focus-visible:ring-2",
-                preset === p.value
+                range_preset === p.value
                   ? "bg-accent-tint text-accent-brand-strong"
                   : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
               )}
@@ -177,9 +166,14 @@ function DateRangeChip({ align = "end" }: { align?: "start" | "end" }) {
             </span>
             <input
               type="date"
-              value={filter.from_day}
+              value={from_day}
               onChange={(e) =>
-                dispatch(patchFilter({ from_day: e.target.value }))
+                dispatch(
+                  patchFilter({
+                    range_preset: "custom",
+                    from_day: e.target.value,
+                  }),
+                )
               }
               className="border-input bg-background h-8 rounded-md border px-2 text-xs"
             />
@@ -190,9 +184,14 @@ function DateRangeChip({ align = "end" }: { align?: "start" | "end" }) {
             </span>
             <input
               type="date"
-              value={filter.to_day}
+              value={to_day}
               onChange={(e) =>
-                dispatch(patchFilter({ to_day: e.target.value }))
+                dispatch(
+                  patchFilter({
+                    range_preset: "custom",
+                    to_day: e.target.value,
+                  }),
+                )
               }
               className="border-input bg-background h-8 rounded-md border px-2 text-xs"
             />
