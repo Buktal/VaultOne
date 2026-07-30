@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-07-30
+
+### Added
+
+- **Library — per-device file relay** — drag files or directories onto the window to upload (= a push into the device's subtree of the sync repo), drill into nested directories (upload, export, and single-file download all work at every depth), preview a file in-app (images fit-to-width with ctrl+wheel zoom; everything else in a sandboxed iframe), and export to a path of your choice. Upload is the only automatic direction — export stays manual and never writes into an AI tool's own config dir. Same-name same-kind overwrites (git history is the safety net); same-name different-kind is rejected. Forgetting a peer offers to migrate its files into yours under `from-<peer>/`, or delete them.
+
+### Changed
+
+- **Picker labels** — the logs and dashboard device / source / model dropdowns drop the dim `.`-prefixed placeholder; the "all" option now reads its full label (All devices / All sources / All models), and the date-range chip collapses same-day ranges and no longer wraps in the narrow dashboard column.
+
+### Fixed
+
+- **Usage filter** — the dashboard filter now persists the time-range preset (today / 7d / 30d / all / custom) instead of concrete dates, so a "today" selection no longer reads back as "yesterday" after midnight. Legacy rows without a preset fall back to "custom" with their literal dates.
+- **Sync dedup** — `usage_records` / `turn_durations` / `ledger` used `uuid` as a global primary key, so the same source event replayed under two device ids collapsed into one row and could attribute one device's data to another. Dedup is now keyed on `(uuid, device_id)` (existing single-column PK migrated to a composite key, row counts preserved), and binding a sync repo pulls immediately so peer devices appear without a restart.
+- **Window minimum size** — the morphing main window could restore or snapshot at the glance card's small size. The full dashboard now enforces a 720×520 minimum (the lightweight dock clears it; full restore re-applies it), and a stale sub-minimum rect self-heals on the next restore.
+
 ## [1.3.1] - 2026-07-28
 
 ### Changed
@@ -84,7 +100,8 @@ First public, open-source release.
 - **macOS**: Apple Silicon (arm64) only; builds are unsigned — right-click → **Open** on first launch (or `xattr -dr com.apple.quarantine /Applications/VaultOne.app`). Intel Mac users can build from source.
 - **Providers**: Claude Code only; additional providers (Codex, Cursor, …) are planned.
 
-[Unreleased]: https://github.com/Buktal/VaultOne/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/Buktal/VaultOne/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.4.0
 [1.3.1]: https://github.com/Buktal/VaultOne/releases/tag/v1.3.1
 [1.3.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.3.0
 [1.2.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.2.0

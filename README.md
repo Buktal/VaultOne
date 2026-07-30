@@ -31,6 +31,7 @@ Multi-device sync is a purely **opt-in** layer on top — never a precondition.
 - **Reads logs from four AI CLIs** — Claude Code, Codex, Gemini CLI, and OpenCode, each parsed straight off disk in its native format. No proxy, no API key, no network.
 - **Token economics that match your bill** — four-bucket consumption (input / output / cache creation / cache read), cache-hit rate, and cost frozen at collection time. Source quirks (e.g. Codex's cache-inclusive input) are normalized away into one consistent model.
 - **Multi-device sync through your own GitHub repo** — plain-text artifacts partitioned by device and date, in a repo you own. No third party in the middle. Then scope any view to a single device.
+- **Per-device file relay (Library)** — drag files or directories into the app to relay them through your sync repo (each device writes its own subtree, zero conflict); preview in-app and export to a path you choose. Upload is the only automatic direction — nothing ever writes into an AI tool's own config dir.
 - **Lightweight glance mode** — tuck a mini-bar to the screen edge that always shows today's total, or expand into a floating card mirroring the dashboard. Switch full ⇄ expanded ⇄ tucked from any shape; each shape remembers its own placement.
 - **Multi-skin theming** — five accent + chart palettes (Neutral, Sage, Azure, Crimson, Mauve); recolor the whole app without touching content.
 - **Tray-resident background collection** — an incremental scanner keeps the dashboard fresh behind the scenes.
@@ -86,6 +87,14 @@ Grab the installer for your OS from the **[Releases](https://github.com/Buktal/V
 - **Device-scoped** — filter the dashboard, the glance card, and the tucked bar to a single device; forget a peer locally, and stale peers auto-clear.
 - **System-proxy aware** — push/fetch follows the OS proxy (Clash/Mihomo, corporate gateways), so Synced mode just works behind one.
 - **Plain-text artifacts** — partitioned by device and date (`data/<device>/usage-YYYY-MM-DD.jsonl`), so diffs stay readable and reviewable.
+
+### Library
+
+- **Drag-to-relay upload** — dropping a file or directory uploads (= pushes) it into the device's subtree of the sync repo; nested directories work at every depth.
+- **In-app preview** — images fit-to-width with ctrl+wheel zoom; everything else renders in a sandboxed iframe.
+- **Manual export** — save an entry to a path you choose via a file dialog; VaultOne never learns the target path and never writes into an AI tool's config dir.
+- **Safe overwrites** — same-name same-kind overwrites (git history is the safety net); same-name different-kind is rejected.
+- **Per-device, zero conflict** — each device holds its own subtree; forgetting a peer offers to migrate its files into yours (`from-<peer>/`) or delete them.
 
 ### Cost & pricing
 

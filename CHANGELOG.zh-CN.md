@@ -6,6 +6,33 @@ VaultOne 的所有显著变更记录于此。
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-07-30
+
+### 新增
+
+- **Library —— per-device 文件中转** —— 把文件 / 目录拖入窗口即上传（= 一次 push 到该设备在同步仓库的子目录）；可逐层钻入目录（上传、导出、单文件下载在任意深度均可用）；在应用内预览文件（图片按宽适配，ctrl+滚轮缩放；其余用沙箱 iframe）；导出到你自选的路径。上传是唯一自动方向——导出保持手动，绝不写入 AI 工具自身的配置目录。同名同类型直接覆盖（git 历史兜底），同名异类型拒绝。遗忘对端时可选将其文件迁移到本机 `from-<peer>/` 下，或删除。
+
+### 变更
+
+- **选择器标签** —— 日志与看板的设备 / 来源 / 模型下拉去掉暗色 `.` 前缀占位；"全部"选项改为显示完整文案（全部设备 / 全部来源 / 全部模型）；日期范围 chip 折叠同日范围，在看板窄列中不再换行。
+
+### 修复
+
+- **用量过滤器** —— 看板过滤器改为持久化时间范围预设（today / 7d / 30d / all / custom），而非具体日期，"今天"不再在午夜后读成"昨天"。无预设的旧记录回退为 "custom" 配字面日期。
+- **同步去重** —— `usage_records` / `turn_durations` / `ledger` 之前以 `uuid` 为全局主键，同一源事件在两个设备 id 下重放会折叠成一行、可能把一个设备的数据算到另一个。现按 `(uuid, device_id)` 去重（现有单列主键迁移为复合键，保留行数）；绑定同步仓库后立即 pull，对端设备无需重启即出现。
+- **窗口最小尺寸** —— 变形主窗口可能在轻量卡的小尺寸下恢复或快照。完整看板现强制 720×520 最小尺寸（轻量 dock 清除它、完整恢复重新应用），陈旧的 sub-minimum rect 在下次恢复时自愈。
+
+## [1.3.1] - 2026-07-28
+
+### 变更
+
+- **来源过滤器可见性** —— 只要有任意来源数据，来源下拉即渲染，因此单来源用户也能看到该过滤器（原先需 ≥2 个已采集来源）。
+- **筛选 chip 尺寸** —— 日志控制栏的筛选 chip 现按典型内容定宽（模型 `w-48`、来源 `w-40`、设备 `w-36`），而非统一宽度；看板卡片列仍保持统一 `w-36`。
+
+### 修复
+
+- **发布完整性** —— `v1.3.0` 早打了两个 commit，上述来源过滤器与 chip 尺寸改动未随 1.3.0 安装包发布。`v1.3.1` 给当前 `main` 打 tag 以纳入它们。
+
 ## [1.3.0] - 2026-07-28
 
 ### 新增
@@ -72,7 +99,9 @@ VaultOne 的所有显著变更记录于此。
 - **macOS**：仅 Apple Silicon（arm64）；构建未签名——首次启动右键 →「打开」（或 `xattr -dr com.apple.quarantine /Applications/VaultOne.app`）。Intel Mac 用户可从源码构建。
 - **Provider**：当前仅 Claude Code；更多 provider（Codex、Cursor 等）规划中。
 
-[Unreleased]: https://github.com/Buktal/VaultOne/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/Buktal/VaultOne/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.4.0
+[1.3.1]: https://github.com/Buktal/VaultOne/releases/tag/v1.3.1
 [1.3.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.3.0
 [1.2.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.2.0
 [1.1.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.1.0
