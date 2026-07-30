@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-07-31
+
+### Fixed
+
+- **Sync self-heals when a local commit duplicates a remote patch** — the 1.5.0 rebase self-heal aborted if a local commit duplicated a patch already on the remote (e.g. the same device-cleanup run on two machines), surfacing `rebase onto remote tip would conflict ... this patch has already been applied` and leaving the device stuck diverged again. `pull` now drops already-applied commits during the rebase and continues, so the divergence self-heals instead of stalling.
+- **Usage rows no longer silently drop out of sync** — ingest wrote SQLite before the JSONL Artifact and treated the Artifact as a mere backup, swallowing append errors. A row that hit the DB but missed the Artifact (a transient append failure, or residue from ≤1.3.x) was then locked out forever — the ledger dedup silenced every later collect, so peers pulling the Artifact never saw it (one device showed ~24M tokens while a peer showed ~30M under the same filter). Ingest now appends the JSONL Artifact first and idempotently, and propagates append errors, so a failed append leaves the scan cursor untouched and the next collect re-parses the same source lines from the AI CLI logs. A new pre-collect reconcile also clears the cursors when the store holds rows the Artifact is missing, so a single rescan backfills pre-existing gaps — devices converge without manual repair.
+
 ## [1.5.0] - 2026-07-31
 
 ### Changed
@@ -111,7 +118,9 @@ First public, open-source release.
 - **macOS**: Apple Silicon (arm64) only; builds are unsigned — right-click → **Open** on first launch (or `xattr -dr com.apple.quarantine /Applications/VaultOne.app`). Intel Mac users can build from source.
 - **Providers**: Claude Code only; additional providers (Codex, Cursor, …) are planned.
 
-[Unreleased]: https://github.com/Buktal/VaultOne/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/Buktal/VaultOne/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/Buktal/VaultOne/releases/tag/v1.5.1
+[1.5.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.5.0
 [1.4.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.4.0
 [1.3.1]: https://github.com/Buktal/VaultOne/releases/tag/v1.3.1
 [1.3.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.3.0
