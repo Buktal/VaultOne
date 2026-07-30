@@ -12,6 +12,7 @@ const SOURCE_LABELS: Record<string, string> = {
   codex_cli: "Codex",
   gemini_cli: "Gemini CLI",
   opencode: "OpenCode",
+  grok_cli: "Grok",
 }
 
 /** 把 provider tag 转成展示名, 未知 tag 原样返回. */

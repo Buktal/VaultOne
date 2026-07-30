@@ -219,6 +219,8 @@ function providerLabel(source: string): string {
       return "Gemini CLI (Session)"
     case "opencode":
       return "OpenCode (Session)"
+    case "grok_cli":
+      return "Grok (Session)"
     default:
       return source || "—"
   }

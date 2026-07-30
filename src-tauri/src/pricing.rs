@@ -294,6 +294,11 @@ pub fn builtin_seed() -> Vec<ModelPricing> {
             "0",
         ),
         row("deepseek-v3", "DeepSeek V3", "0.28", "1.11", "0.028", "0"),
+        // xAI Grok Build (Grok CLI). Verified against the CLI's self-reported
+        // costUsdTicks — grok-4.5-build at 2/6/0.30 per 1M (cache_creation 0:
+        // Grok exposes no write bucket). Other aliases (grok-4.3, …) fall to
+        // cost 0 and are rebilled once a price is added.
+        row("grok-4.5-build", "Grok 4.5 Build", "2", "6", "0.30", "0"),
     ]
 }
 
