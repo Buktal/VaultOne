@@ -383,8 +383,10 @@ pub fn pull(
 /// `git rebase` needs a clean worktree. Callers snapshot their dirty files and
 /// restore them after `pull` returns, so any in-worktree change here is
 /// regenerable — we hard-reset it away before rebasing. Device isolation
-/// (`data/<deviceId>/`) guarantees the rebase applies without conflict; if it
-/// ever would, we abort and surface the error instead of silently merging, so
+/// (`data/<deviceId>/`) guarantees the rebase applies without conflict. A
+/// commit whose diff is already on the upstream tip (e.g. a device-cleanup a
+/// peer pushed first) is dropped as already-applied; any other failure is a
+/// real conflict, so we abort and surface it instead of silently merging, and
 /// the caller reports it as a plain failed sync.
 fn rebase_diverged(
     repo: &Repository,
@@ -405,11 +407,20 @@ fn rebase_diverged(
     let mut rebase = repo.rebase(None, Some(upstream), Some(upstream), None)?;
     while let Some(op) = rebase.next() {
         op?;
-        if let Err(e) = rebase.commit(None, &committer, None) {
-            let _ = rebase.abort();
-            return Err(AppError::Sync(format!(
-                "rebase onto remote tip would conflict; refusing to auto-merge: {e}"
-            )));
+        match rebase.commit(None, &committer, None) {
+            Ok(_) => {}
+            // This commit's diff is already on the upstream tip — e.g. a
+            // device-cleanup a peer pushed first — so libgit2 reports it as
+            // already-applied. Drop it and keep rebasing; the device-isolation
+            // layout means the surviving commits apply cleanly, so any other
+            // error here is a real conflict we refuse to auto-merge.
+            Err(ref e) if e.code() == git2::ErrorCode::Applied => continue,
+            Err(e) => {
+                let _ = rebase.abort();
+                return Err(AppError::Sync(format!(
+                    "rebase onto remote tip would conflict; refusing to auto-merge: {e}"
+                )));
+            }
         }
     }
     rebase.finish(Some(&committer))?;
@@ -1306,7 +1317,9 @@ mod tests {
         // A: baseline under its own data dir + push (remote = A1).
         let paths_a = crate::config::Paths::resolve(&tmp.path().join("a"));
         let repo_a = open_or_clone(&url, &paths_a.repo, "").unwrap();
-        let a_file = paths_a.repo.join("data/aaaaaaaaaaaa/usage-2026-07-30.jsonl");
+        let a_file = paths_a
+            .repo
+            .join("data/aaaaaaaaaaaa/usage-2026-07-30.jsonl");
         std::fs::create_dir_all(a_file.parent().unwrap()).unwrap();
         std::fs::write(&a_file, "a-1\n").unwrap();
         commit_all(&repo_a, "A1", "A", "a@devices.vaultone").unwrap();
@@ -1315,7 +1328,9 @@ mod tests {
         // Peer B pushes under its OWN data dir (remote = B1 on A1).
         let paths_b = crate::config::Paths::resolve(&tmp.path().join("b"));
         let repo_b = open_or_clone(&url, &paths_b.repo, "").unwrap();
-        let b_file = paths_b.repo.join("data/bbbbbbbbbbbb/usage-2026-07-30.jsonl");
+        let b_file = paths_b
+            .repo
+            .join("data/bbbbbbbbbbbb/usage-2026-07-30.jsonl");
         std::fs::create_dir_all(b_file.parent().unwrap()).unwrap();
         std::fs::write(&b_file, "b-1\n").unwrap();
         commit_all(&repo_b, "B1", "B", "b@devices.vaultone").unwrap();
@@ -1353,6 +1368,72 @@ mod tests {
         assert!(
             b_text.contains("b-1"),
             "B's data survived the rebase: {b_text}"
+        );
+    }
+
+    /// Regression: when a device's local commit duplicates a patch a peer
+    /// already pushed (e.g. the same device-cleanup run on two machines),
+    /// rebase reports the local copy as "already applied". pull must drop it
+    /// and keep rebasing instead of aborting the whole sync — the stuck
+    /// diverge 1.5.0 hit on Ubuntu when a device-cleanup landed on the remote
+    /// first.
+    #[test]
+    fn pull_rebase_skips_local_commit_whose_patch_is_already_upstream() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = tmp.path().join("remote.git");
+        seed_remote(&remote);
+        let url = remote.to_string_lossy().to_string();
+        let rel_a = "data/aaaaaaaaaaaa/usage-2026-07-30.jsonl";
+        let rel_b = "data/bbbbbbbbbbbb/usage-2026-07-30.jsonl";
+
+        // A writes one file under its data dir and pushes (remote = A1).
+        let paths_a = crate::config::Paths::resolve(&tmp.path().join("a"));
+        let repo_a = open_or_clone(&url, &paths_a.repo, "").unwrap();
+        let a_file = paths_a.repo.join(rel_a);
+        std::fs::create_dir_all(a_file.parent().unwrap()).unwrap();
+        std::fs::write(&a_file, "a-1\n").unwrap();
+        commit_all(&repo_a, "A1", "A", "a@devices.vaultone").unwrap();
+        push(&repo_a, "").unwrap();
+        drop(repo_a);
+
+        // B clones (sees A1) then rewinds to the seed base — simulating B
+        // never pulling A1 and independently making the SAME change A1 did.
+        let paths_b = crate::config::Paths::resolve(&tmp.path().join("b"));
+        let repo_b = open_or_clone(&url, &paths_b.repo, "").unwrap();
+        let head_b = repo_b.head().unwrap().peel_to_commit().unwrap();
+        let base = head_b.parents().next().unwrap();
+        repo_b
+            .reset(
+                &repo_b.find_object(base.id(), None).unwrap(),
+                ResetType::Hard,
+                None,
+            )
+            .unwrap();
+        // B_dup: an identical patch to A1 (same file, same contents).
+        let a_file_b = paths_b.repo.join(rel_a);
+        std::fs::create_dir_all(a_file_b.parent().unwrap()).unwrap();
+        std::fs::write(&a_file_b, "a-1\n").unwrap();
+        commit_all(&repo_b, "B dup of A1", "B", "b@devices.vaultone").unwrap();
+        // B_unique: B's own data, not yet on the remote.
+        let b_file = paths_b.repo.join(rel_b);
+        std::fs::create_dir_all(b_file.parent().unwrap()).unwrap();
+        std::fs::write(&b_file, "b-1\n").unwrap();
+        commit_all(&repo_b, "B unique", "B", "b@devices.vaultone").unwrap();
+
+        // Pull self-heals: drops B_dup (patch == A1, already upstream) and
+        // rebases B_unique onto A1.
+        pull(&repo_b, "", "B", "b@devices.vaultone").unwrap();
+
+        // A fresh clone sees A's file (from A1) AND B's unique file; B_dup was
+        // skipped rather than turning the rebase into a conflict.
+        let paths_c = crate::config::Paths::resolve(&tmp.path().join("c"));
+        let _repo_c = open_or_clone(&url, &paths_c.repo, "").unwrap();
+        let a_text = std::fs::read_to_string(paths_c.repo.join(rel_a)).unwrap();
+        assert!(a_text.contains("a-1"), "A's data still on remote: {a_text}");
+        let b_text = std::fs::read_to_string(paths_c.repo.join(rel_b)).unwrap();
+        assert!(
+            b_text.contains("b-1"),
+            "B's unique data reached the remote: {b_text}"
         );
     }
 
