@@ -32,6 +32,7 @@ pub struct Paths {
     pub repo_config: PathBuf,
     pub repo_data: PathBuf,
     pub logs: PathBuf,
+    pub library: PathBuf,
 }
 
 impl Paths {
@@ -45,6 +46,7 @@ impl Paths {
             repo_config: root.join("repo").join("config"),
             repo_data: root.join("repo").join("data"),
             logs: root.join("logs"),
+            library: root.join("repo").join("library"),
         }
     }
 
@@ -281,6 +283,7 @@ impl ConfigStore {
             &paths.repo_config,
             &paths.repo_data,
             &paths.logs,
+            &paths.library,
         ] {
             fs::create_dir_all(dir)?;
         }

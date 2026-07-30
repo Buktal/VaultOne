@@ -123,6 +123,11 @@ export const commands = {
 	 *  `Minimize`/`Ask` hide the window (scheduler keeps running); `Quit` exits.
 	 */
 	confirmClose: (choice: CloseBehavior, remember: boolean) => typedError<null, AppError>(__TAURI_INVOKE("confirm_close", { choice, remember })),
+	scanLibrary: (deviceScope: string, subpath: string) => typedError<LibraryEntry[], AppError>(__TAURI_INVOKE("scan_library", { deviceScope, subpath })),
+	uploadToLibrary: (items: UploadItem[], subpath: string) => typedError<null, AppError>(__TAURI_INVOKE("upload_to_library", { items, subpath })),
+	exportFromLibrary: (relPath: string, targetDir: string) => typedError<null, AppError>(__TAURI_INVOKE("export_from_library", { relPath, targetDir })),
+	deleteFromLibrary: (relPath: string) => typedError<null, AppError>(__TAURI_INVOKE("delete_from_library", { relPath })),
+	renameInLibrary: (relPath: string, newName: string) => typedError<null, AppError>(__TAURI_INVOKE("rename_in_library", { relPath, newName })),
 	/**
 	 *  Dock the given window against the right edge of its current monitor.
 	 * 
@@ -284,6 +289,32 @@ export type IngestReport = {
  */
 export type Language = "en" | "zh" | "ja";
 
+/**  One entry under a device's Library subtree, as shown in the list. */
+export type LibraryEntry = {
+	/**  Display name (file or dir basename). */
+	name: string,
+	kind: LibraryKind,
+	/**  Bytes (files only; 0 for dirs — size is not recursed). */
+	size: number | null,
+	/**  Epoch millis (f64 — specta-safe, dayjs-friendly). */
+	modified_ms: number | null,
+	/**  Owning device id. */
+	device_id: string,
+	/**  Owning device display name (self name or a known alias). */
+	device_name: string,
+	is_self: boolean,
+	/**
+	 *  Path relative to the library root: `<deviceId>/<sub...>/<name>`. Used to
+	 *  target delete / rename / export.
+	 */
+	rel_path: string,
+	/**  Absolute filesystem path, for the frontend's `convertFileSrc` preview. */
+	abs_path: string,
+};
+
+/**  A Library entry is either a single file or a directory tree. */
+export type LibraryKind = "file" | "dir";
+
 /**
  *  How the lightweight glance card's tucked half-icon expands.
  *  Crosses the Rust→JS boundary; Rust itself doesn't act on it (a pure frontend
@@ -439,6 +470,14 @@ export type TrendPoint = {
 	cache_creation_tokens: number,
 	cache_read_tokens: number,
 	total_cost_usd: number | null,
+};
+
+/**  One item the user is uploading (from the pending-upload dialog). */
+export type UploadItem = {
+	/**  Absolute source path on this machine (from the drag-drop event). */
+	source_path: string,
+	/**  Final name in the library (the user may have renamed it). */
+	target_name: string,
 };
 
 /**

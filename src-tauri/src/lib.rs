@@ -21,6 +21,7 @@ mod config;
 mod db;
 mod error;
 mod ingest;
+mod library;
 mod model;
 mod pricing;
 mod providers;
@@ -70,6 +71,11 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::set_skin,
         commands::verify_sync_repo,
         commands::confirm_close,
+        library::scan_library,
+        library::upload_to_library,
+        library::export_from_library,
+        library::delete_from_library,
+        library::rename_in_library,
         window_geom::dock_window_right,
         window_geom::center_window,
         window_geom::set_window_rect,
@@ -201,6 +207,8 @@ pub fn run() {
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // Native file open / save dialogs for Library export + "Add files".
+        .plugin(tauri_plugin_dialog::init())
         // Auto-update: check / download / install signed packages
         // from GitHub Releases. Endpoint + pubkey live in tauri.conf.json
         // (plugins.updater); capability grants updater:default.

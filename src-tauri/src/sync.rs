@@ -1252,6 +1252,61 @@ mod tests {
         assert_eq!(stats.request_count, 1);
     }
 
+    /// [DEBUG-DIAG2] Suspected loss path for codex/opencode rows. The background
+    /// collector appends new rows to an already-tracked `usage-<day>.jsonl`
+    /// (dirty worktree, not yet committed). A `pull` that fast-forwards runs a
+    /// `force` checkout, reverting the file to its last-committed
+    /// (claude_code-only) content — discarding the uncommitted append. The
+    /// scan_progress cursor already advanced at the end of collect, so the
+    /// dropped rows are never re-emitted. claude_code rows survive because they
+    /// were committed in prior cycles and remain in the checked-out tree.
+    #[test]
+    fn diag_pull_force_checkout_drops_uncommitted_append() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = tmp.path().join("remote.git");
+        seed_remote(&remote);
+        let url = remote.to_string_lossy().to_string();
+
+        // B commits + pushes a tracked usage file holding one claude_code row.
+        let paths_b = crate::config::Paths::resolve(&tmp.path().join("b"));
+        let repo_b = open_or_clone(&url, &paths_b.repo, "").unwrap();
+        let day_file = paths_b
+            .device_data_dir("bbbbbbbbbbbb")
+            .join("usage-2026-07-30.jsonl");
+        std::fs::create_dir_all(day_file.parent().unwrap()).unwrap();
+        std::fs::write(&day_file, "{\"uuid\":\"cc-1\",\"source\":\"claude_code\"}\n").unwrap();
+        commit_all(&repo_b, "B cc baseline", "B", "b@devices.vaultone").unwrap();
+        push(&repo_b, "").unwrap();
+
+        // Background collect appends a codex row to the SAME tracked file, NOT
+        // yet committed (the dirty window between collect and push).
+        std::fs::write(
+            &day_file,
+            "{\"uuid\":\"cc-1\",\"source\":\"claude_code\"}\n{\"uuid\":\"codex-1\",\"source\":\"codex_cli\"}\n",
+        )
+        .unwrap();
+
+        // A pushes anything new, advancing the remote tip past B's HEAD.
+        let paths_a = crate::config::Paths::resolve(&tmp.path().join("a"));
+        let repo_a = open_or_clone(&url, &paths_a.repo, "").unwrap();
+        let a_file = paths_a
+            .device_data_dir("aaaaaaaaaaaa")
+            .join("usage-2026-07-30.jsonl");
+        std::fs::create_dir_all(a_file.parent().unwrap()).unwrap();
+        std::fs::write(&a_file, "{\"uuid\":\"a-1\",\"source\":\"claude_code\"}\n").unwrap();
+        commit_all(&repo_a, "A new data", "A", "a@devices.vaultone").unwrap();
+        push(&repo_a, "").unwrap();
+
+        // B pulls (fast-forward + force checkout).
+        pull(&repo_b, "").unwrap();
+
+        let text = std::fs::read_to_string(&day_file).unwrap();
+        assert!(
+            text.contains("codex-1"),
+            "B's uncommitted codex append was discarded by pull's force checkout: {text}"
+        );
+    }
+
     // ---- S3 cloud-config sync tests (#6) ----
 
     fn write_pricing(paths: &crate::config::Paths, body: &str) {

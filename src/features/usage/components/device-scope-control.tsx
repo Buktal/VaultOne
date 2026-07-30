@@ -4,15 +4,13 @@
 // 设备再多也只是下拉里的一个选项，不会撑爆布局，故统一用 Select。单设备
 // (Standalone 仅本机) 无切换意义，整体不渲染。
 //
-// 同一组件两种形态:
-//  - ControlCard / ControlBar (control-card.tsx): 默认字号; align 跟随布局
-//    (卡片右栏 align="end" 让菜单向左生长不溢出视口, 条形 align="start")。
-//  - LightweightCard expanded (lightweight-card.tsx): compact (11px) 适配小窗。
+// 同一组件三种形态:
+//  - ControlCard (control-card.tsx): 纵卡, 右栏 Row label 已标「设备」, 值显「全部」。
+//  - ControlBar (logs 横排): bar=true, 无外置 label, 选中「全部」时显全称「全部设备」
+//    自带身份 (与库的「全部设备」一致); 选中具体设备显其名。
+//  - LightweightCard expanded: compact (11px) 适配小窗。
 //
 // device_scope 在全局 filter, 故 logs / lightweight 的 todayFilter 一并跟随。
-//
-// labeled: 横排 ControlBar 没有外置 label, 传 labeled 让 trigger 内嵌「设备 · 值」
-// 自带身份。compact (lightweight 小窗) 太窄, 不内嵌。
 
 import { useTranslation } from "react-i18next"
 
@@ -35,11 +33,12 @@ const ALL = "__all__"
 export function DeviceScopeControl({
   compact = false,
   align = "start",
-  labeled = false,
+  bar = false,
 }: {
   compact?: boolean
   align?: "start" | "end"
-  labeled?: boolean
+  /** 横排 ControlBar: 无外置 label, 选中「全部」时显全称「全部设备」自带身份。 */
+  bar?: boolean
 }) {
   const { t } = useTranslation()
   const dispatch = useAppDispatch()
@@ -51,6 +50,7 @@ export function DeviceScopeControl({
 
   // 选中设备从列表消失 (如对端重置) → 回退「全部」，无设备项高亮。
   const active = options.some((o) => o.id === scope) ? scope : ""
+  const allLabel = bar ? t("usage.control.allDevice") : t("usage.control.all")
 
   return (
     <Select
@@ -62,39 +62,18 @@ export function DeviceScopeControl({
       <SelectTrigger
         className={cn(
           "border-border bg-card hover:bg-muted/60 h-8 w-36 rounded-md",
-          // 横排 ControlBar: 三个 labeled chip 按维度差异化宽度 (模型 w-48 >
-          // 来源 w-40 > 设备 w-36), 设备值最短给最窄. 纵卡(非 labeled)与小窗(compact)不变.
-          labeled && !compact && "w-36",
+          // 横排 (bar) 容「全部设备」给 w-40; 纵卡 / 小窗 (compact) 不变。
+          bar && !compact && "w-40",
           compact && "text-[11px]",
         )}
         aria-label={t("usage.deviceScope.label")}
       >
         <SelectValue className="min-w-0">
-          {(value: string) => {
-            const isAll = value === ALL
-            const display = isAll
-              ? t("usage.control.all")
+          {(value: string) =>
+            value === ALL
+              ? allLabel
               : (options.find((o) => o.id === value)?.label ?? value)
-            // compact (lightweight 小窗) 不内嵌 label; labeled (横排 ControlBar)
-            // 加「设备 · 值」让控件自带身份. 纵卡 ControlCard 靠左 Row label, 不走.
-            if (!(labeled && !compact)) return display
-            return (
-              <>
-                <span className="text-muted-foreground">
-                  {t("usage.deviceScope.label")}
-                </span>
-                <span className="text-muted-foreground">·</span>
-                <span
-                  className={cn(
-                    "truncate",
-                    isAll ? "text-muted-foreground" : "text-foreground",
-                  )}
-                >
-                  {display}
-                </span>
-              </>
-            )
-          }}
+          }
         </SelectValue>
       </SelectTrigger>
       {/* alignItemWithTrigger=false: 弹出层从 trigger 底部往下展开(列表顶对齐
@@ -106,7 +85,7 @@ export function DeviceScopeControl({
         align={align}
         className={cn(compact && "text-[11px]")}
       >
-        <SelectItem value={ALL}>{t("usage.control.all")}</SelectItem>
+        <SelectItem value={ALL}>{allLabel}</SelectItem>
         {options.map((o) => (
           <SelectItem key={o.id} value={o.id}>
             {o.label}

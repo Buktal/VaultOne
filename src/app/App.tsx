@@ -7,6 +7,7 @@
 import type { ComponentType } from "react"
 import { useAppSelector } from "@/app/store/hooks"
 import type { ViewId } from "@/app/store/slices/viewSlice"
+import { LibraryView } from "@/features/library/components/library-view"
 import { PricingView } from "@/features/pricing/components/pricing-view"
 import { SettingsView } from "@/features/settings/components/settings-view"
 import { DashboardView } from "@/features/usage/components/dashboard-view"
@@ -20,6 +21,7 @@ const VIEWS: Record<ViewId, ComponentType> = {
   dashboard: DashboardView,
   logs: LogsView,
   pricing: PricingView,
+  library: LibraryView,
   settings: SettingsView,
 }
 

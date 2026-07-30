@@ -8,9 +8,10 @@
 // Replaces the old <UsageToolbar/> + the collect/sync buttons in <CommandBar/>.
 // Sync stays in Settings (config concern); collect lives here (data-refresh).
 //
-// 横排 ControlBar 的 chip 走 labeled (内嵌「label · 值」自带身份), 纵卡
-// ControlCard 靠左 Row label, chip 只显值. 来源 (source) 维度在多来源
-// (sources.length > 0) 时才出现 —— 采到任意来源就显示, 与设备维度同理.
+// 横排 ControlBar 的 chip 走 bar (纯值 + 选中「全部」时显全称「全部模型 /
+// 全部来源 / 全部设备」自带身份, 与库一致), 纵卡 ControlCard 靠左 Row label,
+// chip 只显「全部」. 来源 (source) 维度在多来源 (sources.length > 0) 时才出现
+// —— 采到任意来源就显示, 与设备维度同理.
 
 import dayjs from "dayjs"
 import { Activity, CalendarRange, ChevronDown } from "lucide-react"
@@ -116,8 +117,8 @@ function useCollectAction() {
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-3 py-1">
-      <span className="text-muted-foreground text-xs">{label}</span>
-      {children}
+      <span className="text-muted-foreground shrink-0 text-xs">{label}</span>
+      <div className="min-w-0">{children}</div>
     </div>
   )
 }
@@ -133,7 +134,9 @@ function DateRangeChip({ align = "end" }: { align?: "start" | "end" }) {
           "usage.control.dateRange",
       )
     : filter.from_day || filter.to_day
-      ? `${filter.from_day || "…"} → ${filter.to_day || "…"}`
+      ? filter.from_day === filter.to_day
+        ? filter.from_day || "…"
+        : `${filter.from_day || "…"} → ${filter.to_day || "…"}`
       : t("usage.control.allTime")
 
   return (
@@ -142,10 +145,10 @@ function DateRangeChip({ align = "end" }: { align?: "start" | "end" }) {
         render={
           <button
             type="button"
-            className="border-border bg-card hover:bg-muted/60 flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm"
+            className="border-border bg-card hover:bg-muted/60 flex h-8 max-w-full min-w-0 items-center gap-1.5 rounded-md border px-3 text-sm whitespace-nowrap"
           >
-            <CalendarRange className="text-muted-foreground size-3.5" />
-            {label}
+            <CalendarRange className="text-muted-foreground size-3.5 shrink-0" />
+            <span className="min-w-0 truncate">{label}</span>
           </button>
         }
       />
@@ -200,48 +203,19 @@ function DateRangeChip({ align = "end" }: { align?: "start" | "end" }) {
   )
 }
 
-/**
- * 内嵌「label · value」的 trigger 内容 — 横排 ControlBar 没有外置 Row label,
- * 靠它让每个下拉自带身份 (模型 / 来源 / 设备). 未选 (=全部) 时值用 muted, 选了
- * 具体值转 foreground, 一眼看出哪个维度被激活. 纵卡 ControlCard 有左 Row label,
- * 不走这条.
- */
-function LabeledSelectValue({
-  label,
-  value,
-  isAll,
-}: {
-  label: string
-  value: string
-  isAll: boolean
-}) {
-  return (
-    <>
-      <span className="text-muted-foreground">{label}</span>
-      <span className="text-muted-foreground">·</span>
-      <span
-        className={cn(
-          "truncate",
-          isAll ? "text-muted-foreground" : "text-foreground",
-        )}
-      >
-        {value}
-      </span>
-    </>
-  )
-}
-
 function ModelChip({
   align = "start",
-  labeled = false,
+  bar = false,
 }: {
   align?: "start" | "end"
-  labeled?: boolean
+  /** 横排 ControlBar: 选中「全部」时显全称「全部模型」自带身份。 */
+  bar?: boolean
 }) {
   const { t } = useTranslation()
   const dispatch = useAppDispatch()
   const filter = useAppSelector((s) => s.filter.filter)
   const { data: models = [] } = useDistinctModelsQuery()
+  const allLabel = bar ? t("usage.control.allModel") : t("usage.control.all")
   return (
     <Select
       value={filter.model || ALL}
@@ -252,30 +226,17 @@ function ModelChip({
       <SelectTrigger
         className={cn(
           "border-border bg-card hover:bg-muted/60 h-8 w-36 rounded-md",
-          // 模型名最长且不可控 → labeled 时给最宽; 三个 chip 按维度差异化
-          // (模型 w-48 > 来源 w-40 > 设备 w-36), 贴合各自典型内容长度.
-          labeled && "w-48",
+          // 模型名最长且不可控 → 横排 (bar) 给最宽。
+          bar && "w-48",
         )}
         aria-label={t("usage.control.model")}
       >
         <SelectValue className="min-w-0">
-          {(value: string) => {
-            const isAll = value === ALL
-            const display = isAll ? t("usage.control.all") : value
-            return labeled ? (
-              <LabeledSelectValue
-                label={t("usage.control.model")}
-                value={display}
-                isAll={isAll}
-              />
-            ) : (
-              display
-            )
-          }}
+          {(value: string) => (value === ALL ? allLabel : value)}
         </SelectValue>
       </SelectTrigger>
       <SelectContent alignItemWithTrigger={false} align={align}>
-        <SelectItem value={ALL}>{t("usage.control.all")}</SelectItem>
+        <SelectItem value={ALL}>{allLabel}</SelectItem>
         {models.map((m) => (
           <SelectItem key={m} value={m}>
             {m}
@@ -289,15 +250,17 @@ function ModelChip({
 /** 来源 (provider) 维度筛选 — 与 ModelChip 对称, 选项来自 queryDistinctSources. */
 function SourceChip({
   align = "start",
-  labeled = false,
+  bar = false,
 }: {
   align?: "start" | "end"
-  labeled?: boolean
+  /** 横排 ControlBar: 选中「全部」时显全称「全部来源」自带身份。 */
+  bar?: boolean
 }) {
   const { t } = useTranslation()
   const dispatch = useAppDispatch()
   const filter = useAppSelector((s) => s.filter.filter)
   const { data: sources = [] } = useDistinctSourcesQuery()
+  const allLabel = bar ? t("usage.control.allSource") : t("usage.control.all")
   return (
     <Select
       value={filter.source || ALL}
@@ -308,29 +271,17 @@ function SourceChip({
       <SelectTrigger
         className={cn(
           "border-border bg-card hover:bg-muted/60 h-8 w-36 rounded-md",
-          // 来源值固定短 (Claude Code / Gemini CLI) → labeled 时 w-40.
-          labeled && "w-40",
+          // 来源值固定短 (Claude Code / Gemini CLI) → 横排 (bar) w-40。
+          bar && "w-40",
         )}
         aria-label={t("usage.control.source")}
       >
         <SelectValue className="min-w-0">
-          {(value: string) => {
-            const isAll = value === ALL
-            const display = isAll ? t("usage.control.all") : sourceLabel(value)
-            return labeled ? (
-              <LabeledSelectValue
-                label={t("usage.control.source")}
-                value={display}
-                isAll={isAll}
-              />
-            ) : (
-              display
-            )
-          }}
+          {(value: string) => (value === ALL ? allLabel : sourceLabel(value))}
         </SelectValue>
       </SelectTrigger>
       <SelectContent alignItemWithTrigger={false} align={align}>
-        <SelectItem value={ALL}>{t("usage.control.all")}</SelectItem>
+        <SelectItem value={ALL}>{allLabel}</SelectItem>
         {sources.map((s) => (
           <SelectItem key={s} value={s}>
             {sourceLabel(s)}
@@ -422,9 +373,9 @@ export function ControlBar() {
   return (
     <div className="flex flex-wrap items-center gap-2">
       <DateRangeChip align="start" />
-      {hasSources ? <SourceChip labeled /> : null}
-      <ModelChip labeled />
-      <DeviceScopeControl labeled />
+      {hasSources ? <SourceChip bar /> : null}
+      <ModelChip bar />
+      <DeviceScopeControl bar />
       <div className="flex-1" />
       <DataFreshness />
       <Button size="sm" disabled={collecting} onClick={onCollect}>

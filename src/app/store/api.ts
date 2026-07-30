@@ -6,6 +6,7 @@ import type {
   ConfigSyncOutcome,
   DeviceInfo,
   IngestReport,
+  LibraryEntry,
   LogsQuery,
   ModelStatsRow,
   PricingEntry,
@@ -13,6 +14,7 @@ import type {
   SyncReport,
   TrendBucket,
   TrendPoint,
+  UploadItem,
   UsageFilter,
   UsageLogRow,
   UsageStats,
@@ -67,7 +69,7 @@ export const ZERO_STATS: UsageStats = {
 export const vaultApi = createApi({
   reducerPath: "vaultApi",
   baseQuery: fakeBaseQuery(),
-  tagTypes: ["Usage", "Logs", "Models", "Devices", "Pricing", "App"],
+  tagTypes: ["Usage", "Logs", "Models", "Devices", "Pricing", "Library", "App"],
   endpoints: (b) => ({
     // ---- reads ----
     appInfo: b.query<AppInfo, void>({
@@ -190,6 +192,44 @@ export const vaultApi = createApi({
       invalidatesTags: ["Pricing"],
     }),
 
+    // ---- library ----
+    scanLibrary: b.query<
+      LibraryEntry[],
+      { deviceScope: string; subpath: string }
+    >({
+      queryFn: async ({ deviceScope, subpath }) => ({
+        data: await run(commands.scanLibrary(deviceScope, subpath)),
+      }),
+      providesTags: ["Library"],
+    }),
+    uploadToLibrary: b.mutation<null, { items: UploadItem[]; subpath: string }>(
+      {
+        queryFn: async ({ items, subpath }) => ({
+          data: await run(commands.uploadToLibrary(items, subpath)),
+        }),
+        invalidatesTags: ["Library"],
+      },
+    ),
+    exportFromLibrary: b.mutation<null, { relPath: string; targetDir: string }>(
+      {
+        queryFn: async ({ relPath, targetDir }) => ({
+          data: await run(commands.exportFromLibrary(relPath, targetDir)),
+        }),
+      },
+    ),
+    deleteFromLibrary: b.mutation<null, string>({
+      queryFn: async (relPath) => ({
+        data: await run(commands.deleteFromLibrary(relPath)),
+      }),
+      invalidatesTags: ["Library"],
+    }),
+    renameInLibrary: b.mutation<null, { relPath: string; newName: string }>({
+      queryFn: async ({ relPath, newName }) => ({
+        data: await run(commands.renameInLibrary(relPath, newName)),
+      }),
+      invalidatesTags: ["Library"],
+    }),
+
     // ---- device / repo config ----
     setSyncRepo: b.mutation<RunMode, { repoUrl: string; githubToken: string }>({
       queryFn: async ({ repoUrl, githubToken }) => ({
@@ -299,6 +339,11 @@ export const {
   useReloadPricingMutation,
   useSavePricingToFileMutation,
   useFetchLitellmMutation,
+  useScanLibraryQuery,
+  useUploadToLibraryMutation,
+  useExportFromLibraryMutation,
+  useDeleteFromLibraryMutation,
+  useRenameInLibraryMutation,
   useSetSyncRepoMutation,
   useVerifySyncRepoMutation,
   useClearSyncRepoMutation,

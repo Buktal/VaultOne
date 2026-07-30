@@ -10,6 +10,7 @@
 import {
   BookText,
   Gauge,
+  Library,
   List,
   PanelLeftClose,
   PanelLeftOpen,
@@ -38,6 +39,7 @@ const NAV: Array<{ id: ViewId; key: string; icon: typeof Gauge }> = [
   { id: "dashboard", key: "nav.dashboard", icon: Gauge },
   { id: "logs", key: "nav.logs", icon: List },
   { id: "pricing", key: "nav.pricing", icon: Tags },
+  { id: "library", key: "nav.library", icon: Library },
   { id: "settings", key: "nav.settings", icon: Settings },
 ]
 
@@ -294,7 +296,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
         <main className="flex min-w-0 flex-1 flex-col">
           <div className="flex-1 overflow-auto">
-            <div className="w-full pr-4">{children}</div>
+            <div className="flex h-full w-full flex-col pr-4">{children}</div>
           </div>
         </main>
       </div>
