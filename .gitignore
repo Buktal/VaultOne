@@ -27,10 +27,9 @@ dist-ssr
 /.claude/
 docs/adr/
 docs/agents/
-docs/backlog/
 docs/prompt/
 docs/prototype/
-docs/releases.md
+docs/research/
 BLUEPRINT.md
 CLAUDE.md
 CONTEXT.md
