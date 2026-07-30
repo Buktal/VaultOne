@@ -76,6 +76,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         library::export_from_library,
         library::delete_from_library,
         library::rename_in_library,
+        library::library_device_summary,
         window_geom::dock_window_right,
         window_geom::center_window,
         window_geom::set_window_rect,

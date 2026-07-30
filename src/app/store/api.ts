@@ -5,8 +5,10 @@ import type {
   ConfigConflictResolution,
   ConfigSyncOutcome,
   DeviceInfo,
+  DeviceLibrarySummary,
   IngestReport,
   LibraryEntry,
+  LibraryForgetAction,
   LogsQuery,
   ModelStatsRow,
   PricingEntry,
@@ -229,6 +231,13 @@ export const vaultApi = createApi({
       }),
       invalidatesTags: ["Library"],
     }),
+    /** Pre-flight file/folder counts for one device's library subtree — drives
+     *  the forget-device dialog's migrate-vs-delete choice. Read-only probe. */
+    libraryDeviceSummary: b.query<DeviceLibrarySummary, string>({
+      queryFn: async (deviceId) => ({
+        data: await run(commands.libraryDeviceSummary(deviceId)),
+      }),
+    }),
 
     // ---- device / repo config ----
     setSyncRepo: b.mutation<RunMode, { repoUrl: string; githubToken: string }>({
@@ -265,11 +274,15 @@ export const vaultApi = createApi({
       }),
       invalidatesTags: ["Devices"],
     }),
-    forgetDevice: b.mutation<null, string>({
-      queryFn: async (deviceId) => ({
-        data: await run(commands.forgetDevice(deviceId)),
+    forgetDevice: b.mutation<
+      null,
+      { deviceId: string; libraryAction: LibraryForgetAction }
+    >({
+      queryFn: async ({ deviceId, libraryAction }) => ({
+        data: await run(commands.forgetDevice(deviceId, libraryAction)),
       }),
-      invalidatesTags: ["Devices", "Usage", "Logs", "Models"],
+      // "Library" too: migrate/delete rewrites the library listing.
+      invalidatesTags: ["Devices", "Usage", "Logs", "Models", "Library"],
     }),
 
     // ---- preferences ----
@@ -344,6 +357,7 @@ export const {
   useExportFromLibraryMutation,
   useDeleteFromLibraryMutation,
   useRenameInLibraryMutation,
+  useLibraryDeviceSummaryQuery,
   useSetSyncRepoMutation,
   useVerifySyncRepoMutation,
   useClearSyncRepoMutation,

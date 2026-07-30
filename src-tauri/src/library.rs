@@ -56,6 +56,26 @@ pub struct UploadItem {
     pub target_name: String,
 }
 
+/// What `forget_device` does with a peer's library subtree
+/// (`repo/library/<peerId>/`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum LibraryForgetAction {
+    /// Move the subtree into THIS device's library under `from-<peer>/`.
+    Migrate,
+    /// Delete the subtree outright.
+    Delete,
+}
+
+/// File/folder counts for a device's library subtree, shown in the
+/// forget-device dialog so the user sees what they are migrating or deleting.
+/// f64 to stay specta-safe across the TS boundary (counts, never fractional).
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+pub struct DeviceLibrarySummary {
+    pub files: f64,
+    pub dirs: f64,
+}
+
 /// Special device-scope value meaning "every device".
 const SCOPE_ALL: &str = "all";
 
@@ -350,6 +370,99 @@ fn resolve_rel(paths: &crate::config::Paths, rel_path: &str) -> AppResult<PathBu
 }
 
 // ---------------------------------------------------------------------------
+// device forget (migrate / delete a peer's subtree)
+// ---------------------------------------------------------------------------
+
+/// Sanitise a peer display name into a safe `from-<name>` folder label,
+/// falling back to the device id when the name is empty. Path separators and
+/// Windows-reserved chars become `_`; length is capped.
+fn migrate_folder_name(name: &str, fallback_id: &str) -> String {
+    let cleaned: String = name
+        .trim()
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ => c,
+        })
+        .collect::<String>()
+        .trim()
+        .to_string();
+    let base = if cleaned.is_empty() {
+        fallback_id.to_string()
+    } else {
+        cleaned.chars().take(64).collect()
+    };
+    format!("from-{base}")
+}
+
+/// Apply a [`LibraryForgetAction`] to a peer's library subtree. Local-only —
+/// no Git push (matches `forget_device`'s existing `repo/data/<id>/` cleanup;
+/// a peer still active elsewhere reappears on the next sync). `Migrate` moves
+/// the subtree into THIS device's library under `from-<peerName>/` (a unique
+/// suffix is appended on collision so repeated migrations never overwrite).
+/// No-op when the peer has no library subtree.
+pub fn forget_device_library(
+    paths: &crate::config::Paths,
+    cfg: &ConfigData,
+    peer_id: &str,
+    action: LibraryForgetAction,
+    peer_name: &str,
+) -> AppResult<()> {
+    let peer_dir = paths.library.join(peer_id);
+    if !peer_dir.exists() {
+        return Ok(());
+    }
+    match action {
+        LibraryForgetAction::Delete => {
+            std::fs::remove_dir_all(&peer_dir)?;
+        }
+        LibraryForgetAction::Migrate => {
+            let self_root = paths.library.join(&cfg.device_id);
+            std::fs::create_dir_all(&self_root)?;
+            let folder = migrate_folder_name(peer_name, peer_id);
+            let mut target = self_root.join(&folder);
+            let mut n = 2;
+            while target.exists() {
+                target = self_root.join(format!("{folder}-{n}"));
+                n += 1;
+            }
+            std::fs::rename(&peer_dir, &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// Recursively count files (excl. `.gitkeep`) and folders under a device's
+/// library subtree; `{0, 0}` when it does not exist.
+fn count_subtree(dir: &Path) -> DeviceLibrarySummary {
+    fn walk(dir: &Path, files: &mut f64, dirs: &mut f64) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in rd.flatten() {
+            if e.file_name().to_string_lossy() == ".gitkeep" {
+                continue;
+            }
+            let Ok(ft) = e.file_type() else {
+                continue;
+            };
+            if ft.is_dir() {
+                *dirs += 1.0;
+                walk(&e.path(), files, dirs);
+            } else {
+                *files += 1.0;
+            }
+        }
+    }
+    let mut files = 0.0;
+    let mut dirs = 0.0;
+    if dir.is_dir() {
+        walk(dir, &mut files, &mut dirs);
+    }
+    DeviceLibrarySummary { files, dirs }
+}
+
+// ---------------------------------------------------------------------------
 // commit + push (best-effort, Synced only)
 // ---------------------------------------------------------------------------
 
@@ -461,4 +574,177 @@ pub async fn rename_in_library(
     })
     .await
     .map_err(|e| AppError::Internal(format!("library rename task failed: {e}")))?
+}
+
+/// File/folder counts for one device's library subtree — used by the
+/// forget-device dialog to show what would be migrated or deleted.
+#[tauri::command]
+#[specta::specta]
+pub async fn library_device_summary(
+    state: State<'_, AppState>,
+    device_id: String,
+) -> AppResult<DeviceLibrarySummary> {
+    let config = state.config.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = config.paths();
+        Ok(count_subtree(&paths.library.join(&device_id)))
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("library summary task failed: {e}")))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Paths;
+
+    fn self_cfg() -> ConfigData {
+        ConfigData {
+            device_id: "aabbccddeeff".to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn write_file(p: &Path, body: &str) {
+        std::fs::write(p, body).unwrap();
+    }
+
+    #[test]
+    fn migrate_moves_subtree_into_self() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        let cfg = self_cfg();
+        let peer = "112233445566";
+
+        let peer_dir = paths.library.join(peer);
+        std::fs::create_dir_all(peer_dir.join("sub")).unwrap();
+        write_file(&peer_dir.join("note.txt"), "hi");
+        write_file(&peer_dir.join("sub").join("inner.txt"), "yo");
+        write_file(&peer_dir.join(".gitkeep"), "");
+
+        forget_device_library(&paths, &cfg, peer, LibraryForgetAction::Migrate, "MacBook").unwrap();
+
+        // Peer subtree gone; contents now under self/from-MacBook/.
+        assert!(!peer_dir.exists());
+        let moved = paths.library.join(&cfg.device_id).join("from-MacBook");
+        assert!(moved.is_dir());
+        assert_eq!(
+            std::fs::read_to_string(moved.join("note.txt")).unwrap(),
+            "hi"
+        );
+        assert!(moved.join("sub").is_dir());
+        assert_eq!(
+            std::fs::read_to_string(moved.join("sub").join("inner.txt")).unwrap(),
+            "yo"
+        );
+    }
+
+    #[test]
+    fn migrate_collision_appends_suffix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        let cfg = self_cfg();
+        let peer = "112233445566";
+
+        // Pre-existing migrate target must NOT be overwritten.
+        let existing = paths.library.join(&cfg.device_id).join("from-MacBook");
+        std::fs::create_dir_all(&existing).unwrap();
+        write_file(&existing.join("keeper.txt"), "keep");
+
+        let peer_dir = paths.library.join(peer);
+        std::fs::create_dir_all(&peer_dir).unwrap();
+        write_file(&peer_dir.join("note.txt"), "hi");
+
+        forget_device_library(&paths, &cfg, peer, LibraryForgetAction::Migrate, "MacBook").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(existing.join("keeper.txt")).unwrap(),
+            "keep"
+        );
+        let moved = paths.library.join(&cfg.device_id).join("from-MacBook-2");
+        assert_eq!(
+            std::fs::read_to_string(moved.join("note.txt")).unwrap(),
+            "hi"
+        );
+    }
+
+    #[test]
+    fn delete_removes_subtree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        let cfg = self_cfg();
+        let peer = "112233445566";
+
+        let peer_dir = paths.library.join(peer);
+        std::fs::create_dir_all(peer_dir.join("sub")).unwrap();
+        write_file(&peer_dir.join("note.txt"), "hi");
+
+        forget_device_library(&paths, &cfg, peer, LibraryForgetAction::Delete, "MacBook").unwrap();
+
+        assert!(!peer_dir.exists());
+    }
+
+    #[test]
+    fn forget_is_noop_when_peer_has_no_library() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        let cfg = self_cfg();
+        // No library/<peer>/ exists for either action.
+        forget_device_library(
+            &paths,
+            &cfg,
+            "112233445566",
+            LibraryForgetAction::Delete,
+            "MacBook",
+        )
+        .unwrap();
+        forget_device_library(
+            &paths,
+            &cfg,
+            "112233445566",
+            LibraryForgetAction::Migrate,
+            "MacBook",
+        )
+        .unwrap();
+        // Migrate must not spuriously create the self root on a no-op.
+        assert!(!paths.library.join(&cfg.device_id).exists());
+    }
+
+    #[test]
+    fn count_subtree_excludes_gitkeep() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        let peer_dir = paths.library.join("112233445566");
+        std::fs::create_dir_all(peer_dir.join("d1")).unwrap();
+        write_file(&peer_dir.join("a.txt"), "a");
+        write_file(&peer_dir.join(".gitkeep"), "");
+        write_file(&peer_dir.join("d1").join("b.txt"), "b");
+
+        let s = count_subtree(&peer_dir);
+        assert_eq!(s.files, 2.0); // a.txt + d1/b.txt (.gitkeep excluded)
+        assert_eq!(s.dirs, 1.0); // d1
+    }
+
+    #[test]
+    fn count_subtree_missing_dir_is_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        let s = count_subtree(&paths.library.join("nope"));
+        assert_eq!(s.files, 0.0);
+        assert_eq!(s.dirs, 0.0);
+    }
+
+    #[test]
+    fn migrate_folder_name_sanitises() {
+        assert_eq!(
+            migrate_folder_name("MacBook", "112233445566"),
+            "from-MacBook"
+        );
+        assert_eq!(migrate_folder_name("a/b\\c", "112233445566"), "from-a_b_c");
+        assert_eq!(migrate_folder_name("", "112233445566"), "from-112233445566");
+        assert_eq!(
+            migrate_folder_name("   ", "112233445566"),
+            "from-112233445566"
+        );
+    }
 }

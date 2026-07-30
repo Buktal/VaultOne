@@ -13,6 +13,7 @@ import { toast } from "sonner"
 import {
   useDevicesQuery,
   useForgetDeviceMutation,
+  useLibraryDeviceSummaryQuery,
   useSetDeviceDisplayNameMutation,
 } from "@/app/store/api"
 import { Badge } from "@/components/ui/badge"
@@ -31,6 +32,27 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { cn } from "@/lib/utils"
+import type { LibraryForgetAction } from "@/types/generated/bindings"
+
+/** The two choices shown when a device has library files. Order = UI order;
+ *  the first (migrate) is the default selection. */
+const FORGET_CHOICES: Array<{
+  id: LibraryForgetAction
+  titleKey: string
+  hintKey: string
+}> = [
+  {
+    id: "migrate",
+    titleKey: "devices.forget.choice.migrate",
+    hintKey: "devices.forget.choice.migrateHint",
+  },
+  {
+    id: "delete",
+    titleKey: "devices.forget.choice.delete",
+    hintKey: "devices.forget.choice.deleteHint",
+  },
+]
 
 export function DeviceList() {
   const { t } = useTranslation()
@@ -40,6 +62,13 @@ export function DeviceList() {
   const [editing, setEditing] = useState<string | null>(null)
   const [draft, setDraft] = useState("")
   const [removing, setRemoving] = useState<string | null>(null)
+  const [libAction, setLibAction] = useState<LibraryForgetAction>("migrate")
+  // Pre-flight: does this peer have library files? Drives the migrate-vs-delete
+  // choice. Skipped while no device is pending removal.
+  const { data: summary } = useLibraryDeviceSummaryQuery(removing ?? "", {
+    skip: removing === null,
+  })
+  const hasLibrary = (summary?.files ?? 0) > 0 || (summary?.dirs ?? 0) > 0
 
   if (devices.length === 0) {
     return (
@@ -56,7 +85,8 @@ export function DeviceList() {
     if (!removing) return
     const id = removing
     const name = targetName
-    const r = await forget(id)
+    const action = libAction
+    const r = await forget({ deviceId: id, libraryAction: action })
     if ("error" in r) {
       toast.error(t("devices.removeFailed"))
     } else {
@@ -143,7 +173,10 @@ export function DeviceList() {
                         variant="ghost"
                         size="icon-sm"
                         aria-label={t("devices.remove")}
-                        onClick={() => setRemoving(d.device_id)}
+                        onClick={() => {
+                          setLibAction("migrate")
+                          setRemoving(d.device_id)
+                        }}
                       />
                     }
                   >
@@ -169,9 +202,53 @@ export function DeviceList() {
           <DialogHeader>
             <DialogTitle>{t("devices.removeConfirmTitle")}</DialogTitle>
             <DialogDescription>
-              {t("devices.removeWarning", { name: targetName })}
+              {hasLibrary
+                ? t("devices.forget.hasLibraryPrompt", {
+                    files: summary?.files ?? 0,
+                    dirs: summary?.dirs ?? 0,
+                  })
+                : t("devices.removeWarning", { name: targetName })}
             </DialogDescription>
           </DialogHeader>
+          {hasLibrary ? (
+            <div className="flex flex-col gap-2">
+              {FORGET_CHOICES.map((choice) => {
+                const selected = libAction === choice.id
+                return (
+                  <button
+                    key={choice.id}
+                    type="button"
+                    onClick={() => setLibAction(choice.id)}
+                    className={cn(
+                      "flex items-start gap-2.5 rounded-md border p-3 text-left text-sm transition-colors",
+                      selected
+                        ? "border-accent-brand-strong bg-accent-tint"
+                        : "border-border hover:bg-muted/60",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border",
+                        selected
+                          ? "border-accent-brand-strong"
+                          : "border-muted-foreground/40",
+                      )}
+                    >
+                      {selected ? (
+                        <span className="bg-accent-brand-strong size-2 rounded-full" />
+                      ) : null}
+                    </span>
+                    <span className="flex min-w-0 flex-col gap-0.5">
+                      <span className="font-medium">{t(choice.titleKey)}</span>
+                      <span className="text-muted-foreground text-xs">
+                        {t(choice.hintKey, { name: targetName })}
+                      </span>
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          ) : null}
           <DialogFooter>
             <Button variant="outline" onClick={() => setRemoving(null)}>
               {t("common.cancel")}

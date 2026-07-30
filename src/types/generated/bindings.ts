@@ -27,11 +27,13 @@ export const commands = {
 	/**
 	 *  Locally forget a peer device: drop its registry row + all its local usage
 	 *  data (records, rollups, turn durations, ledger) + its local artifact dir,
-	 *  and clear any local alias. Nothing is pushed to Git — a peer still in the
-	 *  repo reappears on the next sync (registry + data artifacts are re-imported).
-	 *  This device (`is_self`) is not forgettable; rename it instead.
+	 *  and clear any local alias. `library_action` decides the fate of the peer's
+	 *  library subtree (`repo/library/<id>/`): migrated into this device's library
+	 *  or deleted. Nothing is pushed to Git — a peer still in the repo reappears on
+	 *  the next sync (registry + data artifacts are re-imported). This device
+	 *  (`is_self`) is not forgettable; rename it instead.
 	 */
-	forgetDevice: (deviceId: string) => typedError<null, AppError>(__TAURI_INVOKE("forget_device", { deviceId })),
+	forgetDevice: (deviceId: string, libraryAction: LibraryForgetAction) => typedError<null, AppError>(__TAURI_INVOKE("forget_device", { deviceId, libraryAction })),
 	/**
 	 *  Manual「立即采集」: collect now, best-effort push if Synced, refresh the UI.
 	 *  Heavy disk/git work → offloaded to a thread.
@@ -133,6 +135,11 @@ export const commands = {
 	exportFromLibrary: (relPath: string, targetDir: string) => typedError<null, AppError>(__TAURI_INVOKE("export_from_library", { relPath, targetDir })),
 	deleteFromLibrary: (relPath: string) => typedError<null, AppError>(__TAURI_INVOKE("delete_from_library", { relPath })),
 	renameInLibrary: (relPath: string, newName: string) => typedError<null, AppError>(__TAURI_INVOKE("rename_in_library", { relPath, newName })),
+	/**
+	 *  File/folder counts for one device's library subtree — used by the
+	 *  forget-device dialog to show what would be migrated or deleted.
+	 */
+	libraryDeviceSummary: (deviceId: string) => typedError<DeviceLibrarySummary, AppError>(__TAURI_INVOKE("library_device_summary", { deviceId })),
 	/**
 	 *  Dock the given window against the right edge of its current monitor.
 	 * 
@@ -276,6 +283,16 @@ export type DeviceInfo = {
 	first_seen: string,
 };
 
+/**
+ *  File/folder counts for a device's library subtree, shown in the
+ *  forget-device dialog so the user sees what they are migrating or deleting.
+ *  f64 to stay specta-safe across the TS boundary (counts, never fractional).
+ */
+export type DeviceLibrarySummary = {
+	files: number | null,
+	dirs: number | null,
+};
+
 /**  Summary of one ingest run. */
 export type IngestReport = {
 	source: string,
@@ -316,6 +333,16 @@ export type LibraryEntry = {
 	/**  Absolute filesystem path, for the frontend's `convertFileSrc` preview. */
 	abs_path: string,
 };
+
+/**
+ *  What `forget_device` does with a peer's library subtree
+ *  (`repo/library/<peerId>/`).
+ */
+export type LibraryForgetAction = 
+/**  Move the subtree into THIS device's library under `from-<peer>/`. */
+"migrate" | 
+/**  Delete the subtree outright. */
+"delete";
 
 /**  A Library entry is either a single file or a directory tree. */
 export type LibraryKind = "file" | "dir";

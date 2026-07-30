@@ -194,28 +194,63 @@ pub fn set_device_display_name(
 
 /// Locally forget a peer device: drop its registry row + all its local usage
 /// data (records, rollups, turn durations, ledger) + its local artifact dir,
-/// and clear any local alias. Nothing is pushed to Git — a peer still in the
-/// repo reappears on the next sync (registry + data artifacts are re-imported).
-/// This device (`is_self`) is not forgettable; rename it instead.
+/// and clear any local alias. `library_action` decides the fate of the peer's
+/// library subtree (`repo/library/<id>/`): migrated into this device's library
+/// or deleted. Nothing is pushed to Git — a peer still in the repo reappears on
+/// the next sync (registry + data artifacts are re-imported). This device
+/// (`is_self`) is not forgettable; rename it instead.
 #[tauri::command]
 #[specta::specta]
-pub fn forget_device(state: State<'_, AppState>, device_id: String) -> AppResult<()> {
+pub fn forget_device(
+    state: State<'_, AppState>,
+    device_id: String,
+    library_action: crate::library::LibraryForgetAction,
+) -> AppResult<()> {
     let cfg = state.config.get();
     if cfg.device_id == device_id {
         return Err(AppError::Config(
             "this device cannot be removed (rename it instead)".into(),
         ));
     }
+    // Capture the peer's alias BEFORE the registry row + alias map are dropped —
+    // the migrate target folder is named after it (`from-<name>`).
+    let peer_name = cfg
+        .device_names
+        .get(&device_id)
+        .cloned()
+        .unwrap_or_default();
     state.store.forget_device_local(&device_id)?;
     state.config.update(|c| {
         c.device_names.remove(&device_id);
     })?;
-    let dir = state.config.paths().device_data_dir(&device_id);
-    if dir.exists() {
-        if let Err(e) = std::fs::remove_dir_all(&dir) {
+    let paths = state.config.paths();
+    // Per-device JSONL artifact dir.
+    let data_dir = paths.device_data_dir(&device_id);
+    if data_dir.exists() {
+        if let Err(e) = std::fs::remove_dir_all(&data_dir) {
             eprintln!(
                 "[vaultone] forget_device: failed to remove {}: {e}",
-                dir.display()
+                data_dir.display()
+            );
+        }
+    }
+    // Per-device library subtree (migrate or delete), mirroring the data-dir
+    // cleanup above: local-only, no Git push.
+    if let Err(e) =
+        crate::library::forget_device_library(&paths, &cfg, &device_id, library_action, &peer_name)
+    {
+        eprintln!(
+            "[vaultone] forget_device: library {:?} failed: {e}",
+            library_action
+        );
+    }
+    // Cloud device-name registry file this peer published.
+    let devices_file = paths.devices_file_path(&device_id);
+    if devices_file.exists() {
+        if let Err(e) = std::fs::remove_file(&devices_file) {
+            eprintln!(
+                "[vaultone] forget_device: failed to remove {}: {e}",
+                devices_file.display()
             );
         }
     }
