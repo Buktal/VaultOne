@@ -27,6 +27,7 @@ import {
   setReady,
   setUpToDate,
 } from "@/app/store/slices/updateSlice"
+import { describeError } from "@/lib/error"
 
 const LAST_CHECK_KEY = "vaultone:update-last-check"
 const THROTTLE_MS = 24 * 60 * 60 * 1000
@@ -93,7 +94,7 @@ export function useUpdateCheck() {
       await update.close()
     } catch (e) {
       // Manual Fallback: surface the "go to GitHub" card.
-      dispatch(setFailed({ error: describeError(e) }))
+      dispatch(setFailed({ error: describeError(e) || String(e) }))
     }
   }, [dispatch])
 
@@ -118,9 +119,4 @@ export function useUpdateCheck() {
   }, [checkNow])
 
   return { checkNow, applyUpdate, restartNow, openReleases }
-}
-
-function describeError(e: unknown): string {
-  if (e instanceof Error) return e.message
-  return String(e)
 }

@@ -7,9 +7,10 @@ import { useState } from "react"
 import { useTranslation } from "react-i18next"
 import { useModelsQuery } from "@/app/store/api"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { topNModels } from "@/features/usage/derive"
 import { formatCost, formatTokens } from "@/lib/format"
 
-import type { ModelStatsRow, UsageFilter } from "@/types/generated/bindings"
+import type { UsageFilter } from "@/types/generated/bindings"
 
 const TOP_N = 5
 
@@ -24,27 +25,19 @@ export function ModelDistribution({
   const { data: rows = [] } = useModelsQuery(filter)
   const [metric, setMetric] = useState<"cost" | "tokens">("cost")
 
-  const metricValue = (r: ModelStatsRow) =>
-    metric === "cost" ? Number(r.total_cost_usd ?? 0) : Number(r.total_tokens)
   const fmt = metric === "cost" ? formatCost : formatTokens
-
-  const sorted = [...rows].sort((a, b) => metricValue(b) - metricValue(a))
-  const topRows = sorted.slice(0, TOP_N)
-  const rest = sorted.slice(TOP_N)
-  const restSum = rest.reduce((sum, r) => sum + metricValue(r), 0)
-  const total = sorted.reduce((sum, r) => sum + metricValue(r), 0) || 1
-
+  const { top, rest, total } = topNModels(rows, metric, TOP_N)
   const items: Array<{ label: string; value: number; model: string | null }> = [
-    ...topRows.map((r) => ({
-      label: r.model,
-      value: metricValue(r),
-      model: r.model,
+    ...top.map((row) => ({
+      label: row.model,
+      value: row.value,
+      model: row.model,
     })),
-    ...(rest.length > 0
+    ...(rest.count > 0
       ? [
           {
-            label: t("usage.models.others", { n: rest.length }),
-            value: restSum,
+            label: t("usage.models.others", { n: rest.count }),
+            value: rest.sum,
             model: null,
           },
         ]

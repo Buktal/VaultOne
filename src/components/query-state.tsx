@@ -2,13 +2,13 @@
 // Empty renders <EmptyState> so callers can attach an icon, description and
 // next-step action instead of a bare string.
 
-import i18n from "i18next"
 import type { LucideIcon } from "lucide-react"
 import type { ReactNode } from "react"
 import { useTranslation } from "react-i18next"
 
 import { EmptyState } from "@/components/empty-state"
 import { Skeleton } from "@/components/ui/skeleton"
+import { describeError } from "@/lib/error"
 
 export function QueryState({
   isLoading,
@@ -36,7 +36,9 @@ export function QueryState({
   if (error) {
     return (
       <div className="text-destructive text-sm">
-        {t("common.loadFailed", { detail: describeError(error) })}
+        {t("common.loadFailed", {
+          detail: describeError(error) || t("common.unknownError"),
+        })}
       </div>
     )
   }
@@ -51,19 +53,4 @@ export function QueryState({
     )
   }
   return <>{children}</>
-}
-
-export function describeError(e: unknown): string {
-  if (!e) return i18n.t("common.unknownError")
-  if (
-    typeof e === "object" &&
-    "data" in e &&
-    typeof (e as { data: unknown }).data === "string"
-  ) {
-    return (e as { data: string }).data
-  }
-  if (typeof e === "object" && "error" in e) {
-    return JSON.stringify((e as { error: unknown }).error)
-  }
-  return JSON.stringify(e)
 }

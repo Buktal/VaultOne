@@ -39,24 +39,14 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { LANGUAGES } from "@/i18n/languages"
+import { describeError } from "@/lib/error"
 import { cn } from "@/lib/utils"
 import type {
   CloseBehavior,
   Language,
   LightweightExpand,
-  Skin,
-} from "@/types/preferences"
-
-/** Pull a human-readable reason out of an RTK Query mutation error. */
-function describeError(e: unknown, fallback: string): string {
-  if (e && typeof e === "object") {
-    const m = e as Record<string, unknown>
-    if (typeof m.message === "string") return m.message
-    if (typeof m.data === "string") return m.data
-    if (typeof m.error === "string") return m.error
-  }
-  return fallback
-}
+  Skin_Serialize,
+} from "@/types/generated/bindings"
 
 /** Close-behavior option → i18n key. */
 const CLOSE_OPTIONS: ReadonlyArray<[CloseBehavior, string]> = [
@@ -89,7 +79,7 @@ const PUSH_OPTIONS: ReadonlyArray<number> = [300, 600, 900, 1800, 3600]
  * English literals (no i18n); `neutral` first as the default.
  */
 const SKINS: ReadonlyArray<{
-  value: Skin
+  value: Skin_Serialize
   label: string
   brand?: string
 }> = [
@@ -125,7 +115,7 @@ export function GeneralCard() {
       {prefsError ? (
         <p className="border-destructive/40 bg-destructive/5 text-destructive mb-2 rounded-md border p-2 text-xs leading-relaxed">
           {t("settings.general.readError", {
-            detail: describeError(prefsError, t("common.unknownReason")),
+            detail: describeError(prefsError) || t("common.unknownReason"),
           })}
         </p>
       ) : null}
@@ -150,10 +140,8 @@ export function GeneralCard() {
                   const r = await setSkin(s.value)
                   if ("error" in r)
                     toast.error(t("settings.toast.saveFailed"), {
-                      description: describeError(
-                        r.error,
-                        t("common.unknownReason"),
-                      ),
+                      description:
+                        describeError(r.error) || t("common.unknownReason"),
                     })
                 }}
                 className={cn(
@@ -187,7 +175,8 @@ export function GeneralCard() {
             const r = await setLanguage(v as Language)
             if ("error" in r)
               toast.error(t("settings.toast.saveFailed"), {
-                description: describeError(r.error, t("common.unknownReason")),
+                description:
+                  describeError(r.error) || t("common.unknownReason"),
               })
           }}
         >
@@ -218,7 +207,8 @@ export function GeneralCard() {
             const r = await setCollectInterval(Number(v))
             if ("error" in r)
               toast.error(t("settings.toast.saveFailed"), {
-                description: describeError(r.error, t("common.unknownReason")),
+                description:
+                  describeError(r.error) || t("common.unknownReason"),
               })
           }}
         >
@@ -248,10 +238,8 @@ export function GeneralCard() {
               const r = await setPushInterval(Number(v))
               if ("error" in r)
                 toast.error(t("settings.toast.saveFailed"), {
-                  description: describeError(
-                    r.error,
-                    t("common.unknownReason"),
-                  ),
+                  description:
+                    describeError(r.error) || t("common.unknownReason"),
                 })
             }}
           >
@@ -290,10 +278,8 @@ export function GeneralCard() {
                 const r = await setCloseBehavior(value)
                 if ("error" in r)
                   toast.error(t("settings.toast.saveFailed"), {
-                    description: describeError(
-                      r.error,
-                      t("common.unknownReason"),
-                    ),
+                    description:
+                      describeError(r.error) || t("common.unknownReason"),
                   })
               }}
             >
@@ -320,10 +306,8 @@ export function GeneralCard() {
                 const r = await setLightweightExpand(value)
                 if ("error" in r)
                   toast.error(t("settings.toast.saveFailed"), {
-                    description: describeError(
-                      r.error,
-                      t("common.unknownReason"),
-                    ),
+                    description:
+                      describeError(r.error) || t("common.unknownReason"),
                   })
               }}
             >

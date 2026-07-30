@@ -26,6 +26,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { stopReasonTone } from "@/features/usage/derive"
 import { formatCost, formatInt, formatTime } from "@/lib/format"
 import { tokenTotal } from "@/lib/usage"
 import { cn } from "@/lib/utils"
@@ -221,29 +222,6 @@ function providerLabel(source: string): string {
     default:
       return source || "—"
   }
-}
-
-/**
- * stop_reason → semantic tone. Free-form string from the source log, matched
- * by prefix/contains. Color signals outcome: normal completion / tool call
- * stay calm (green/blue), while hitting a limit (amber) or a refusal/error
- * (red) draws the eye. Unknown values fall back to neutral text — no chip.
- */
-function stopReasonTone(
-  value: string,
-): "success" | "tool" | "warn" | "error" | null {
-  const v = value.toLowerCase()
-  if (!v) return null
-  if (v === "end_turn") return "success"
-  if (v.includes("tool_use")) return "tool"
-  if (
-    v.includes("max_tokens") ||
-    v.includes("exceeded") ||
-    v.includes("context_window")
-  )
-    return "warn"
-  if (v.includes("refusal") || v.includes("error")) return "error"
-  return null
 }
 
 function StopReasonCell({ value }: { value: string }) {

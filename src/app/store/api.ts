@@ -22,14 +22,14 @@ import type {
   UsageStats,
   VerifyReport,
 } from "@/types/generated/bindings"
-import { commands } from "@/types/generated/bindings"
-import type {
-  CloseBehavior,
-  Language,
-  LightweightExpand,
-  Preferences,
-  Skin,
-} from "@/types/preferences"
+import {
+  type CloseBehavior,
+  commands,
+  type Language,
+  type LightweightExpand,
+  type Preferences_Serialize,
+  type Skin_Deserialize,
+} from "@/types/generated/bindings"
 
 /**
  * RTK Query data layer over the typed Tauri command contract.
@@ -288,41 +288,41 @@ export const vaultApi = createApi({
     // ---- preferences ----
     // Go through the generated `commands.*` so tauri-specta's `typedError`
     // wrapping matches what `run` expects. Raw `invoke` skips that wrapping.
-    preferences: b.query<Preferences, void>({
+    preferences: b.query<Preferences_Serialize, void>({
       queryFn: async () => ({ data: await run(commands.getPreferences()) }),
       providesTags: ["App"],
     }),
-    setCloseBehavior: b.mutation<Preferences, CloseBehavior>({
+    setCloseBehavior: b.mutation<Preferences_Serialize, CloseBehavior>({
       queryFn: async (closeBehavior) => ({
         data: await run(commands.setCloseBehavior(closeBehavior)),
       }),
       invalidatesTags: ["App"],
     }),
-    setCollectInterval: b.mutation<Preferences, number>({
+    setCollectInterval: b.mutation<Preferences_Serialize, number>({
       queryFn: async (seconds) => ({
         data: await run(commands.setCollectInterval(seconds)),
       }),
       invalidatesTags: ["App"],
     }),
-    setPushInterval: b.mutation<Preferences, number>({
+    setPushInterval: b.mutation<Preferences_Serialize, number>({
       queryFn: async (seconds) => ({
         data: await run(commands.setPushInterval(seconds)),
       }),
       invalidatesTags: ["App"],
     }),
-    setLanguage: b.mutation<Preferences, Language>({
+    setLanguage: b.mutation<Preferences_Serialize, Language>({
       queryFn: async (language) => ({
         data: await run(commands.setLanguage(language)),
       }),
       invalidatesTags: ["App"],
     }),
-    setLightweightExpand: b.mutation<Preferences, LightweightExpand>({
+    setLightweightExpand: b.mutation<Preferences_Serialize, LightweightExpand>({
       queryFn: async (mode) => ({
         data: await run(commands.setLightweightExpand(mode)),
       }),
       invalidatesTags: ["App"],
     }),
-    setSkin: b.mutation<Preferences, Skin>({
+    setSkin: b.mutation<Preferences_Serialize, Skin_Deserialize>({
       queryFn: async (skin) => ({
         data: await run(commands.setSkin(skin)),
       }),

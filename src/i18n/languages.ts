@@ -8,7 +8,7 @@ import dayjs from "dayjs"
 import "dayjs/locale/ja"
 import "dayjs/locale/zh-cn"
 
-import type { Language } from "@/types/preferences"
+import type { Language } from "@/types/generated/bindings"
 
 export interface LanguageOption {
   /** Rust `Language` code (serde lowercase). */

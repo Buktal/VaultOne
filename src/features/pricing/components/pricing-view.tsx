@@ -40,11 +40,14 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import {
+  filterAndSortPricing,
+  type PricingSortKey,
+  paginate,
+} from "@/features/pricing/derive"
 
 import type { PricingEntry } from "@/types/generated/bindings"
 import { EntryEditorDialog, emptyEntry } from "./entry-editor-dialog"
-
-type SortKey = keyof PricingEntry
 
 /** Client-side page size — the full list is already loaded; rendering all of
  * it at once jank-scrolls once it grows past a few hundred entries. */
@@ -59,41 +62,22 @@ export function PricingView() {
   const [saveFile, { isLoading: savingFile }] = useSavePricingToFileMutation()
 
   const [search, setSearch] = useState("")
-  const [sortKey, setSortKey] = useState<SortKey | null>(null)
+  const [sortKey, setSortKey] = useState<PricingSortKey | null>(null)
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
   const [editing, setEditing] = useState<PricingEntry | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [offset, setOffset] = useState(0)
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase()
-    let list = q
-      ? entries.filter(
-          (e) =>
-            e.model_key.toLowerCase().includes(q) ||
-            e.display_name.toLowerCase().includes(q),
-        )
-      : entries
-    if (sortKey) {
-      list = [...list].sort((a, b) => {
-        const av = a[sortKey] ?? 0
-        const bv = b[sortKey] ?? 0
-        const cmp =
-          typeof av === "number" && typeof bv === "number"
-            ? av - bv
-            : String(av).localeCompare(String(bv))
-        return sortDir === "asc" ? cmp : -cmp
-      })
-    }
-    return list
-  }, [entries, search, sortKey, sortDir])
+  const filtered = useMemo(
+    () => filterAndSortPricing(entries, search, sortKey, sortDir),
+    [entries, search, sortKey, sortDir],
+  )
 
   const total = filtered.length
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
-  const page = Math.min(Math.floor(offset / PAGE_SIZE) + 1, totalPages)
+  const { totalPages, page } = paginate(total, offset, PAGE_SIZE)
   const paged = filtered.slice(offset, offset + PAGE_SIZE)
 
-  function onSort(k: SortKey) {
+  function onSort(k: PricingSortKey) {
     setOffset(0)
     if (sortKey === k) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
     else {
@@ -384,10 +368,10 @@ function SortHeader({
   onSort,
 }: {
   label: string
-  k: SortKey
-  sortKey: SortKey | null
+  k: PricingSortKey
+  sortKey: PricingSortKey | null
   sortDir: "asc" | "desc"
-  onSort: (k: SortKey) => void
+  onSort: (k: PricingSortKey) => void
 }) {
   const active = sortKey === k
   return (

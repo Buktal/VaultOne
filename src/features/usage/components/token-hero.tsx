@@ -8,6 +8,7 @@
 import { useTranslation } from "react-i18next"
 import { useStatsQuery, useTrendQuery, ZERO_STATS } from "@/app/store/api"
 import { Card, CardContent } from "@/components/ui/card"
+import { tokenSnapshot } from "@/features/usage/derive"
 import { formatInt, formatPct, formatTokens } from "@/lib/format"
 
 import type { UsageFilter } from "@/types/generated/bindings"
@@ -41,17 +42,8 @@ export function TokenHero({ filter }: { filter: UsageFilter }) {
   const { data: trend = [] } = useTrendQuery({ filter, bucket: "Day" })
   const s = stats ?? ZERO_STATS
   const total = s.total_tokens || 1
-
   // delta = 末日 vs 窗首 (trend 已按日升序); 日均 = 总量 / 窗口天数.
-  const points = trend.map((p) => ({ v: Number(p.total_tokens ?? 0) }))
-  let deltaPct: number | null = null
-  if (points.length >= 2) {
-    const first = points[0].v
-    const last = points[points.length - 1].v
-    if (first > 0) deltaPct = (last - first) / first
-  }
-  const days = trend.length
-  const dailyAvg = days > 0 ? s.total_tokens / days : 0
+  const { deltaPct, dailyAvg } = tokenSnapshot(s, trend)
 
   return (
     <Card interactive>

@@ -37,6 +37,7 @@ import { Label } from "@/components/ui/label"
 import { ConflictResolver } from "@/features/settings/components/conflict-resolver"
 import { DeviceList } from "@/features/settings/components/device-list"
 import { GeneralCard } from "@/features/settings/components/general-card"
+import { describeError } from "@/lib/error"
 import type { ConfigConflict, VerifyReport } from "@/types/generated/bindings"
 
 export function SettingsView() {
@@ -228,7 +229,7 @@ export function SettingsView() {
               })
               if ("error" in r)
                 toast.error(t("settings.toast.configFailed"), {
-                  description: describeError(r.error, unknown),
+                  description: describeError(r.error) || unknown,
                 })
               else {
                 toast.success(t("settings.toast.syncEnabled"))
@@ -248,7 +249,7 @@ export function SettingsView() {
               const r = await clearRepo()
               if ("error" in r)
                 toast.error(t("settings.toast.unbindFailed"), {
-                  description: describeError(r.error, unknown),
+                  description: describeError(r.error) || unknown,
                 })
               else toast.success(t("settings.toast.unbound"))
             }}
@@ -265,7 +266,7 @@ export function SettingsView() {
                 const r = await syncNow()
                 if ("error" in r)
                   toast.error(t("settings.toast.syncFailed"), {
-                    description: describeError(r.error, unknown),
+                    description: describeError(r.error) || unknown,
                   })
                 else
                   toast.success(
@@ -437,15 +438,4 @@ function VerifyBanner({
       <span>{result.message}</span>
     </div>
   )
-}
-
-/** 从 RTK Query 错误里抽出可读文案。run() 把 AppError 拼成 "Type: detail"，
- * 取 message 字段即可——同步失败的根因就在 detail 里（如 push 的 401/403）。 */
-function describeError(e: unknown, fallback: string): string {
-  if (e && typeof e === "object") {
-    const m = e as Record<string, unknown>
-    if (typeof m.message === "string") return m.message
-    if (typeof m.data === "string") return m.data
-  }
-  return fallback
 }
