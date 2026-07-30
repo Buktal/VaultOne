@@ -87,6 +87,7 @@ Grab the installer for your OS from the **[Releases](https://github.com/Buktal/V
 - **Device-scoped** — filter the dashboard, the glance card, and the tucked bar to a single device; forget a peer locally, and stale peers auto-clear.
 - **System-proxy aware** — push/fetch follows the OS proxy (Clash/Mihomo, corporate gateways), so Synced mode just works behind one.
 - **Plain-text artifacts** — partitioned by device and date (`data/<device>/usage-YYYY-MM-DD.jsonl`), so diffs stay readable and reviewable.
+- **Conflict-free auto-recovery** — each device writes its own `data/<device>/` subtree, so concurrent pushes never collide; if a device loses a push race, the next sync rebases its local commits on top and self-heals — no manual git intervention, no stuck state.
 
 ### Library
 

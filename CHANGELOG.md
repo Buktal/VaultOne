@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-07-31
+
+### Changed
+
+- **Settings layout** — the standalone Cloud-config section merges into Sync: the "Sync config" button and conflict resolver now sit beside "Sync now" under a single Sync card. Section order is now General / This machine / Devices / Sync / Maintenance, and the "Sync cloud config" button reads "Sync config".
+
+### Fixed
+
+- **Sync self-heals after a diverged push** — when a device lost a push race (a peer pushed between its own last pull and push), every "Sync now" / "Sync config" failed with `pull would diverge on 'main'; refusing to auto-merge` and could never recover on its own, leaving the dashboard on stale pulled data. `pull` now rebases the device's local-only commits onto the remote tip and pushes, auto-healing the divergence. Device isolation (`data/<deviceId>/`) keeps the rebase conflict-free, so both devices' data survive on the remote — a soft/reset-only fix would have replayed the local tree verbatim and clobbered the peer's data.
+- **Trend chart for a single past day** — selecting a single past day (e.g. 2026-07-30 → 2026-07-30) collapsed the usage trend to a flat zero line: the chart zero-filled *today's* hours instead of the selected day, so the real records never matched. It now fills the selected day's full 24h axis (00:00 → 23:00; the current day stops at the current hour).
+
 ## [1.4.0] - 2026-07-30
 
 ### Added
