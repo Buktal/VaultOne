@@ -7,7 +7,12 @@ import { invoke as __TAURI_INVOKE } from "@tauri-apps/api/core";
 export const commands = {
 	/**  App status: device, mode (Standalone/Synced), paths, version. */
 	getAppInfo: () => typedError<AppInfo, AppError>(__TAURI_INVOKE("get_app_info")),
-	/**  Configure the sync repo + PAT, upgrading Standalone → Synced. */
+	/**
+	 *  Configure the sync repo + PAT, upgrading Standalone → Synced, then
+	 *  immediately pull the remote so peer devices show up without a restart (the
+	 *  startup pull only fires on next launch). Best-effort: a pull failure doesn't
+	 *  undo the bind — the next startup pull retries.
+	 */
 	setSyncRepo: (repoUrl: string, githubToken: string) => typedError<RunMode, AppError>(__TAURI_INVOKE("set_sync_repo", { repoUrl, githubToken })),
 	/**
 	 *  Unbind the repo, downgrading to Standalone. Clears the local

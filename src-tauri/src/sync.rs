@@ -618,7 +618,22 @@ pub fn pull_and_import(
 ) -> AppResult<u32> {
     let (url, token) = require_synced(cfg)?;
     let repo = open_or_clone_for_device(&url, &paths.repo, &token, &cfg.device_id)?;
+    // Protect this device's own data/ from pull's force checkout. The collector
+    // appends new rows to data/<deviceId>/*.jsonl between pushes (dirty worktree);
+    // pull's fast-forward force-checkout reverts those files to the last-committed
+    // copy, silently dropping the uncommitted append — those rows never reach the
+    // remote, so peers never see them. Snapshot before pull, restore after, so the
+    // local truth (including not-yet-pushed rows) survives the checkout.
+    let own_dir = paths.device_data_dir(&cfg.device_id);
+    let snap = if own_dir.exists() {
+        DirSnapshot::take(&own_dir).ok()
+    } else {
+        None
+    };
     pull(&repo, &token)?;
+    if let Some(s) = snap {
+        let _ = s.restore(&own_dir);
+    }
     let records = crate::ingest::read_all_artifacts(paths)?;
     let inserted = store.ingest(&records)?;
     // Per-turn durations (separate grain, uuid-deduped).
@@ -1203,6 +1218,73 @@ mod tests {
         assert_eq!(n2, 0, "re-pull dedups via ledger");
     }
 
+    /// Regression: pull's fast-forward force-checkout used to discard this
+    /// device's uncommitted JSONL appends — rows a collect wrote between pushes —
+    /// so they never reached the remote and peers never saw them. pull_and_import
+    /// now snapshots/restores this device's data/ around the pull.
+    #[test]
+    fn pull_and_import_preserves_own_uncommitted_append() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = tmp.path().join("remote.git");
+        seed_remote(&remote);
+        let url = remote.to_string_lossy().to_string();
+        let dev_a = "aaaaaaaaaaaa";
+
+        // A clones, commits+pushes one row in its own data dir.
+        let paths_a = crate::config::Paths::resolve(&tmp.path().join("a"));
+        let repo_a = open_or_clone_for_device(&url, &paths_a.repo, "", dev_a).unwrap();
+        let day_file = paths_a
+            .device_data_dir(dev_a)
+            .join("usage-2026-07-30.jsonl");
+        std::fs::create_dir_all(day_file.parent().unwrap()).unwrap();
+        std::fs::write(&day_file, "{\"uuid\":\"a-1\",\"source\":\"claude_code\"}\n").unwrap();
+        commit_all(&repo_a, "A baseline", "A", "a@devices.vaultone").unwrap();
+        push(&repo_a, "").unwrap();
+
+        // Background collect appends a second row, NOT yet committed.
+        std::fs::write(
+            &day_file,
+            "{\"uuid\":\"a-1\",\"source\":\"claude_code\"}\n{\"uuid\":\"a-2\",\"source\":\"claude_code\"}\n",
+        )
+        .unwrap();
+
+        // B advances the remote tip so A's pull fast-forwards + force-checks-out.
+        let paths_b = crate::config::Paths::resolve(&tmp.path().join("b"));
+        let repo_b = open_or_clone_for_device(&url, &paths_b.repo, "", "bbbbbbbbbbbb").unwrap();
+        let b_file = paths_b
+            .device_data_dir("bbbbbbbbbbbb")
+            .join("usage-2026-07-30.jsonl");
+        std::fs::create_dir_all(b_file.parent().unwrap()).unwrap();
+        std::fs::write(&b_file, "{\"uuid\":\"b-1\",\"source\":\"claude_code\"}\n").unwrap();
+        commit_all(&repo_b, "B new data", "B", "b@devices.vaultone").unwrap();
+        push(&repo_b, "").unwrap();
+
+        // A pulls — snapshot/restore must keep A's uncommitted a-2 row.
+        let store = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let cfg_a = ConfigData {
+            repo_url: Some(url.clone()),
+            github_token: Some("tok".into()),
+            device_id: dev_a.into(),
+            ..Default::default()
+        };
+        pull_and_import(&store, &paths_a, &cfg_a).unwrap();
+
+        let text = std::fs::read_to_string(&day_file).unwrap();
+        assert!(
+            text.contains("a-2"),
+            "A's uncommitted append must survive pull: {text}"
+        );
+
+        // Peer B's data was also pulled in.
+        let b_text = std::fs::read_to_string(
+            paths_a
+                .device_data_dir("bbbbbbbbbbbb")
+                .join("usage-2026-07-30.jsonl"),
+        )
+        .unwrap();
+        assert!(b_text.contains("b-1"), "peer B's data must be pulled in");
+    }
+
     #[test]
     fn commit_and_push_is_noop_when_worktree_clean() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1250,61 +1332,6 @@ mod tests {
             .query_stats(&crate::model::UsageFilter::default())
             .unwrap();
         assert_eq!(stats.request_count, 1);
-    }
-
-    /// [DEBUG-DIAG2] Suspected loss path for codex/opencode rows. The background
-    /// collector appends new rows to an already-tracked `usage-<day>.jsonl`
-    /// (dirty worktree, not yet committed). A `pull` that fast-forwards runs a
-    /// `force` checkout, reverting the file to its last-committed
-    /// (claude_code-only) content — discarding the uncommitted append. The
-    /// scan_progress cursor already advanced at the end of collect, so the
-    /// dropped rows are never re-emitted. claude_code rows survive because they
-    /// were committed in prior cycles and remain in the checked-out tree.
-    #[test]
-    fn diag_pull_force_checkout_drops_uncommitted_append() {
-        let tmp = tempfile::tempdir().unwrap();
-        let remote = tmp.path().join("remote.git");
-        seed_remote(&remote);
-        let url = remote.to_string_lossy().to_string();
-
-        // B commits + pushes a tracked usage file holding one claude_code row.
-        let paths_b = crate::config::Paths::resolve(&tmp.path().join("b"));
-        let repo_b = open_or_clone(&url, &paths_b.repo, "").unwrap();
-        let day_file = paths_b
-            .device_data_dir("bbbbbbbbbbbb")
-            .join("usage-2026-07-30.jsonl");
-        std::fs::create_dir_all(day_file.parent().unwrap()).unwrap();
-        std::fs::write(&day_file, "{\"uuid\":\"cc-1\",\"source\":\"claude_code\"}\n").unwrap();
-        commit_all(&repo_b, "B cc baseline", "B", "b@devices.vaultone").unwrap();
-        push(&repo_b, "").unwrap();
-
-        // Background collect appends a codex row to the SAME tracked file, NOT
-        // yet committed (the dirty window between collect and push).
-        std::fs::write(
-            &day_file,
-            "{\"uuid\":\"cc-1\",\"source\":\"claude_code\"}\n{\"uuid\":\"codex-1\",\"source\":\"codex_cli\"}\n",
-        )
-        .unwrap();
-
-        // A pushes anything new, advancing the remote tip past B's HEAD.
-        let paths_a = crate::config::Paths::resolve(&tmp.path().join("a"));
-        let repo_a = open_or_clone(&url, &paths_a.repo, "").unwrap();
-        let a_file = paths_a
-            .device_data_dir("aaaaaaaaaaaa")
-            .join("usage-2026-07-30.jsonl");
-        std::fs::create_dir_all(a_file.parent().unwrap()).unwrap();
-        std::fs::write(&a_file, "{\"uuid\":\"a-1\",\"source\":\"claude_code\"}\n").unwrap();
-        commit_all(&repo_a, "A new data", "A", "a@devices.vaultone").unwrap();
-        push(&repo_a, "").unwrap();
-
-        // B pulls (fast-forward + force checkout).
-        pull(&repo_b, "").unwrap();
-
-        let text = std::fs::read_to_string(&day_file).unwrap();
-        assert!(
-            text.contains("codex-1"),
-            "B's uncommitted codex append was discarded by pull's force checkout: {text}"
-        );
     }
 
     // ---- S3 cloud-config sync tests (#6) ----

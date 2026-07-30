@@ -171,13 +171,17 @@ impl Store {
         let mut conn = self.conn.lock().expect("db mutex poisoned");
         let tx = conn.transaction()?;
 
-        // Batch existence check: which uuids are already in the ledger?
+        // Batch existence check: which (uuid, device_id) pairs are already in the
+        // ledger? Dedup is scoped by device — the same source event replayed on two
+        // devices must be counted per device, never collapsed into one row.
         let uuids: Vec<String> = records.iter().map(|r| r.uuid.clone()).collect();
         let placeholders = (0..uuids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!("SELECT uuid FROM ledger WHERE uuid IN ({placeholders})");
-        let known: std::collections::HashSet<String> = {
+        let sql = format!("SELECT uuid, device_id FROM ledger WHERE uuid IN ({placeholders})");
+        let known: std::collections::HashSet<(String, String)> = {
             let mut stmt = tx.prepare(&sql)?;
-            let rows = stmt.query_map(params_from_iter(uuids.iter()), |r| r.get::<_, String>(0))?;
+            let rows = stmt.query_map(params_from_iter(uuids.iter()), |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
             rows.filter_map(Result::ok).collect()
         };
 
@@ -185,7 +189,7 @@ impl Store {
         let mut new_days: std::collections::HashSet<(String, String, String)> = Default::default();
         let mut inserted: Vec<UsageRecord> = Vec::new();
         for r in records {
-            if known.contains(&r.uuid) {
+            if known.contains(&(r.uuid.clone(), r.device_id.clone())) {
                 continue;
             }
             tx.execute(
@@ -314,21 +318,22 @@ impl Store {
         let mut conn = self.conn.lock().expect("db mutex poisoned");
         let tx = conn.transaction()?;
         let mut stmt = tx.prepare(
-            "SELECT uuid, pricing_model, input_tokens, output_tokens,
+            "SELECT uuid, device_id, pricing_model, input_tokens, output_tokens,
                     cache_creation_tokens, cache_read_tokens
              FROM usage_records
              WHERE CAST(total_cost_usd AS REAL) <= 0",
         )?;
-        let candidates: Vec<(String, String, TokenCounts)> = stmt
+        let candidates: Vec<(String, String, String, TokenCounts)> = stmt
             .query_map([], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
                     TokenCounts {
-                        input: r.get::<_, i64>(2)? as u32,
-                        output: r.get::<_, i64>(3)? as u32,
-                        cache_creation: r.get::<_, i64>(4)? as u32,
-                        cache_read: r.get::<_, i64>(5)? as u32,
+                        input: r.get::<_, i64>(3)? as u32,
+                        output: r.get::<_, i64>(4)? as u32,
+                        cache_creation: r.get::<_, i64>(5)? as u32,
+                        cache_read: r.get::<_, i64>(6)? as u32,
                     },
                 ))
             })?
@@ -338,7 +343,7 @@ impl Store {
 
         let mut rebilled = 0usize;
         let mut affected: std::collections::HashSet<(String, String, String)> = Default::default();
-        for (uuid, model, tokens) in candidates {
+        for (uuid, device, model, tokens) in candidates {
             let Some(rate) = book.resolve(&model) else {
                 continue;
             };
@@ -346,17 +351,17 @@ impl Store {
             if cost.total_usd <= rust_decimal::Decimal::ZERO {
                 continue;
             }
-            // fetch day/device for rollup recompute
-            let (day, device): (String, String) = tx.query_row(
-                "SELECT day, device_id FROM usage_records WHERE uuid = ?1",
-                params![uuid],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+            // uuid is no longer unique across devices, so scope the lookup/update by both.
+            let day: String = tx.query_row(
+                "SELECT day FROM usage_records WHERE uuid = ?1 AND device_id = ?2",
+                params![uuid, device],
+                |r| r.get(0),
             )?;
             tx.execute(
                 "UPDATE usage_records SET
                    input_cost_usd=?1, output_cost_usd=?2, cache_read_cost_usd=?3,
                    cache_creation_cost_usd=?4, total_cost_usd=?5
-                 WHERE uuid=?6",
+                 WHERE uuid=?6 AND device_id=?7",
                 params![
                     cost.input_usd.to_string(),
                     cost.output_usd.to_string(),
@@ -364,6 +369,7 @@ impl Store {
                     cost.cache_creation_usd.to_string(),
                     cost.total_usd.to_string(),
                     uuid,
+                    device,
                 ],
             )?;
             affected.insert((day, model, device));
@@ -831,6 +837,97 @@ fn migrate_schema(conn: &Connection) -> AppResult<()> {
             )?;
         }
     }
+
+    // uuid 单列 PRIMARY KEY → (uuid, device_id) 复合主键。旧库的 usage_records /
+    // turn_durations / ledger 以 uuid 为单列主键,把"同 uuid、不同设备"的记录折叠
+    // 成一条(后导入者被丢)——同一份 ~/.claude/projects 被两个 device_id 扫描,或
+    // opencode.db 被恢复到第二台机器,都会撞 uuid。重建为复合主键,各设备各自保留。
+    // 新库由 SCHEMA 直接建复合主键,这里检测后跳过。
+    migrate_to_composite_pk(conn)?;
+
+    Ok(())
+}
+
+/// 表存在、但 `device_id` 不在 PRIMARY KEY 里 ⇒ 旧的单列 uuid 主键 schema,需迁移。
+fn needs_composite_pk_migration(conn: &Connection, table: &str) -> AppResult<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, i64>(5)?)))?;
+    let mut device_pk: Option<i64> = None;
+    for r in rows {
+        let (name, pk) = r?;
+        if name == "device_id" {
+            device_pk = Some(pk);
+        }
+    }
+    Ok(device_pk == Some(0))
+}
+
+/// SQLite 不能 ALTER 主键,只能重建:建新表(复合主键)→ 拷数据 → 删旧 → 改名。
+fn rebuild_table_pk(conn: &Connection, table: &str, new_ddl: &str, columns: &str) -> AppResult<()> {
+    let tmp = format!("{table}__migrate");
+    conn.execute(&format!("CREATE TABLE {tmp} ({new_ddl})"), [])?;
+    conn.execute(
+        &format!("INSERT INTO {tmp} ({columns}) SELECT {columns} FROM {table}"),
+        [],
+    )?;
+    conn.execute(&format!("DROP TABLE {table}"), [])?;
+    conn.execute(&format!("ALTER TABLE {tmp} RENAME TO {table}"), [])?;
+    Ok(())
+}
+
+fn migrate_to_composite_pk(conn: &Connection) -> AppResult<()> {
+    if needs_composite_pk_migration(conn, "usage_records")? {
+        rebuild_table_pk(
+            conn,
+            "usage_records",
+            "uuid TEXT NOT NULL, timestamp TEXT NOT NULL, day TEXT NOT NULL,
+             model TEXT NOT NULL, pricing_model TEXT NOT NULL, source TEXT NOT NULL,
+             device_id TEXT NOT NULL,
+             input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+             cache_creation_tokens INTEGER NOT NULL, cache_read_tokens INTEGER NOT NULL,
+             server_tool_use TEXT NOT NULL DEFAULT '{}',
+             stop_reason TEXT NOT NULL DEFAULT '', service_tier TEXT NOT NULL DEFAULT '',
+             iterations INTEGER NOT NULL DEFAULT 0,
+             input_cost_usd TEXT NOT NULL, output_cost_usd TEXT NOT NULL,
+             cache_read_cost_usd TEXT NOT NULL, cache_creation_cost_usd TEXT NOT NULL,
+             total_cost_usd TEXT NOT NULL, PRIMARY KEY (uuid, device_id)",
+            "uuid, timestamp, day, model, pricing_model, source, device_id,
+             input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+             server_tool_use, stop_reason, service_tier, iterations,
+             input_cost_usd, output_cost_usd, cache_read_cost_usd,
+             cache_creation_cost_usd, total_cost_usd",
+        )?;
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_usage_day    ON usage_records(day);
+             CREATE INDEX IF NOT EXISTS idx_usage_model  ON usage_records(model);
+             CREATE INDEX IF NOT EXISTS idx_usage_device ON usage_records(device_id);
+             CREATE INDEX IF NOT EXISTS idx_usage_source ON usage_records(source);
+             CREATE INDEX IF NOT EXISTS idx_usage_ts     ON usage_records(timestamp);",
+        )?;
+    }
+    if needs_composite_pk_migration(conn, "turn_durations")? {
+        rebuild_table_pk(
+            conn,
+            "turn_durations",
+            "uuid TEXT NOT NULL, timestamp TEXT NOT NULL, day TEXT NOT NULL,
+             device_id TEXT NOT NULL, duration_ms INTEGER NOT NULL,
+             PRIMARY KEY (uuid, device_id)",
+            "uuid, timestamp, day, device_id, duration_ms",
+        )?;
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_turndur_day    ON turn_durations(day);
+             CREATE INDEX IF NOT EXISTS idx_turndur_device ON turn_durations(device_id);",
+        )?;
+    }
+    if needs_composite_pk_migration(conn, "ledger")? {
+        rebuild_table_pk(
+            conn,
+            "ledger",
+            "uuid TEXT NOT NULL, source TEXT NOT NULL, device_id TEXT NOT NULL,
+             ingested_at TEXT NOT NULL, PRIMARY KEY (uuid, device_id)",
+            "uuid, source, device_id, ingested_at",
+        )?;
+    }
     Ok(())
 }
 
@@ -974,6 +1071,128 @@ mod tests {
         let r = rec("u1", "2026-07-13", "glm-5.2", "dev1", 100, 50, 1.0);
         assert_eq!(s.ingest(std::slice::from_ref(&r)).unwrap().len(), 1);
         assert_eq!(s.ingest(&[r]).unwrap().len(), 0, "same uuid must dedupe");
+    }
+
+    /// Regression: the same uuid on two DIFFERENT devices must both be kept —
+    /// dedup is scoped by (uuid, device_id), not uuid alone. The old uuid-only
+    /// ledger dropped the peer device's row, so a source event replayed under two
+    /// device ids (one ~/.claude/projects scanned twice, a restored opencode.db)
+    /// silently erased one device. Both devices must be visible afterwards.
+    #[test]
+    fn ingest_keeps_same_uuid_across_devices() {
+        let s = mem();
+        let uuid_x = "codex:thread-v1:sess-1:1";
+        let a = rec(
+            uuid_x,
+            "2026-07-30",
+            "gpt-5.2-codex",
+            "aaaaaa000001",
+            100,
+            10,
+            0.0,
+        );
+        let b = rec(
+            uuid_x,
+            "2026-07-30",
+            "gpt-5.2-codex",
+            "bbbbbb000002",
+            200,
+            20,
+            0.0,
+        );
+        assert_eq!(s.ingest(std::slice::from_ref(&a)).unwrap().len(), 1);
+        // Same uuid, different device ⇒ must still ingest (previously dropped).
+        assert_eq!(s.ingest(std::slice::from_ref(&b)).unwrap().len(), 1);
+
+        let logs = s
+            .query_logs(&LogsQuery {
+                filter: UsageFilter::default(),
+                limit: 10,
+                offset: 0,
+            })
+            .unwrap();
+        let devices: Vec<String> = logs.iter().map(|l| l.device_id.clone()).collect();
+        assert!(devices.contains(&"aaaaaa000001".to_string()));
+        assert!(devices.contains(&"bbbbbb000002".to_string()));
+
+        // Re-ingesting the SAME (uuid, device) is still idempotent (re-pull dedup).
+        assert_eq!(s.ingest(std::slice::from_ref(&a)).unwrap().len(), 0);
+    }
+
+    /// Regression: an existing Local Store on the old single-column uuid PK
+    /// schema is migrated in place to (uuid, device_id), and the migrated store
+    /// then keeps same-uuid-across-devices rows.
+    #[test]
+    fn migrate_upgrades_uuid_pk_to_composite() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Old schema: uuid is the sole PRIMARY KEY.
+        conn.execute_batch(
+            "CREATE TABLE usage_records (
+                uuid TEXT PRIMARY KEY, timestamp TEXT NOT NULL, day TEXT NOT NULL,
+                model TEXT NOT NULL, pricing_model TEXT NOT NULL, source TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+                cache_creation_tokens INTEGER NOT NULL, cache_read_tokens INTEGER NOT NULL,
+                server_tool_use TEXT NOT NULL DEFAULT '{}', stop_reason TEXT NOT NULL DEFAULT '',
+                service_tier TEXT NOT NULL DEFAULT '', iterations INTEGER NOT NULL DEFAULT 0,
+                input_cost_usd TEXT NOT NULL, output_cost_usd TEXT NOT NULL,
+                cache_read_cost_usd TEXT NOT NULL, cache_creation_cost_usd TEXT NOT NULL,
+                total_cost_usd TEXT NOT NULL
+            );
+            CREATE TABLE turn_durations (
+                uuid TEXT PRIMARY KEY, timestamp TEXT NOT NULL, day TEXT NOT NULL,
+                device_id TEXT NOT NULL, duration_ms INTEGER NOT NULL
+            );
+            CREATE TABLE ledger (
+                uuid TEXT PRIMARY KEY, source TEXT NOT NULL, device_id TEXT NOT NULL,
+                ingested_at TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        migrate_schema(&conn).unwrap();
+
+        // device_id is now part of the PK on all three tables.
+        let pk: Vec<(String, i64)> = conn
+            .prepare("PRAGMA table_info(usage_records)")
+            .unwrap()
+            .query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, i64>(5)?)))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|(n, _)| n == "uuid" || n == "device_id")
+            .collect();
+        assert!(pk.iter().all(|(_, p)| *p > 0), "uuid+device_id both in PK");
+
+        // A same-uuid/different-device pair now coexists.
+        conn.execute(
+            "INSERT INTO usage_records (uuid, timestamp, day, model, pricing_model, source,
+                device_id, input_tokens, output_tokens, cache_creation_tokens,
+                cache_read_tokens, server_tool_use, stop_reason, service_tier, iterations,
+                input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd,
+                total_cost_usd)
+             VALUES ('u1','2026-07-30T00:00:00Z','2026-07-30','glm-5.2','glm-5.2','claude_code',
+                'aaaaaa000001',1,2,3,4,'{}','','',0,'0','0','0','0','0')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO usage_records (uuid, timestamp, day, model, pricing_model, source,
+                device_id, input_tokens, output_tokens, cache_creation_tokens,
+                cache_read_tokens, server_tool_use, stop_reason, service_tier, iterations,
+                input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd,
+                total_cost_usd)
+             VALUES ('u1','2026-07-30T00:00:00Z','2026-07-30','glm-5.2','glm-5.2','claude_code',
+                'bbbbbb000002',1,2,3,4,'{}','','',0,'0','0','0','0','0')",
+            [],
+        )
+        .unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM usage_records WHERE uuid='u1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 2, "both devices kept after migration");
     }
 
     #[test]

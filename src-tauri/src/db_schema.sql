@@ -2,9 +2,12 @@
 -- Idempotent migration: CREATE ... IF NOT EXISTS. Run on every open.
 -- Naming is snake_case end-to-end (Rust ↔ SQLite ↔ JSONL ↔ TS).
 
--- Per-request usage detail (per API request). uuid = dedup key.
+-- Per-request usage detail (per API request). (uuid, device_id) = dedup key:
+-- the same source event replayed on two devices (the same ~/.claude/projects
+-- scanned under two device ids, or a restored opencode.db) yields the same uuid
+-- but must be counted per device, never collapsed into one row.
 CREATE TABLE IF NOT EXISTS usage_records (
-    uuid                   TEXT PRIMARY KEY,
+    uuid                   TEXT NOT NULL,
     timestamp              TEXT NOT NULL,            -- ISO8601 UTC
     day                    TEXT NOT NULL,            -- yyyy-mm-dd (UTC) bucket
     model                  TEXT NOT NULL,            -- billed / mapped model
@@ -23,7 +26,8 @@ CREATE TABLE IF NOT EXISTS usage_records (
     output_cost_usd        TEXT NOT NULL,
     cache_read_cost_usd    TEXT NOT NULL,
     cache_creation_cost_usd TEXT NOT NULL,
-    total_cost_usd         TEXT NOT NULL
+    total_cost_usd         TEXT NOT NULL,
+    PRIMARY KEY (uuid, device_id)
 );
 CREATE INDEX IF NOT EXISTS idx_usage_day     ON usage_records(day);
 CREATE INDEX IF NOT EXISTS idx_usage_model   ON usage_records(model);
@@ -32,23 +36,25 @@ CREATE INDEX IF NOT EXISTS idx_usage_source  ON usage_records(source);
 CREATE INDEX IF NOT EXISTS idx_usage_ts      ON usage_records(timestamp);
 
 -- Per-turn durations (per-turn grain, separate from per-call usage_records).
--- Sourced from system/turn_duration events. uuid = dedup key.
+-- Sourced from system/turn_duration events. (uuid, device_id) = dedup key.
 CREATE TABLE IF NOT EXISTS turn_durations (
-    uuid         TEXT PRIMARY KEY,
+    uuid         TEXT NOT NULL,
     timestamp    TEXT NOT NULL,            -- ISO8601 UTC
     day          TEXT NOT NULL,            -- yyyy-mm-dd (UTC) bucket
     device_id    TEXT NOT NULL,            -- 12-hex owner
-    duration_ms  INTEGER NOT NULL          -- turn wall-clock in ms
+    duration_ms  INTEGER NOT NULL,         -- turn wall-clock in ms
+    PRIMARY KEY (uuid, device_id)
 );
 CREATE INDEX IF NOT EXISTS idx_turndur_day    ON turn_durations(day);
 CREATE INDEX IF NOT EXISTS idx_turndur_device ON turn_durations(device_id);
 
--- Dedup ledger: canonical "have we imported this uuid" set + provenance.
+-- Dedup ledger: canonical "have we imported this (uuid, device_id)" set + provenance.
 CREATE TABLE IF NOT EXISTS ledger (
-    uuid        TEXT PRIMARY KEY,
+    uuid        TEXT NOT NULL,
     source      TEXT NOT NULL,
     device_id   TEXT NOT NULL,
-    ingested_at TEXT NOT NULL
+    ingested_at TEXT NOT NULL,
+    PRIMARY KEY (uuid, device_id)
 );
 
 -- Daily rollups cache (derived, holds total_cost_usd). Per (day,model,device).

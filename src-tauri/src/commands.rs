@@ -63,27 +63,44 @@ pub fn get_app_info(state: State<'_, AppState>) -> AppResult<AppInfo> {
     })
 }
 
-/// Configure the sync repo + PAT, upgrading Standalone → Synced.
+/// Configure the sync repo + PAT, upgrading Standalone → Synced, then
+/// immediately pull the remote so peer devices show up without a restart (the
+/// startup pull only fires on next launch). Best-effort: a pull failure doesn't
+/// undo the bind — the next startup pull retries.
 #[tauri::command]
 #[specta::specta]
-pub fn set_sync_repo(
+pub async fn set_sync_repo(
     state: State<'_, AppState>,
     repo_url: String,
     github_token: String,
 ) -> AppResult<RunMode> {
-    let cfg = state.config.update(|c| {
-        c.repo_url = if repo_url.trim().is_empty() {
-            None
-        } else {
-            Some(repo_url.trim().to_string())
-        };
-        c.github_token = if github_token.trim().is_empty() {
-            None
-        } else {
-            Some(github_token.trim().to_string())
-        };
-    })?;
-    Ok(cfg.mode())
+    let config = state.config.clone();
+    let store = state.store.clone();
+    let mode = tauri::async_runtime::spawn_blocking(move || -> AppResult<RunMode> {
+        let cfg = config.update(|c| {
+            c.repo_url = if repo_url.trim().is_empty() {
+                None
+            } else {
+                Some(repo_url.trim().to_string())
+            };
+            c.github_token = if github_token.trim().is_empty() {
+                None
+            } else {
+                Some(github_token.trim().to_string())
+            };
+        })?;
+        if cfg.is_synced() {
+            let paths = config.paths();
+            match crate::sync::pull_and_import(&store, &paths, &cfg) {
+                Ok(n) => eprintln!("[vaultone] set_sync_repo imported {n} row(s)"),
+                Err(e) => eprintln!("[vaultone] set_sync_repo pull failed: {e}"),
+            }
+        }
+        Ok(cfg.mode())
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("set_sync_repo task failed: {e}")))??;
+    Ok(mode)
 }
 
 /// Unbind the repo, downgrading to Standalone. Clears the local
