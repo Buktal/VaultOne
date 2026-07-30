@@ -20,14 +20,21 @@
 //! Windows' "largest intersection area" rule (the old JS used the window
 //! center, which disagreed with Windows at an A/B edge).
 
-use tauri::{LogicalSize, WebviewWindow};
+use tauri::WebviewWindow;
+
+// Only the Windows-only dock/restore commands below touch LogicalSize; gate it
+// so non-Windows (CI) doesn't see an unused import.
+#[cfg(target_os = "windows")]
+use tauri::LogicalSize;
 
 /// Full-mode minimum CLIENT size (logical px). The dashboard never shrinks below
 /// this, keeping it clearly larger than the glance card's fixed small shapes.
 /// Declared at window creation (`tauri.conf.json` minWidth/minHeight) and
 /// re-applied by the full-mode restore commands; the lightweight dock clears it
 /// (min 0 ⇒ no constraint) so the glance card can reach its fixed small size.
+#[cfg(target_os = "windows")]
 const FULL_MIN_W: f64 = 720.0;
+#[cfg(target_os = "windows")]
 const FULL_MIN_H: f64 = 520.0;
 
 /// Dock the given window against the right edge of its current monitor.
