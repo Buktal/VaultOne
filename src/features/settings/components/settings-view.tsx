@@ -1,10 +1,10 @@
 // Settings view: device identity, run mode, repo binding
 // (Standalone ↔ Synced), manual collect / rebill.
 //
-// Redesigned into 6 sectioned cards (通用 / 本机 / 同步 / 云配置 / 设备 / 维护),
-// each fronted by an eyebrow label. Cloud-config sync was split out of the
-// sync card into its own section (#6) so it no longer shares a
-// border-t with the usage-sync controls. Behaviour unchanged — layout only.
+// Five sectioned cards (通用 / 本机 / 设备 / 同步 / 维护), each fronted by an
+// eyebrow label. Config sync (app / user / pricing) lives inside the sync
+// card next to usage sync — both are cross-device git operations on the same
+// repo, so they share a section instead of fragmenting the UI.
 
 import {
   Calculator,
@@ -162,7 +162,15 @@ export function SettingsView() {
         </div>
       </Section>
 
-      {/* 同步 */}
+      {/* 设备 */}
+      <Section
+        eyebrow={t("settings.section.devices")}
+        description={t("settings.sectionDesc.devices")}
+      >
+        <DeviceList />
+      </Section>
+
+      {/* 同步 — 仓库绑定 + 用量同步 + 配置同步 */}
       <Section
         eyebrow={t("settings.section.sync")}
         description={t("settings.sectionDesc.sync")}
@@ -287,44 +295,30 @@ export function SettingsView() {
         {(verifying || verifyResult) && (
           <VerifyBanner verifying={verifying} result={verifyResult} />
         )}
-      </Section>
-
-      {/* 云配置 — split out of the sync card (#6) */}
-      <Section
-        eyebrow={t("settings.section.cloudConfig")}
-        description={t("settings.sectionDesc.cloudConfig")}
-      >
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-muted-foreground text-sm">
-            {synced
-              ? t("settings.cloudConfig.threeKinds")
-              : t("settings.cloudConfig.needsSync")}
-          </span>
-          {synced && (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={syncingConfig}
-              onClick={onSyncConfig}
-            >
-              <RefreshCw className="size-4" />
-              {syncingConfig
-                ? t("settings.sync.syncing")
-                : t("settings.cloudConfig.syncButton")}
-            </Button>
-          )}
-        </div>
-        {conflicts && conflicts.length > 0 && (
-          <ConflictResolver conflicts={conflicts} />
+        {synced && (
+          <>
+            <div className="bg-border h-px" />
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-muted-foreground text-sm">
+                {t("settings.cloudConfig.threeKinds")}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={syncingConfig}
+                onClick={onSyncConfig}
+              >
+                <RefreshCw className="size-4" />
+                {syncingConfig
+                  ? t("settings.sync.syncing")
+                  : t("settings.cloudConfig.syncButton")}
+              </Button>
+            </div>
+            {conflicts && conflicts.length > 0 && (
+              <ConflictResolver conflicts={conflicts} />
+            )}
+          </>
         )}
-      </Section>
-
-      {/* 设备 */}
-      <Section
-        eyebrow={t("settings.section.devices")}
-        description={t("settings.sectionDesc.devices")}
-      >
-        <DeviceList />
       </Section>
 
       {/* 维护 */}
