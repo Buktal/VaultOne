@@ -312,6 +312,32 @@ impl Store {
         Ok(())
     }
 
+    /// Drop every scan cursor so the next collect re-parses all source lines
+    /// (a full scan). Used by the Artifact-gap reconcile to backfill rows that
+    /// reached SQLite but not the JSONL Artifact — a full rescan re-appends
+    /// them idempotently. Safe: the ledger dedups the SQLite side.
+    pub fn clear_scan_progress(&self) -> AppResult<()> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        conn.execute("DELETE FROM scan_progress", [])?;
+        Ok(())
+    }
+
+    /// UUIDs of every usage row owned by `device_id`. Used by the Artifact-gap
+    /// reconcile to detect rows that reached SQLite but never the JSONL Artifact.
+    pub fn usage_uuids_for_device(
+        &self,
+        device_id: &str,
+    ) -> AppResult<std::collections::HashSet<String>> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn.prepare("SELECT uuid FROM usage_records WHERE device_id = ?")?;
+        let rows = stmt.query_map(params![device_id], |r| r.get::<_, String>(0))?;
+        let mut set = std::collections::HashSet::new();
+        for r in rows {
+            set.insert(r?);
+        }
+        Ok(set)
+    }
+
     /// Rebill zero-cost rows whose model now has a price (freeze +
     /// top-up zero-cost only). Returns the number of rows rebilled.
     pub fn rebill_zero_cost(&self, book: &PricingBook) -> AppResult<usize> {

@@ -24,11 +24,16 @@ use crate::ingest::{self, IngestReport};
 /// ledger dedups). First run / empty table ⇒ full scan.
 pub fn collect_into(store: &Store, config: &ConfigStore) -> AppResult<IngestReport> {
     let providers = crate::providers::all_providers()?;
-    let progress = store.load_scan_progress()?;
     let cfg = config.get();
+    let paths = config.paths();
+    // Backfill any Artifact gaps left by a pre-1.5.1 append failure before
+    // loading the scan cursors: if the SQLite store holds rows the JSONL
+    // Artifact is missing, clear the cursors so this collect is a full rescan
+    // that re-appends them (idempotently). No-op when store and Artifact agree.
+    crate::ingest::reconcile_artifact_gaps(store, &paths, &cfg.device_id)?;
+    let progress = store.load_scan_progress()?;
     store.upsert_device(&cfg.device_id, &cfg.display_name, true)?;
     let book = store.load_pricing_book()?;
-    let paths = config.paths();
 
     let mut merged = IngestReport::default();
     let mut merged_delta = crate::providers::ScanProgressDelta::new();

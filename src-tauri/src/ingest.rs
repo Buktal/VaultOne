@@ -66,8 +66,11 @@ pub fn turn_durationify(raw: &RawTurnDuration, device_id: &str) -> TurnDuration 
     }
 }
 
-/// Ingest a provider's collect result: compute cost, write new rows to SQLite,
-/// append new rows to the JSONL Artifacts. Returns a summary.
+/// Ingest a provider's collect result: compute cost, append the rows to the
+/// JSONL Artifacts, then write them to SQLite. JSONL is written first so a
+/// failed append aborts before SQLite commits — the scan cursor stays put and
+/// the next collect re-parses these same source lines (the ledger dedups).
+/// Returns a summary.
 pub fn ingest_collected(
     store: &Store,
     paths: &Paths,
@@ -79,18 +82,22 @@ pub fn ingest_collected(
     let turn_durations_collected = result.turn_durations.len() as u32;
     let source = result.source.clone();
 
-    // Per-call usage records: SQLite first (transactional, ledger dedup).
+    // Per-call usage records. JSONL first, then SQLite: the Artifact is the
+    // sync medium peers pull, so a failed append must abort the whole ingest
+    // before SQLite commits — otherwise the ledger dedup would silence the
+    // failure and permanently drop those rows from the Artifact. The append is
+    // idempotent, so a retried collect after a later SQLite failure adds no
+    // duplicate.
     let records: Vec<UsageRecord> = result
         .events
         .iter()
         .map(|r| recordify(r, device_id, book))
         .collect();
+    append_jsonl(paths, device_id, &records)?;
     let inserted = store.ingest(&records)?;
-    if !inserted.is_empty() {
-        append_jsonl(paths, device_id, &inserted)?;
-    }
 
-    // Per-turn durations (separate grain, dedup by uuid).
+    // Per-turn durations (separate grain). Same JSONL-first ordering as the
+    // usage path above, for the same reason.
     let turns: Vec<TurnDuration> = result
         .turn_durations
         .iter()
@@ -99,14 +106,8 @@ pub fn ingest_collected(
     let turns_inserted = if turns.is_empty() {
         Vec::new()
     } else {
-        // Only newly-inserted turns are appended to the JSONL — mirroring the
-        // usage path above. Previously ALL turns were re-appended each collect,
-        // duplicating them in the Artifact under full rescans.
-        let inserted = store.ingest_turn_durations(&turns)?;
-        if !inserted.is_empty() {
-            append_turn_jsonl(paths, device_id, &inserted)?;
-        }
-        inserted
+        append_turn_jsonl(paths, device_id, &turns)?;
+        store.ingest_turn_durations(&turns)?
     };
 
     Ok(IngestReport {
@@ -124,10 +125,12 @@ pub fn ingest_collected(
 //
 // Two grains share this machinery: per-call UsageRecord (`usage-<day>.jsonl`)
 // and per-turn TurnDuration (`turns-<day>.jsonl`). Both append grouped by day,
-// both skip unparseable lines on read, both leave the SQLite write intact when
-// the JSONL append fails (JSONL is the backup medium). Only the row type, the
-// file-name prefix, and the day accessor differ — captured by [`ArtifactGrain`]
-// so the policy lives in one place.
+// both skip unparseable lines on read, and both treat the JSONL Artifact as the
+// sync medium: appends are idempotent and a failure propagates. The caller
+// writes JSONL before SQLite so a failed append leaves the scan cursor — and
+// thus a source re-scan — to recover it. Only the row type, file-name prefix,
+// and day accessor differ — captured by [`ArtifactGrain`] so the policy lives
+// in one place.
 
 /// One JSONL Artifact grain: its row type, file-name prefix, diagnostic label,
 /// and the day bucket that drives the per-day file split.
@@ -135,10 +138,11 @@ trait ArtifactGrain {
     type Row: serde::Serialize + serde::de::DeserializeOwned;
     /// File-name prefix; the Artifact is `<prefix>-<day>.jsonl`.
     const PREFIX: &'static str;
-    /// Label for append-failure log lines.
-    const LABEL: &'static str;
     /// Day bucket this row belongs to.
     fn day(row: &Self::Row) -> &str;
+    /// Dedup key. A row whose uuid is already in the day's file is skipped on
+    /// append, so a retried collect (scan cursor unchanged) writes no duplicate.
+    fn uuid(row: &Self::Row) -> &str;
 }
 
 /// Per-call usage records → `usage-<day>.jsonl`.
@@ -146,9 +150,11 @@ struct UsageGrain;
 impl ArtifactGrain for UsageGrain {
     type Row = UsageRecord;
     const PREFIX: &'static str = "usage";
-    const LABEL: &'static str = "jsonl";
     fn day(r: &UsageRecord) -> &str {
         &r.day
+    }
+    fn uuid(r: &UsageRecord) -> &str {
+        &r.uuid
     }
 }
 
@@ -157,9 +163,11 @@ struct TurnGrain;
 impl ArtifactGrain for TurnGrain {
     type Row = TurnDuration;
     const PREFIX: &'static str = "turns";
-    const LABEL: &'static str = "turn jsonl";
     fn day(t: &TurnDuration) -> &str {
         &t.day
+    }
+    fn uuid(t: &TurnDuration) -> &str {
+        &t.uuid
     }
 }
 
@@ -180,14 +188,18 @@ fn write_jsonl_day<T: serde::Serialize>(path: &Path, rows: &[&T]) -> std::io::Re
     Ok(())
 }
 
-/// Group rows by day and append each day's file. Append errors are logged but
-/// do NOT undo the caller's SQLite write (JSONL is a backup medium).
+/// Group rows by day and append each day's file. Idempotent: a row whose uuid
+/// is already in the day's file is skipped, so a retried collect (scan cursor
+/// unchanged after a failure) writes no duplicate. An append error propagates —
+/// the JSONL Artifact is the sync medium peers pull, so a row missing here is a
+/// row the other devices never see; surfacing the error leaves the scan cursor
+/// untouched so the next collect re-parses the same source lines.
 fn append_artifact_jsonl<A: ArtifactGrain>(
     paths: &Paths,
     device_id: &str,
     rows: &[A::Row],
 ) -> AppResult<()> {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashSet};
     let mut by_day: BTreeMap<String, Vec<&A::Row>> = BTreeMap::new();
     for r in rows {
         by_day.entry(A::day(r).to_string()).or_default().push(r);
@@ -197,9 +209,20 @@ fn append_artifact_jsonl<A: ArtifactGrain>(
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        if let Err(e) = write_jsonl_day(&path, &day_rows) {
-            eprintln!("[vaultone] {} append failed for {day}: {e}", A::LABEL);
+        // Idempotent: keep only rows this day's file does not already hold.
+        let existing: HashSet<String> = read_jsonl_file_of::<A::Row>(&path)
+            .unwrap_or_default()
+            .iter()
+            .map(|r| A::uuid(r).to_string())
+            .collect();
+        let missing: Vec<&A::Row> = day_rows
+            .into_iter()
+            .filter(|r| !existing.contains(A::uuid(*r)))
+            .collect();
+        if missing.is_empty() {
+            continue;
         }
+        write_jsonl_day(&path, &missing)?;
     }
     Ok(())
 }
@@ -281,6 +304,29 @@ pub fn append_jsonl(paths: &Paths, device_id: &str, records: &[UsageRecord]) -> 
 /// Append turn durations to the per-day Artifact.
 pub fn append_turn_jsonl(paths: &Paths, device_id: &str, turns: &[TurnDuration]) -> AppResult<()> {
     append_artifact_jsonl::<TurnGrain>(paths, device_id, turns)
+}
+
+/// Detect rows that reached the SQLite store but never the JSONL Artifact
+/// (residue from a pre-1.5.1 append failure) and, on a gap, clear the scan
+/// cursors so the next collect re-parses every source line. The idempotent
+/// append then backfills the gaps from the still-present AI CLI logs. Returns
+/// whether a gap was found (and cursors cleared). A no-op once store and
+/// Artifact agree, so it is cheap to run on every collect.
+pub fn reconcile_artifact_gaps(store: &Store, paths: &Paths, device_id: &str) -> AppResult<bool> {
+    let db_uuids = store.usage_uuids_for_device(device_id)?;
+    if db_uuids.is_empty() {
+        return Ok(false);
+    }
+    let artifact_uuids: std::collections::HashSet<String> =
+        read_device_artifacts_of::<UsageGrain>(paths, device_id)?
+            .into_iter()
+            .map(|r| r.uuid)
+            .collect();
+    let has_gap = db_uuids.iter().any(|u| !artifact_uuids.contains(u));
+    if has_gap {
+        store.clear_scan_progress()?;
+    }
+    Ok(has_gap)
 }
 
 /// Read every device's usage artifacts.
@@ -466,6 +512,102 @@ mod tests {
         assert_eq!(read.len(), 2);
         assert_eq!(read[0].uuid, "a");
         assert_eq!(read[1].uuid, "b");
+    }
+
+    #[test]
+    fn append_jsonl_is_idempotent_so_a_retried_collect_writes_no_duplicate() {
+        // A retried collect (scan cursor unchanged after a SQLite failure, say)
+        // re-parses the same source lines and calls append_jsonl again. The
+        // append must be idempotent — the day's file gains no duplicate row.
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        let book = seed_book();
+        let r1 = recordify(&raw("a", "glm-5.2"), "0123456789ab", &book);
+        let r2 = recordify(&raw("b", "glm-5.2"), "0123456789ab", &book);
+
+        append_jsonl(&paths, "0123456789ab", &[r1.clone(), r2.clone()]).unwrap();
+        // Re-append the same batch (simulating the retried collect).
+        append_jsonl(&paths, "0123456789ab", &[r1, r2]).unwrap();
+
+        let read = read_device_artifacts_of::<UsageGrain>(&paths, "0123456789ab").unwrap();
+        assert_eq!(
+            read.len(),
+            2,
+            "no duplicate rows after a re-append: {read:?}"
+        );
+    }
+
+    #[test]
+    fn ingest_collected_backfills_artifact_gaps_on_a_source_rescan() {
+        // Regression: a row that landed in SQLite but not the JSONL Artifact
+        // (an append failure under the old db-first order) used to be locked out
+        // forever — the ledger dedup silenced every later collect. With JSONL
+        // written first and idempotently, a rescan of the same source lines
+        // backfills the missing row into the Artifact.
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let book = seed_book();
+        let result = CollectResult {
+            source: "claude_code".into(),
+            events: vec![raw("gap1", "glm-5.2"), raw("gap2", "glm-5.2")],
+            turn_durations: vec![],
+            files_scanned: 1,
+            lines_skipped: 0,
+        };
+        // First ingest: both rows in SQLite AND the Artifact.
+        ingest_collected(&store, &paths, "0123456789ab", &book, result.clone()).unwrap();
+        // Simulate the old failure mode: drop `gap1` from the Artifact only.
+        let day_file = paths
+            .device_data_dir("0123456789ab")
+            .join("usage-2026-07-13.jsonl");
+        let pruned: String = std::fs::read_to_string(&day_file)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.contains("\"gap1\""))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(&day_file, pruned).unwrap();
+        let after_drop = read_device_artifacts_of::<UsageGrain>(&paths, "0123456789ab").unwrap();
+        assert_eq!(after_drop.len(), 1, "gap1 removed from Artifact");
+
+        // Rescan the same source: the idempotent append backfills gap1.
+        ingest_collected(&store, &paths, "0123456789ab", &book, result).unwrap();
+        let read = read_device_artifacts_of::<UsageGrain>(&paths, "0123456789ab").unwrap();
+        assert_eq!(
+            read.len(),
+            2,
+            "rescan backfilled the Artifact gap: {read:?}"
+        );
+    }
+
+    #[test]
+    fn reconcile_artifact_gaps_flags_missing_rows_and_quiets_once_backfilled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let book = seed_book();
+        let dev = "0123456789ab";
+        let result = CollectResult {
+            source: "claude_code".into(),
+            events: vec![raw("x", "glm-5.2")],
+            turn_durations: vec![],
+            files_scanned: 1,
+            lines_skipped: 0,
+        };
+        // Row lands in store + Artifact.
+        ingest_collected(&store, &paths, dev, &book, result.clone()).unwrap();
+        // Wipe the Artifact to mimic a pre-1.5.1 append failure.
+        let day_file = paths.device_data_dir(dev).join("usage-2026-07-13.jsonl");
+        std::fs::write(&day_file, "").unwrap();
+        let gapped = reconcile_artifact_gaps(&store, &paths, dev).unwrap();
+        assert!(gapped, "gap detected (row in store, not Artifact)");
+
+        // A rescan backfills the Artifact; reconcile then reports no gap.
+        ingest_collected(&store, &paths, dev, &book, result).unwrap();
+        let clean = reconcile_artifact_gaps(&store, &paths, dev).unwrap();
+        assert!(!clean, "no gap once the Artifact is backfilled");
     }
 
     #[test]
