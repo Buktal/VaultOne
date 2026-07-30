@@ -20,7 +20,15 @@
 //! Windows' "largest intersection area" rule (the old JS used the window
 //! center, which disagreed with Windows at an A/B edge).
 
-use tauri::WebviewWindow;
+use tauri::{LogicalSize, WebviewWindow};
+
+/// Full-mode minimum CLIENT size (logical px). The dashboard never shrinks below
+/// this, keeping it clearly larger than the glance card's fixed small shapes.
+/// Declared at window creation (`tauri.conf.json` minWidth/minHeight) and
+/// re-applied by the full-mode restore commands; the lightweight dock clears it
+/// (min 0 ⇒ no constraint) so the glance card can reach its fixed small size.
+const FULL_MIN_W: f64 = 720.0;
+const FULL_MIN_H: f64 = 520.0;
 
 /// Dock the given window against the right edge of its current monitor.
 ///
@@ -174,6 +182,10 @@ fn dock_right_win(
     logical_y: f64,
     inset_logical: f64,
 ) -> Result<f64, String> {
+    // The glance card docks well below the full-mode minimum — drop the min
+    // (0 ⇒ no constraint) so the SetWindowPos below isn't clamped back up. The
+    // full-mode restore commands re-apply it.
+    let _ = window.set_min_size(Some(LogicalSize::new(0.0, 0.0)));
     let p = measure_window(window, client_logical_w, client_logical_h)?;
     let inset_phys = (inset_logical * p.scale).ceil() as i32;
     let outer_x = p.mon.right - inset_phys - p.target_outer_w;
@@ -215,6 +227,9 @@ fn center_window_win(
     client_logical_w: f64,
     client_logical_h: f64,
 ) -> Result<(), String> {
+    // Re-apply the full-mode minimum (the lightweight dock cleared it) BEFORE
+    // SetWindowPos so the restore is clamped up to it, never undersized.
+    let _ = window.set_min_size(Some(LogicalSize::new(FULL_MIN_W, FULL_MIN_H)));
     let p = measure_window(window, client_logical_w, client_logical_h)?;
     let outer_x = p.mon.left + (p.mon.right - p.mon.left - p.target_outer_w) / 2;
     let outer_y = p.mon.top + (p.mon.bottom - p.mon.top - p.target_outer_h) / 2;
@@ -263,6 +278,9 @@ fn set_window_rect_win(
     logical_w: f64,
     logical_h: f64,
 ) -> Result<(), String> {
+    // Re-apply the full-mode minimum (the lightweight dock cleared it) BEFORE
+    // SetWindowPos so the restore is clamped up to it, never undersized.
+    let _ = window.set_min_size(Some(LogicalSize::new(FULL_MIN_W, FULL_MIN_H)));
     let p = measure_window(window, logical_w, logical_h)?;
     // Desired outer top-left in physical virtual-screen coords, clamped so the
     // full outer rect (shadow included) stays inside the current monitor.
