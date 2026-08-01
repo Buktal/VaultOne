@@ -55,9 +55,13 @@ impl Paths {
         self.repo_data.join(device_id)
     }
 
-    /// Cloud pricing config: `repo/config/pricing.json`.
+    /// Local pricing config: `<root>/pricing.json`. Sits next to `config.json`,
+    /// never enters the repo — pricing is a per-device local concern (each device
+    /// freezes cost with its own prices at collect time). `save_pricing_to_file`
+    /// writes here; `reload_pricing_from_file` reads here. DB remains the runtime
+    /// truth; this file is a local export/import surface only.
     pub fn pricing_json(&self) -> PathBuf {
-        self.repo_config.join("pricing.json")
+        self.root.join("pricing.json")
     }
 
     /// Cloud device-name registry: `repo/config/devices_<id>.json`, one file per

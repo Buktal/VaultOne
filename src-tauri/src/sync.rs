@@ -323,8 +323,9 @@ fn pick_origin_branch(repo: &Repository) -> AppResult<Option<(String, Oid)>> {
 /// local-only commits onto the remote tip and pushes, auto-healing a state
 /// fast-forward-only could never recover from. Device isolation
 /// (`data/<deviceId>/`) means a local-only commit only touches files the remote
-/// didn't, so the rebase applies without conflict; shared-config conflicts are
-/// pre-checked and surfaced by `sync_config` before it calls in.
+/// didn't, so the rebase applies without conflict. Usage artifacts are the
+/// only thing in the repo and they are per-device isolated (`data/<deviceId>/`),
+/// so no shared file two devices could diverge on.
 ///
 /// `author_name` / `author_email` are this device's commit identity, reused as
 /// the rebaser's signature (authors of replayed commits are preserved). Synced
@@ -653,15 +654,6 @@ fn friendly_git_error(e: &git2::Error) -> String {
 // High-level sync flow: pull → import JSONL → commit → push
 // ---------------------------------------------------------------------------
 
-/// Outcome of one sync round, surfaced to the UI.
-#[derive(Debug, Clone, Default, serde::Serialize, specta::Type)]
-pub struct SyncReport {
-    /// New rows imported from the remote (uuid-deduped) this pull.
-    pub imported: u32,
-    /// True if a local change was committed and pushed.
-    pub pushed: bool,
-}
-
 /// Deterministic commit identity for this device (device-scoped).
 pub(crate) fn author_email(cfg: &ConfigData) -> String {
     format!("{}@devices.vaultone", cfg.device_id)
@@ -741,55 +733,11 @@ pub fn commit_and_push_best_effort(paths: &crate::config::Paths, cfg: &ConfigDat
     }
 }
 
-/// Manual「立即同步」: pull + import, then commit + push.
-pub fn sync_now(
-    store: &crate::db::Store,
-    paths: &crate::config::Paths,
-    cfg: &ConfigData,
-) -> AppResult<SyncReport> {
-    let imported = pull_and_import(store, paths, cfg)?;
-    let pushed = commit_and_push(paths, cfg, "vaultone: usage sync")?;
-    Ok(SyncReport { imported, pushed })
-}
-
-// ===========================================================================
-// Cloud-config sync (#6 — Synced-only, S3)
-// ===========================================================================
-//
-// Usage artifacts live under `data/<deviceId>/` and so can never collide across
-// devices — the usage path (above) fast-forwards freely. Cloud config
-// (`config/{app,user,pricing}.json`) is *shared*: two devices can each edit the
-// same file, and a blind pull would clobber one side. So config sync is manual
-// and detects conflicts before touching the worktree:
-//
-//   1. fetch origin
-//   2. conflict = (files dirty in the worktree) ∩ (files the remote changed
-//      relative to our HEAD)
-//   3. if any conflict ⇒ return it for the UI to resolve (never last-write-wins)
-//   4. otherwise pull (SAFE checkout — preserves unrelated local edits) →
-//      commit → push, then reload pricing into the Store if it changed.
-//
-// Conflict resolution rewrites the worktree so the SAFE pull can advance, then
-// restores local-wins files afterward ("pick a version").
-
-/// A cloud-config file under `repo/config/`. Crosses the boundary as
-/// a snake_case tag (`"pricing"` …) so the UI can switch on it without path math.
-/// Fetch `origin` into `refs/remotes/origin/*` (no merge).
-pub(crate) fn fetch_origin(repo: &Repository, token: &str) -> AppResult<()> {
-    fetch_options_with_proxy!(fo, token);
-    repo.find_remote("origin")?.fetch(
-        &["+refs/heads/*:refs/remotes/origin/*"],
-        Some(&mut fo),
-        None,
-    )?;
-    Ok(())
-}
-
 /// Reload the (just-pulled) cloud device registry into the Store, then
 /// reconcile dirty devices. Each registry file upsert is best-effort so one bad
 /// row can't abort the rest. Aliases stay local and are layered on at
-/// `list_devices`. Shared by the usage-sync pull path and cloud-config sync —
-/// reconcile itself also runs on the collect path.
+/// `list_devices`. Used by the usage-sync pull path; reconcile itself also
+/// runs on the collect path.
 pub(crate) fn reload_devices_into_store(
     store: &crate::db::Store,
     paths: &crate::config::Paths,
@@ -851,10 +799,6 @@ pub fn reconcile_devices(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud_config::{
-        resolve_config_conflict, sync_config, ConfigConflictResolution, ConfigFile,
-        ConfigSyncChoice,
-    };
 
     /// Seed a bare "remote" with one initial commit so it has a cloneable HEAD.
     fn seed_remote(remote_path: &Path) {
@@ -1519,13 +1463,13 @@ mod tests {
     }
 
     #[test]
-    fn sync_now_roundtrips_usage_across_devices() {
+    fn sync_roundtrips_usage_across_devices() {
         let tmp = tempfile::tempdir().unwrap();
         let remote = tmp.path().join("remote.git");
         seed_remote(&remote);
         let url = remote.to_string_lossy().to_string();
 
-        // Device A: write an artifact, then sync_now (pull no-op + commit+push).
+        // Device A: write an artifact, then pull (no-op) + commit+push.
         let paths_a = crate::config::Paths::resolve(&tmp.path().join("a"));
         let cfg_a = synced_cfg(&url, "tok");
         let _repo_a = open_or_clone(&url, &paths_a.repo, "").unwrap();
@@ -1533,220 +1477,23 @@ mod tests {
         let rec = crate::ingest::recordify(&raw_usage("round-1"), "aabbccddeeff", &book);
         crate::ingest::append_jsonl(&paths_a, "aabbccddeeff", &[rec]).unwrap();
         let store_a = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
-        let rep_a = sync_now(&store_a, &paths_a, &cfg_a).unwrap();
-        assert!(rep_a.pushed, "A had a local change to push");
-        assert_eq!(
-            rep_a.imported, 1,
-            "A imports its own artifact into its store"
-        );
+        let imported_a = pull_and_import(&store_a, &paths_a, &cfg_a).unwrap();
+        let pushed_a = commit_and_push(&paths_a, &cfg_a, "vaultone: usage sync").unwrap();
+        assert!(pushed_a, "A had a local change to push");
+        assert_eq!(imported_a, 1, "A imports its own artifact into its store");
 
-        // Device B: sync_now pulls A's artifact into B's fresh store.
+        // Device B: pull A's artifact into B's fresh store.
         let paths_b = crate::config::Paths::resolve(&tmp.path().join("b"));
         let cfg_b = synced_cfg(&url, "tok");
         let store_b = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
-        let rep_b = sync_now(&store_b, &paths_b, &cfg_b).unwrap();
-        assert_eq!(rep_b.imported, 1, "B imported A's record");
-        assert!(!rep_b.pushed, "B has no local change beyond what it pulled");
+        let imported_b = pull_and_import(&store_b, &paths_b, &cfg_b).unwrap();
+        let pushed_b = commit_and_push(&paths_b, &cfg_b, "vaultone: usage sync").unwrap();
+        assert_eq!(imported_b, 1, "B imported A's record");
+        assert!(!pushed_b, "B has no local change beyond what it pulled");
         let stats = store_b
             .query_stats(&crate::model::UsageFilter::default())
             .unwrap();
         assert_eq!(stats.request_count, 1);
-    }
-
-    // ---- S3 cloud-config sync tests (#6) ----
-
-    fn write_pricing(paths: &crate::config::Paths, body: &str) {
-        let p = paths.pricing_json();
-        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(p, body).unwrap();
-    }
-
-    /// A minimal but valid pricing doc with one entry keyed `tag`.
-    fn pricing_doc(tag: &str) -> String {
-        format!(
-            r#"{{"models":[{{"model_key":"{tag}","display_name":"{tag}","input_per_million":1.0,"output_per_million":2.0,"cache_read_per_million":0.1,"cache_creation_per_million":1.25,"is_builtin":false}}]}}"#
-        )
-    }
-
-    /// Device A: clone, commit + push an initial `pricing.json`.
-    fn seed_pricing_on_a(tmp: &Path, url: &str) -> crate::config::Paths {
-        let paths_a = crate::config::Paths::resolve(&tmp.join("a"));
-        let repo_a = open_or_clone(url, &paths_a.repo, "").unwrap();
-        write_pricing(&paths_a, &pricing_doc("base"));
-        commit_all(&repo_a, "A pricing base", "A", "a@devices.vaultone").unwrap();
-        push(&repo_a, "").unwrap();
-        paths_a
-    }
-
-    #[test]
-    fn sync_config_detects_conflict_when_both_sides_edit_pricing() {
-        let tmp = tempfile::tempdir().unwrap();
-        let remote = tmp.path().join("remote.git");
-        seed_remote(&remote);
-        let url = remote.to_string_lossy().to_string();
-
-        let paths_a = seed_pricing_on_a(tmp.path(), &url);
-
-        // B clones (gets A's base pricing).
-        let paths_b = crate::config::Paths::resolve(&tmp.path().join("b"));
-        let _repo_b = open_or_clone(&url, &paths_b.repo, "").unwrap();
-        assert!(paths_b.pricing_json().exists());
-
-        // A edits + pushes; B edits locally (dirty, uncommitted) — divergent edit.
-        write_pricing(&paths_a, &pricing_doc("a-remote"));
-        let repo_a = Repository::open(&paths_a.repo).unwrap();
-        commit_all(&repo_a, "A pricing v2", "A", "a@devices.vaultone").unwrap();
-        push(&repo_a, "").unwrap();
-        write_pricing(&paths_b, &pricing_doc("b-local"));
-
-        let store = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
-        let cfg_b = synced_cfg(&url, "tok");
-        let outcome = sync_config(&store, &paths_b, &cfg_b).unwrap();
-
-        assert!(outcome.has_conflict, "both sides edited pricing ⇒ conflict");
-        assert!(!outcome.pushed);
-        assert_eq!(outcome.conflicts.len(), 1);
-        assert_eq!(outcome.conflicts[0].file, ConfigFile::Pricing);
-        assert!(outcome.conflicts[0].local_preview.contains("b-local"));
-        assert!(outcome.conflicts[0].remote_preview.contains("a-remote"));
-    }
-
-    #[test]
-    fn sync_config_pulls_remote_pricing_when_local_clean() {
-        let tmp = tempfile::tempdir().unwrap();
-        let remote = tmp.path().join("remote.git");
-        seed_remote(&remote);
-        let url = remote.to_string_lossy().to_string();
-
-        let paths_a = seed_pricing_on_a(tmp.path(), &url);
-
-        // B clones first (clean — gets A's base pricing).
-        let paths_b = crate::config::Paths::resolve(&tmp.path().join("b"));
-        let _repo_b = open_or_clone(&url, &paths_b.repo, "").unwrap();
-
-        // A pushes a newer pricing with a distinct model key.
-        write_pricing(&paths_a, &pricing_doc("a-remote"));
-        let repo_a = Repository::open(&paths_a.repo).unwrap();
-        commit_all(&repo_a, "A pricing v2", "A", "a@devices.vaultone").unwrap();
-        push(&repo_a, "").unwrap();
-
-        // (B clones were clean — no local edit.)
-
-        let store = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
-        let cfg_b = synced_cfg(&url, "tok");
-        let outcome = sync_config(&store, &paths_b, &cfg_b).unwrap();
-
-        assert!(!outcome.has_conflict, "B did not edit pricing locally");
-        assert!(outcome.pricing_changed, "remote pricing pulled + reloaded");
-        assert!(outcome.pulled_files.contains(&ConfigFile::Pricing));
-        assert!(
-            std::fs::read_to_string(paths_b.pricing_json())
-                .unwrap()
-                .contains("a-remote"),
-            "worktree now reflects the remote pricing"
-        );
-        // …and reloaded into the Store.
-        let keys: Vec<String> = store
-            .list_pricing()
-            .unwrap()
-            .into_iter()
-            .map(|e| e.model_key)
-            .collect();
-        assert!(keys.contains(&"a-remote".to_string()));
-    }
-
-    #[test]
-    fn resolve_config_conflict_keep_remote_takes_remote_version() {
-        let tmp = tempfile::tempdir().unwrap();
-        let remote = tmp.path().join("remote.git");
-        seed_remote(&remote);
-        let url = remote.to_string_lossy().to_string();
-
-        let paths_a = seed_pricing_on_a(tmp.path(), &url);
-        let paths_b = crate::config::Paths::resolve(&tmp.path().join("b"));
-        let _repo_b = open_or_clone(&url, &paths_b.repo, "").unwrap();
-
-        // Both sides edit pricing ⇒ conflict on B.
-        write_pricing(&paths_a, &pricing_doc("a-remote"));
-        let repo_a = Repository::open(&paths_a.repo).unwrap();
-        commit_all(&repo_a, "A pricing v2", "A", "a@devices.vaultone").unwrap();
-        push(&repo_a, "").unwrap();
-        write_pricing(&paths_b, &pricing_doc("b-local"));
-
-        let store = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
-        let cfg_b = synced_cfg(&url, "tok");
-        let conflict = sync_config(&store, &paths_b, &cfg_b).unwrap();
-        assert!(conflict.has_conflict);
-
-        // B keeps the remote version.
-        let resolved = resolve_config_conflict(
-            &store,
-            &paths_b,
-            &cfg_b,
-            &[ConfigConflictResolution {
-                file: ConfigFile::Pricing,
-                choice: ConfigSyncChoice::KeepRemote,
-            }],
-        )
-        .unwrap();
-        assert!(resolved.pushed);
-        assert!(
-            resolved.pricing_changed,
-            "remote pricing reloaded into Store"
-        );
-
-        let text = std::fs::read_to_string(paths_b.pricing_json()).unwrap();
-        assert!(text.contains("a-remote"), "remote version wins locally");
-        assert!(!text.contains("b-local"));
-    }
-
-    #[test]
-    fn resolve_config_conflict_keep_local_pushes_local_version() {
-        let tmp = tempfile::tempdir().unwrap();
-        let remote = tmp.path().join("remote.git");
-        seed_remote(&remote);
-        let url = remote.to_string_lossy().to_string();
-
-        let paths_a = seed_pricing_on_a(tmp.path(), &url);
-        let paths_b = crate::config::Paths::resolve(&tmp.path().join("b"));
-        let _repo_b = open_or_clone(&url, &paths_b.repo, "").unwrap();
-
-        write_pricing(&paths_a, &pricing_doc("a-remote"));
-        let repo_a = Repository::open(&paths_a.repo).unwrap();
-        commit_all(&repo_a, "A pricing v2", "A", "a@devices.vaultone").unwrap();
-        push(&repo_a, "").unwrap();
-        write_pricing(&paths_b, &pricing_doc("b-local"));
-
-        let store = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
-        let cfg_b = synced_cfg(&url, "tok");
-        let conflict = sync_config(&store, &paths_b, &cfg_b).unwrap();
-        assert!(conflict.has_conflict);
-
-        // B keeps its local version.
-        let resolved = resolve_config_conflict(
-            &store,
-            &paths_b,
-            &cfg_b,
-            &[ConfigConflictResolution {
-                file: ConfigFile::Pricing,
-                choice: ConfigSyncChoice::KeepLocal,
-            }],
-        )
-        .unwrap();
-        assert!(resolved.pushed);
-
-        // Local worktree keeps the local version.
-        let text = std::fs::read_to_string(paths_b.pricing_json()).unwrap();
-        assert!(text.contains("b-local"), "local version wins locally");
-
-        // …and it was pushed: a fresh clone sees the local version.
-        let paths_c = crate::config::Paths::resolve(&tmp.path().join("c"));
-        let _repo_c = open_or_clone(&url, &paths_c.repo, "").unwrap();
-        let remote_text = std::fs::read_to_string(paths_c.pricing_json()).unwrap();
-        assert!(
-            remote_text.contains("b-local"),
-            "local version pushed to remote"
-        );
     }
 
     /// Git is the source of truth for which devices exist. After a pull,

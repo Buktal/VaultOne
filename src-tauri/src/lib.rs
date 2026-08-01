@@ -1,7 +1,7 @@
 //! VaultOne Tauri backend library.
 //!
 //! Module tree: config / db / providers / ingest / collect / pricing / sync /
-//! cloud_config / proxy / commands / window_geom, behind a tauri-specta typed
+//! proxy / commands / window_geom, behind a tauri-specta typed
 //! contract. First start bootstraps the local data dir + deviceId and defaults
 //! to Standalone
 //!.
@@ -15,7 +15,6 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{Emitter, Manager};
 use tauri_specta::Builder;
 
-mod cloud_config;
 mod collect;
 mod commands;
 mod config;
@@ -46,8 +45,6 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::forget_device,
         commands::collect_now,
         commands::sync_now,
-        commands::sync_config,
-        commands::resolve_config_conflict,
         commands::rebill_zero_cost,
         commands::query_usage_stats,
         commands::query_usage_trend,
@@ -286,23 +283,22 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // Background scheduler: collect and push run on
-            // INDEPENDENT intervals. Collect is short (seconds, local-only) so
-            // the dashboard stays fresh; push is longer (minutes, Synced only)
-            // so the Git history grows at a controlled rate. This decouples the
-            // single chained timer from — exactly the evolution
-            //'s Consequences flagged as the right next step.
+            // Background scheduler: collect and sync run on INDEPENDENT
+            // intervals. Collect is short (seconds, local-only) so the dashboard
+            // stays fresh; sync is longer (minutes, Synced only) — one pull+push
+            // round per tick — so peer devices' usage lands here, this device's
+            // goes up, and the Git history grows at a controlled rate.
             //
             // One thread, two deadlines, slept-to (not polled): on each wake we
             // re-read both intervals, so Settings changes apply without restart.
-            // Within a tick where BOTH deadlines fire, collect runs BEFORE push:
+            // Within a tick where BOTH deadlines fire, collect runs BEFORE sync:
             // collect's `writeln!` has fully flushed the JSONL by the time it
             // returns, so the subsequent `git add` snapshots complete lines only
             // (no half-line race). Serial execution on a single thread is what
             // makes this safe — no lock is needed.
             //
             // First collect fires immediately (dashboard is fresh on open). The
-            // first push is delayed by one push_interval so it cannot race the
+            // first sync is delayed by one push_interval so it cannot race the
             // startup pull's git-worktree ops (rationale, preserved).
             let store = state.store.clone();
             let config = state.config.clone();
@@ -336,7 +332,14 @@ pub fn run() {
                         next_collect = now + std::time::Duration::from_secs(collect_secs);
                     }
                     if now >= next_push && cfg.is_synced() {
-                        collect::push_if_synced(&config);
+                        // One pull+push round (best-effort; the cadence is the
+                        // retry — no explicit retry here). Pull lands peer
+                        // devices' usage here, push sends this device's up.
+                        let sr = collect::sync_round(&store, &config);
+                        for e in &sr.errors {
+                            eprintln!("[vaultone] scheduled sync error: {e}");
+                        }
+                        let _ = app_handle.emit("usage_changed", ());
                         next_push = now + std::time::Duration::from_secs(push_secs);
                     }
                 }

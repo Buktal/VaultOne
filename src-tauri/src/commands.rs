@@ -11,17 +11,16 @@ use std::sync::Arc;
 
 use tauri::{Emitter, Manager, State};
 
-use crate::cloud_config::{ConfigConflictResolution, ConfigSyncOutcome};
+use crate::collect::AlignReport;
 use crate::config::{CloseBehavior, ConfigStore, Language, LightweightExpand, Skin};
 use crate::db::Store;
 use crate::error::{AppError, AppResult};
-use crate::ingest::IngestReport;
 use crate::model::{
     DeviceInfo, LogsQuery, ModelStatsRow, PricingEntry, RunMode, TrendBucket, TrendPoint,
     UsageFilter, UsageLogRow, UsageStats,
 };
 use crate::pricing;
-use crate::sync::{SyncReport, VerifyReport};
+use crate::sync::VerifyReport;
 
 /// App-wide managed state: the Local Store + local config, wrapped
 /// in `Arc` so blocking tasks can take owned clones.
@@ -258,95 +257,49 @@ pub fn forget_device(
 }
 
 // ---------------- Collect / ingest ----------------
-// The ingest path (`collect_into`) and the push backstop (`push_if_synced`)
-// live in `collect`; the items here are the typed Tauri commands that drive them.
+// The ingest path (`collect_into`) and the manual orchestrators (`align`,
+// `sync_round`) live in `collect`; the items here are the typed Tauri commands
+// that drive them.
 
-/// Manual「立即采集」: collect now, best-effort push if Synced, refresh the UI.
+/// Manual「采集 / 同步」: collect now, then (Synced only) pull + push with a
+/// bounded retry. The dashboard button's single action — Standalone ⇒ collect;
+/// Synced ⇒ collect + sync. The run mode decides what it means, not the UI.
 /// Heavy disk/git work → offloaded to a thread.
 #[tauri::command]
 #[specta::specta]
 pub async fn collect_now(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
-) -> AppResult<IngestReport> {
+) -> AppResult<AlignReport> {
     let store = state.store.clone();
     let config = state.config.clone();
-    tauri::async_runtime::spawn_blocking(move || -> AppResult<IngestReport> {
-        let report = crate::collect::collect_into(&store, &config)?;
-        crate::collect::push_if_synced(&config);
-        // Notify the UI that usage data changed (event-driven refresh).
-        let _ = app_handle.emit("usage_changed", ());
-        Ok(report)
-    })
-    .await
-    .map_err(|e| AppError::Internal(format!("collect task failed: {e}")))?
+    let report =
+        tauri::async_runtime::spawn_blocking(move || crate::collect::align(&store, &config))
+            .await
+            .map_err(|e| AppError::Internal(format!("collect task failed: {e}")))?;
+    // Notify the UI that usage data changed (event-driven refresh).
+    let _ = app_handle.emit("usage_changed", ());
+    Ok(report)
 }
 
-/// Manual「立即同步」(Synced only): pull + import + commit + push.
-/// Standalone ⇒ no-op returning a zero report.
+/// Manual「立即同步」: the Settings entry — same `align` as the dashboard button
+/// (collect + sync). Kept as a distinct command so the Settings card has its
+/// own trigger next to the repo binding, but the work is identical. Standalone
+/// ⇒ collect only (sync degrades to a local refresh).
 #[tauri::command]
 #[specta::specta]
-pub async fn sync_now(state: State<'_, AppState>) -> AppResult<SyncReport> {
-    let store = state.store.clone();
-    let config = state.config.clone();
-    tauri::async_runtime::spawn_blocking(move || -> AppResult<SyncReport> {
-        let cfg = config.get();
-        if !cfg.is_synced() {
-            return Ok(SyncReport::default());
-        }
-        let paths = config.paths();
-        crate::sync::sync_now(&store, &paths, &cfg)
-    })
-    .await
-    .map_err(|e| AppError::Internal(format!("sync task failed: {e}")))?
-}
-
-/// Manual cloud-config sync (#6, Synced only): detect conflicts on
-/// shared `config/{app,user,pricing}.json`; if clean, pull + commit + push and
-/// reload pricing. Returns a conflict report for the UI to resolve when local
-/// and remote both edited the same file. Standalone ⇒ error (UI hides the entry).
-#[tauri::command]
-#[specta::specta]
-pub async fn sync_config(state: State<'_, AppState>) -> AppResult<ConfigSyncOutcome> {
-    let store = state.store.clone();
-    let config = state.config.clone();
-    tauri::async_runtime::spawn_blocking(move || -> AppResult<ConfigSyncOutcome> {
-        let cfg = config.get();
-        if !cfg.is_synced() {
-            return Err(AppError::Sync(
-                "not in Synced mode: cloud config sync unavailable".into(),
-            ));
-        }
-        let paths = config.paths();
-        crate::cloud_config::sync_config(&store, &paths, &cfg)
-    })
-    .await
-    .map_err(|e| AppError::Internal(format!("config sync task failed: {e}")))?
-}
-
-/// Apply the user's per-file conflict verdicts, then pull + commit + push
-/// (Synced only). `choices` should cover every file `sync_config`
-/// reported as conflicting.
-#[tauri::command]
-#[specta::specta]
-pub async fn resolve_config_conflict(
+pub async fn sync_now(
     state: State<'_, AppState>,
-    choices: Vec<ConfigConflictResolution>,
-) -> AppResult<ConfigSyncOutcome> {
+    app_handle: tauri::AppHandle,
+) -> AppResult<AlignReport> {
     let store = state.store.clone();
     let config = state.config.clone();
-    tauri::async_runtime::spawn_blocking(move || -> AppResult<ConfigSyncOutcome> {
-        let cfg = config.get();
-        if !cfg.is_synced() {
-            return Err(AppError::Sync(
-                "not in Synced mode: conflict resolve unavailable".into(),
-            ));
-        }
-        let paths = config.paths();
-        crate::cloud_config::resolve_config_conflict(&store, &paths, &cfg, &choices)
-    })
-    .await
-    .map_err(|e| AppError::Internal(format!("config resolve task failed: {e}")))?
+    let report =
+        tauri::async_runtime::spawn_blocking(move || crate::collect::align(&store, &config))
+            .await
+            .map_err(|e| AppError::Internal(format!("sync task failed: {e}")))?;
+    let _ = app_handle.emit("usage_changed", ());
+    Ok(report)
 }
 
 /// Rebill zero-cost rows whose model now has a price (top-up).
@@ -460,8 +413,8 @@ pub fn delete_pricing_entry(state: State<'_, AppState>, model_key: String) -> Ap
     state.store.delete_pricing(&model_key)
 }
 
-/// Re-load pricing from the cloud `pricing.json` into the DB.
-/// In Standalone this is the local `repo/config/pricing.json`; no push.
+/// Re-load pricing from the local `pricing.json` into the DB. Pricing is
+/// per-device local (never synced); this is an import surface, not a sync path.
 #[tauri::command]
 #[specta::specta]
 pub fn reload_pricing_from_file(state: State<'_, AppState>) -> AppResult<u32> {
@@ -475,7 +428,7 @@ pub fn reload_pricing_from_file(state: State<'_, AppState>) -> AppResult<u32> {
     state.store.reload_pricing_from_path(&path)
 }
 
-/// Persist current DB pricing to the cloud `pricing.json`.
+/// Persist current DB pricing to the local `pricing.json` (never synced).
 #[tauri::command]
 #[specta::specta]
 pub fn save_pricing_to_file(state: State<'_, AppState>) -> AppResult<()> {

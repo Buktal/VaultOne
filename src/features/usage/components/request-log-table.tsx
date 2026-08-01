@@ -83,7 +83,9 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
       return
     }
     toast.success(
-      t("usage.collect.doneShort", { count: res.data?.rows_inserted ?? 0 }),
+      t("usage.collect.doneShort", {
+        count: res.data?.collected.rows_inserted ?? 0,
+      }),
     )
   }
 

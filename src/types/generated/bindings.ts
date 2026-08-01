@@ -35,28 +35,19 @@ export const commands = {
 	 */
 	forgetDevice: (deviceId: string, libraryAction: LibraryForgetAction) => typedError<null, AppError>(__TAURI_INVOKE("forget_device", { deviceId, libraryAction })),
 	/**
-	 *  Manual「立即采集」: collect now, best-effort push if Synced, refresh the UI.
+	 *  Manual「采集 / 同步」: collect now, then (Synced only) pull + push with a
+	 *  bounded retry. The dashboard button's single action — Standalone ⇒ collect;
+	 *  Synced ⇒ collect + sync. The run mode decides what it means, not the UI.
 	 *  Heavy disk/git work → offloaded to a thread.
 	 */
-	collectNow: () => typedError<IngestReport, AppError>(__TAURI_INVOKE("collect_now")),
+	collectNow: () => typedError<AlignReport, AppError>(__TAURI_INVOKE("collect_now")),
 	/**
-	 *  Manual「立即同步」(Synced only): pull + import + commit + push.
-	 *  Standalone ⇒ no-op returning a zero report.
+	 *  Manual「立即同步」: the Settings entry — same `align` as the dashboard button
+	 *  (collect + sync). Kept as a distinct command so the Settings card has its
+	 *  own trigger next to the repo binding, but the work is identical. Standalone
+	 *  ⇒ collect only (sync degrades to a local refresh).
 	 */
-	syncNow: () => typedError<SyncReport, AppError>(__TAURI_INVOKE("sync_now")),
-	/**
-	 *  Manual cloud-config sync (#6, Synced only): detect conflicts on
-	 *  shared `config/{app,user,pricing}.json`; if clean, pull + commit + push and
-	 *  reload pricing. Returns a conflict report for the UI to resolve when local
-	 *  and remote both edited the same file. Standalone ⇒ error (UI hides the entry).
-	 */
-	syncConfig: () => typedError<ConfigSyncOutcome, AppError>(__TAURI_INVOKE("sync_config")),
-	/**
-	 *  Apply the user's per-file conflict verdicts, then pull + commit + push
-	 *  (Synced only). `choices` should cover every file `sync_config`
-	 *  reported as conflicting.
-	 */
-	resolveConfigConflict: (choices: ConfigConflictResolution[]) => typedError<ConfigSyncOutcome, AppError>(__TAURI_INVOKE("resolve_config_conflict", { choices })),
+	syncNow: () => typedError<AlignReport, AppError>(__TAURI_INVOKE("sync_now")),
 	/**  Rebill zero-cost rows whose model now has a price (top-up). */
 	rebillZeroCost: () => typedError<number, AppError>(__TAURI_INVOKE("rebill_zero_cost")),
 	queryUsageStats: (filter: UsageFilter) => typedError<UsageStats, AppError>(__TAURI_INVOKE("query_usage_stats", { filter })),
@@ -72,11 +63,11 @@ export const commands = {
 	savePricingEntry: (entry: PricingEntry, isBuiltin: boolean | null) => typedError<null, AppError>(__TAURI_INVOKE("save_pricing_entry", { entry, isBuiltin })),
 	deletePricingEntry: (modelKey: string) => typedError<null, AppError>(__TAURI_INVOKE("delete_pricing_entry", { modelKey })),
 	/**
-	 *  Re-load pricing from the cloud `pricing.json` into the DB.
-	 *  In Standalone this is the local `repo/config/pricing.json`; no push.
+	 *  Re-load pricing from the local `pricing.json` into the DB. Pricing is
+	 *  per-device local (never synced); this is an import surface, not a sync path.
 	 */
 	reloadPricingFromFile: () => typedError<number, AppError>(__TAURI_INVOKE("reload_pricing_from_file")),
-	/**  Persist current DB pricing to the cloud `pricing.json`. */
+	/**  Persist current DB pricing to the local `pricing.json` (never synced). */
 	savePricingToFile: () => typedError<null, AppError>(__TAURI_INVOKE("save_pricing_to_file")),
 	/**
 	 *  Fetch LiteLLM upstream pricing and merge into the DB (seed).
@@ -182,6 +173,22 @@ export const commands = {
 
 /* Types */
 /**
+ *  Outcome of one「采集 / 同步」action, surfaced to the UI. Best-effort: every
+ *  step runs independently, so `errors` carries per-step failures rather than
+ *  aborting early. Empty on full success.
+ */
+export type AlignReport = {
+	/**  Local collect outcome (zeroed if collect itself failed — see `errors`). */
+	collected: IngestReport,
+	/**  Rows imported from peer devices this round (Synced only). */
+	imported: number,
+	/**  True iff a local change was committed and pushed (Synced only). */
+	pushed: boolean,
+	/**  Per-step failures (`collect: …`, `pull: …`, `push: …`). Empty on success. */
+	errors: string[],
+};
+
+/**
  *  The single error type crossing the Rust→JS boundary.
  * 
  *  Variants are kept coarse and serializable-friendly: low-level causes
@@ -222,58 +229,6 @@ export type CloseBehavior =
 "minimize" | 
 /**  Always quit. */
 "quit";
-
-/**  One conflicting config file with both sides for the UI to preview. */
-export type ConfigConflict = {
-	file: ConfigFile,
-	/**  Repo-relative path, for display (`config/pricing.json`). */
-	path: string,
-	/**  Worktree version (truncated). */
-	local_preview: string,
-	/**  Remote-tip version (truncated). */
-	remote_preview: string,
-};
-
-/**
- *  One per-file verdict the UI submits to resolve a batch of conflicts. Preferred
- *  over a `(ConfigFile, ConfigSyncChoice)` tuple so the JS contract is a named
- *  object (`{ file, choice }`) rather than a positional pair.
- */
-export type ConfigConflictResolution = {
-	file: ConfigFile,
-	choice: ConfigSyncChoice,
-};
-
-/**
- *  A cloud-config file under `repo/config/`. Crosses the boundary as
- *  a snake_case tag (`"pricing"` …) so the UI can switch on it without path math.
- */
-export type ConfigFile = "app" | "user" | "pricing";
-
-/**  User's per-file verdict for a conflict ("pick a version"). */
-export type ConfigSyncChoice = 
-/**  Discard the remote change, keep the local worktree version. */
-"keep_local" | 
-/**  Discard the local worktree change, take the remote version. */
-"keep_remote";
-
-/**
- *  Outcome of a cloud-config sync round. Flattened (not a tagged enum) so the
- *  contract is stable and trivial to narrow on the JS side:
- *  `if (outcome.has_conflict) { show conflicts } else { toast(pushed) }`.
- */
-export type ConfigSyncOutcome = {
-	/**  True when a conflict blocks the sync; resolve via `resolve_config_conflict`. */
-	has_conflict: boolean,
-	/**  Populated iff `has_conflict`. */
-	conflicts: ConfigConflict[],
-	/**  True iff a local change was committed and pushed this round. */
-	pushed: boolean,
-	/**  Config files this pull updated from the remote. */
-	pulled_files: ConfigFile[],
-	/**  True iff `pricing.json` changed remotely and was reloaded into the Store. */
-	pricing_changed: boolean,
-};
 
 /**  A known device. `is_self` marks the device running this instance. */
 export type DeviceInfo = {
@@ -465,14 +420,6 @@ export type Skin_Deserialize = "neutral" | "pixso" | "sage" | "cuiwei" | "azure"
  *  default) → `Neutral` (the new default); the rest map by hue family.
  */
 export type Skin_Serialize = "neutral" | "sage" | "azure" | "crimson" | "mauve";
-
-/**  Outcome of one sync round, surfaced to the UI. */
-export type SyncReport = {
-	/**  New rows imported from the remote (uuid-deduped) this pull. */
-	imported: number,
-	/**  True if a local change was committed and pushed. */
-	pushed: boolean,
-};
 
 /**  Token four-pack (per-call). `u32` across the boundary. */
 export type TokenCounts = {

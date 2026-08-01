@@ -1,10 +1,11 @@
 // Settings view: device identity, run mode, repo binding
-// (Standalone ↔ Synced), manual collect / rebill.
+// (Standalone ↔ Synced), manual sync / rebill.
 //
 // Five sectioned cards (通用 / 本机 / 设备 / 同步 / 维护), each fronted by an
-// eyebrow label. Config sync (app / user / pricing) lives inside the sync
-// card next to usage sync — both are cross-device git operations on the same
-// repo, so they share a section instead of fragmenting the UI.
+// eyebrow label. The sync card holds the repo binding + a manual「立即同步」
+// entry (same align as the dashboard button — collect + pull + push in Synced
+// mode). Pricing is a per-device local concern now, so there is no separate
+// config-sync entry.
 
 import {
   Calculator,
@@ -25,7 +26,6 @@ import {
   useRebillMutation,
   useSetDisplayNameMutation,
   useSetSyncRepoMutation,
-  useSyncConfigMutation,
   useSyncMutation,
   useVerifySyncRepoMutation,
 } from "@/app/store/api"
@@ -34,11 +34,10 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { ConflictResolver } from "@/features/settings/components/conflict-resolver"
 import { DeviceList } from "@/features/settings/components/device-list"
 import { GeneralCard } from "@/features/settings/components/general-card"
 import { describeError } from "@/lib/error"
-import type { ConfigConflict, VerifyReport } from "@/types/generated/bindings"
+import type { VerifyReport } from "@/types/generated/bindings"
 
 export function SettingsView() {
   const { t } = useTranslation()
@@ -48,39 +47,15 @@ export function SettingsView() {
   const [setName, { isLoading: naming }] = useSetDisplayNameMutation()
   const [rebill, { isLoading: rebilling }] = useRebillMutation()
   const [syncNow, { isLoading: syncing }] = useSyncMutation()
-  const [syncConfig, { isLoading: syncingConfig }] = useSyncConfigMutation()
   const [verify, { isLoading: verifying }] = useVerifySyncRepoMutation()
 
   const [displayName, setDisplayName] = useState("")
   const [repoUrl, setRepoUrl] = useState("")
   const [token, setToken] = useState("")
-  const [conflicts, setConflicts] = useState<ConfigConflict[] | null>(null)
   const [verifyResult, setVerifyResult] = useState<VerifyReport | null>(null)
 
   const synced = info?.mode === "synced"
   const unknown = t("common.unknownReason")
-
-  const onSyncConfig = async () => {
-    setConflicts(null)
-    const r = await syncConfig()
-    if ("error" in r) {
-      toast.error(t("settings.toast.configSyncFailed"))
-      return
-    }
-    const o = r.data
-    if (o?.has_conflict && o.conflicts.length > 0) {
-      setConflicts(o.conflicts)
-      toast.warning(
-        t("settings.toast.conflictsDetected", { count: o.conflicts.length }),
-      )
-      return
-    }
-    toast.success(
-      t("settings.toast.configSynced") +
-        (o?.pushed ? t("settings.toast.configSyncedPushed") : "") +
-        (o?.pricing_changed ? t("settings.toast.configSyncedPricing") : ""),
-    )
-  }
 
   /** 测试连接：未绑定时用输入框里的值校验；已绑定时传 null，由后端读 config
    *  里的原文令牌复查（脱敏 token 拿不到原文）。改输入框会先清掉旧结果。 */
@@ -170,7 +145,7 @@ export function SettingsView() {
         <DeviceList />
       </Section>
 
-      {/* 同步 — 仓库绑定 + 用量同步 + 配置同步 */}
+      {/* 同步 — 仓库绑定 + 用量同步 */}
       <Section
         eyebrow={t("settings.section.sync")}
         description={t("settings.sectionDesc.sync")}
@@ -294,30 +269,6 @@ export function SettingsView() {
         </div>
         {(verifying || verifyResult) && (
           <VerifyBanner verifying={verifying} result={verifyResult} />
-        )}
-        {synced && (
-          <>
-            <div className="bg-border h-px" />
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-muted-foreground text-sm">
-                {t("settings.cloudConfig.threeKinds")}
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={syncingConfig}
-                onClick={onSyncConfig}
-              >
-                <RefreshCw className="size-4" />
-                {syncingConfig
-                  ? t("settings.sync.syncing")
-                  : t("settings.cloudConfig.syncButton")}
-              </Button>
-            </div>
-            {conflicts && conflicts.length > 0 && (
-              <ConflictResolver conflicts={conflicts} />
-            )}
-          </>
         )}
       </Section>
 

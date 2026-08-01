@@ -1,19 +1,16 @@
 import { createApi, fakeBaseQuery } from "@reduxjs/toolkit/query/react"
 import type {
+  AlignReport,
   AppError,
   AppInfo,
-  ConfigConflictResolution,
-  ConfigSyncOutcome,
   DeviceInfo,
   DeviceLibrarySummary,
-  IngestReport,
   LibraryEntry,
   LibraryForgetAction,
   LogsQuery,
   ModelStatsRow,
   PricingEntry,
   RunMode,
-  SyncReport,
   TrendBucket,
   TrendPoint,
   UploadItem,
@@ -136,26 +133,13 @@ export const vaultApi = createApi({
     }),
 
     // ---- mutations ----
-    collect: b.mutation<IngestReport, void>({
+    collect: b.mutation<AlignReport, void>({
       queryFn: async () => ({ data: await run(commands.collectNow()) }),
       invalidatesTags: ["Usage", "Logs", "Models", "Devices"],
     }),
-    sync: b.mutation<SyncReport, void>({
+    sync: b.mutation<AlignReport, void>({
       queryFn: async () => ({ data: await run(commands.syncNow()) }),
-      invalidatesTags: ["Usage", "Logs", "Models", "Devices", "Pricing"],
-    }),
-    syncConfig: b.mutation<ConfigSyncOutcome, void>({
-      queryFn: async () => ({ data: await run(commands.syncConfig()) }),
-      invalidatesTags: ["Pricing", "App"],
-    }),
-    resolveConfigConflict: b.mutation<
-      ConfigSyncOutcome,
-      ConfigConflictResolution[]
-    >({
-      queryFn: async (choices) => ({
-        data: await run(commands.resolveConfigConflict(choices)),
-      }),
-      invalidatesTags: ["Pricing", "App"],
+      invalidatesTags: ["Usage", "Logs", "Models", "Devices"],
     }),
     rebill: b.mutation<number, void>({
       queryFn: async () => ({ data: await run(commands.rebillZeroCost()) }),
@@ -344,8 +328,6 @@ export const {
   usePricingQuery,
   useCollectMutation,
   useSyncMutation,
-  useSyncConfigMutation,
-  useResolveConfigConflictMutation,
   useRebillMutation,
   useSavePricingMutation,
   useDeletePricingMutation,

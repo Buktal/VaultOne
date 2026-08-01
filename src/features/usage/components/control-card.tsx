@@ -1,12 +1,13 @@
 // ControlCard / ControlBar — shared meta-controls for the
-// data views. Time range · model · refresh, plus the 采集 primary action with a
+// data views. Time range · model · refresh, plus the primary action with a
 // data-freshness hint. Solid flat (no glass / no glow) — Pixso dark.
 //
 // Two layouts over the same controls + action:
-//   - <ControlCard/>  纵向卡片 (dashboard 右栏): label+值 三行 + 分隔 + 采集.
-//   - <ControlBar/>   横向条   (logs 顶部): chip 横排 + 采集按钮居右.
-// Replaces the old <UsageToolbar/> + the collect/sync buttons in <CommandBar/>.
-// Sync stays in Settings (config concern); collect lives here (data-refresh).
+//   - <ControlCard/>  纵向卡片 (dashboard 右栏): label+值 三行 + 分隔 + 主按钮.
+//   - <ControlBar/>   横向条   (logs 顶部): chip 横排 + 主按钮居右.
+// The primary action is mode-adaptive: Standalone ⇒ 「采集」 (local collect),
+// Synced ⇒ 「同步」 (collect + pull + push — the full align). The run mode
+// decides what it means; the button is always "refresh my data".
 //
 // 横排 ControlBar 的 chip 走 bar (纯值 + 选中「全部」时显全称「全部模型 /
 // 全部来源 / 全部设备」自带身份, 与库一致), 纵卡 ControlCard 靠左 Row label,
@@ -70,8 +71,9 @@ const PRESETS: Array<{ value: SelectablePreset; key: string }> = [
   { value: "all", key: "usage.control.all" },
 ]
 
-/** 采集动作 (触发 collectNow → 失效缓存 → 刷新新鲜度 → toast). */
-function useCollectAction() {
+/** 主动作 (collectNow = align: Standalone ⇒ collect; Synced ⇒ collect + sync).
+ *  触发 → 失效缓存 → 刷新新鲜度 → toast. 文案/反馈按模式自适应. */
+function useCollectAction(multiDevice: boolean) {
   const { t } = useTranslation()
   const { markCollected } = useFreshness()
   const [collect, { isLoading: collecting }] = useCollectMutation()
@@ -84,9 +86,9 @@ function useCollectAction() {
     markCollected()
     const r = res.data
     toast.success(
-      t("usage.collect.done", {
-        rows: r?.rows_inserted ?? 0,
-        files: r?.files_scanned ?? 0,
+      t(multiDevice ? "usage.collect.doneSync" : "usage.collect.done", {
+        rows: r?.collected.rows_inserted ?? 0,
+        files: r?.collected.files_scanned ?? 0,
       }),
     )
   }
@@ -294,8 +296,8 @@ function SourceChip({
 /** 纵向卡片版 — 看板右栏。标题行带主题切换 + 折叠。 */
 export function ControlCard() {
   const { t } = useTranslation()
-  const { onCollect, collecting } = useCollectAction()
   const multiDevice = useDeviceOptions().length > 0
+  const { onCollect, collecting } = useCollectAction(multiDevice)
   const { data: sources = [] } = useDistinctSourcesQuery()
   const hasSources = sources.length > 0
   const [collapsed, setCollapsed] = useState<boolean>(() => {
@@ -351,8 +353,12 @@ export function ControlCard() {
           <Button className="w-full" disabled={collecting} onClick={onCollect}>
             <Activity />
             {collecting
-              ? t("usage.collect.collecting")
-              : t("usage.collect.collect")}
+              ? t(
+                  multiDevice
+                    ? "usage.collect.syncing"
+                    : "usage.collect.collecting",
+                )
+              : t(multiDevice ? "usage.collect.sync" : "usage.collect.collect")}
           </Button>
           <div className="mt-3">
             <DataFreshness />
@@ -366,7 +372,8 @@ export function ControlCard() {
 /** 横向条版 — 日志页顶部。 */
 export function ControlBar() {
   const { t } = useTranslation()
-  const { onCollect, collecting } = useCollectAction()
+  const multiDevice = useDeviceOptions().length > 0
+  const { onCollect, collecting } = useCollectAction(multiDevice)
   const { data: sources = [] } = useDistinctSourcesQuery()
   const hasSources = sources.length > 0
   return (
@@ -380,8 +387,12 @@ export function ControlBar() {
       <Button size="sm" disabled={collecting} onClick={onCollect}>
         <Activity />
         {collecting
-          ? t("usage.collect.collecting")
-          : t("usage.collect.collect")}
+          ? t(
+              multiDevice
+                ? "usage.collect.syncing"
+                : "usage.collect.collecting",
+            )
+          : t(multiDevice ? "usage.collect.sync" : "usage.collect.collect")}
       </Button>
     </div>
   )

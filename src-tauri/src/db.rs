@@ -108,9 +108,9 @@ impl Store {
             .map_err(AppError::from)
     }
 
-    /// Reload pricing from a JSON doc on disk (the cloud `pricing.json`) into
-    /// the Store. Shared by the manual reload command and the post-pull sync
-    /// step so both run the same parse → upsert loop. Returns the entry count.
+    /// Reload pricing from a JSON doc on disk (the local `pricing.json`) into
+    /// the Store — the manual reload command's parse → upsert loop. Returns
+    /// the entry count.
     pub fn reload_pricing_from_path(&self, path: &std::path::Path) -> AppResult<u32> {
         let text = std::fs::read_to_string(path)?;
         let entries = crate::pricing::parse_pricing_doc(&text)?;

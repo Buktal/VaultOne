@@ -307,7 +307,7 @@ pub fn seed_book() -> PricingBook {
     PricingBook::from_iter(builtin_seed())
 }
 
-/// Parse a JSON pricing document (the cloud `pricing.json` shape) into entries.
+/// Parse a JSON pricing document (the local `pricing.json` shape) into entries.
 /// Accepts either an array of `PricingEntry` or `{ "models": [...] }`.
 pub fn parse_pricing_doc(json: &str) -> AppResult<Vec<ModelPricing>> {
     #[derive(serde::Deserialize)]
@@ -324,7 +324,7 @@ pub fn parse_pricing_doc(json: &str) -> AppResult<Vec<ModelPricing>> {
     entries.iter().map(ModelPricing::from_entry).collect()
 }
 
-/// Serialize pricing entries back to the cloud doc shape (`{ "models": [...] }`).
+/// Serialize pricing entries back to the pricing.json shape (`{ "models": [...] }`).
 pub fn write_pricing_doc(entries: &[ModelPricing]) -> AppResult<String> {
     let dto: Vec<PricingEntry> = entries.iter().map(ModelPricing::to_entry).collect();
     Ok(serde_json::to_string_pretty(
