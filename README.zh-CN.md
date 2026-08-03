@@ -132,9 +132,10 @@ AI CLI 每次运行都会在磁盘上写下会话日志。VaultOne 把这些日�
 
 ## 从源码构建
 
-**前置条件：**[Node.js](https://nodejs.org/) LTS + [Yarn](https://yarnpkg.com/)，以及 [Rust](https://www.rust-lang.org/) stable（按你的系统参考 [Tauri 前置条件](https://tauri.app/start/prerequisites/)）。
+**前置条件：**[Node.js](https://nodejs.org/) 20+ LTS + [Yarn 4](https://yarnpkg.com/)（via [Corepack](https://nodejs.org/api/corepack.html)），以及 [Rust](https://www.rust-lang.org/) stable（按你的系统参考 [Tauri 前置条件](https://tauri.app/start/prerequisites/)）。
 
 ```bash
+corepack enable  # 激活 package.json 中锁定的 Yarn 版本
 yarn install     # 安装依赖
 yarn dev         # 以开发模式运行桌面应用
 yarn dist        # 构建发布版二进制

@@ -132,9 +132,10 @@ AI CLI は実行のたびにセッションログをディスクに書き出し�
 
 ## ソースからビルド
 
-**前提条件:** [Node.js](https://nodejs.org/) LTS + [Yarn](https://yarnpkg.com/)、および [Rust](https://www.rust-lang.org/) stable（OS ごとの [Tauri の前提条件](https://tauri.app/start/prerequisites/)を参照）。
+**前提条件:** [Node.js](https://nodejs.org/) 20+ LTS + [Yarn 4](https://yarnpkg.com/)（[Corepack](https://nodejs.org/api/corepack.html) 経由）、および [Rust](https://www.rust-lang.org/) stable（OS ごとの [Tauri の前提条件](https://tauri.app/start/prerequisites/)を参照）。
 
 ```bash
+corepack enable  # package.json で固定された Yarn を有効化
 yarn install     # 依存をインストール
 yarn dev         # デスクトップアプリを開発モードで実行
 yarn dist        # リリース版バイナリをビルド

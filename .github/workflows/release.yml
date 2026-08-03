@@ -32,6 +32,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
+          corepack: true
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable

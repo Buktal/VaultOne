@@ -132,9 +132,10 @@ A [Tauri 2](https://tauri.app/) app: a Rust backend handles collection, the loca
 
 ## Build from source
 
-**Prerequisites:** [Node.js](https://nodejs.org/) LTS + [Yarn](https://yarnpkg.com/), and [Rust](https://www.rust-lang.org/) stable with the [Tauri prerequisites](https://tauri.app/start/prerequisites/) for your OS.
+**Prerequisites:** [Node.js](https://nodejs.org/) 20+ LTS + [Yarn 4](https://yarnpkg.com/) (via [Corepack](https://nodejs.org/api/corepack.html)), and [Rust](https://www.rust-lang.org/) stable with the [Tauri prerequisites](https://tauri.app/start/prerequisites/) for your OS.
 
 ```bash
+corepack enable  # activate the Yarn version pinned in package.json
 yarn install     # install dependencies
 yarn dev         # run the desktop app in development
 yarn dist        # build a release binary

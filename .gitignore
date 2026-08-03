@@ -34,7 +34,14 @@ BLUEPRINT.md
 CLAUDE.md
 CONTEXT.md
 skills-lock.json
-yarn.lock
+
+# Yarn 4 (Berry) — node-modules linker, no zero-installs
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
 
 # MCP servers
 .mcp.json
