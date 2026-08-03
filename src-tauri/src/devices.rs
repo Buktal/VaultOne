@@ -66,9 +66,24 @@ pub fn ensure_own_device_artifact(
     Ok(true)
 }
 
-/// Read every device's identity artifact under `config/devices/`. Skips entries
-/// whose stem isn't a valid 12-hex device id and files that fail to parse, so a
-/// stray/broken file never blocks the rest from loading.
+/// Parse one device-name artifact from `path`, requiring the id read off its
+/// filename to be a valid device id. Best-effort: a stray or broken file yields
+/// `None` and is skipped, so one bad entry never blocks the rest from loading.
+/// The new-flat and legacy layouts differ only in how that id is taken from the
+/// filename; this holds the shared validate-then-read-then-parse that both used
+/// to inline.
+fn parse_device_artifact(path: &std::path::Path, id: &str) -> Option<DeviceArtifact> {
+    if !crate::config::is_valid_device_id(id) {
+        return None;
+    }
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str::<DeviceArtifact>(&text).ok()
+}
+
+/// Read every device's identity artifact. Reads the new flat layout
+/// (`config/devices_<id>.json`) and, as a read-only fallback, the legacy
+/// `config/devices/<id>.json` layout; the flat layout wins on duplicates.
+/// Stray or broken files are skipped via `parse_device_artifact`.
 pub fn read_all_device_artifacts(paths: &Paths) -> Vec<DeviceArtifact> {
     let mut out: Vec<DeviceArtifact> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -87,14 +102,9 @@ pub fn read_all_device_artifacts(paths: &Paths) -> Vec<DeviceArtifact> {
             else {
                 continue;
             };
-            if !crate::config::is_valid_device_id(id) {
-                continue;
-            }
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                if let Ok(a) = serde_json::from_str::<DeviceArtifact>(&text) {
-                    if seen.insert(a.device_id.clone()) {
-                        out.push(a);
-                    }
+            if let Some(a) = parse_device_artifact(&path, id) {
+                if seen.insert(a.device_id.clone()) {
+                    out.push(a);
                 }
             }
         }
@@ -107,14 +117,9 @@ pub fn read_all_device_artifacts(paths: &Paths) -> Vec<DeviceArtifact> {
             let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
                 continue;
             };
-            if !crate::config::is_valid_device_id(stem) || seen.contains(stem) {
-                continue;
-            }
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                if let Ok(a) = serde_json::from_str::<DeviceArtifact>(&text) {
-                    if seen.insert(a.device_id.clone()) {
-                        out.push(a);
-                    }
+            if let Some(a) = parse_device_artifact(&path, stem) {
+                if seen.insert(a.device_id.clone()) {
+                    out.push(a);
                 }
             }
         }
