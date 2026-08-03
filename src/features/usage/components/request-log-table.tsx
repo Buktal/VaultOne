@@ -8,7 +8,6 @@
 import { FileText } from "lucide-react"
 import { type ReactNode, useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
-import { toast } from "sonner"
 
 import {
   useCollectMutation,
@@ -27,6 +26,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { stopReasonTone } from "@/features/usage/derive"
+import { useMutateWithToast } from "@/hooks/use-toast-mutation"
 import { formatCost, formatInt, formatTime } from "@/lib/format"
 import { tokenTotal } from "@/lib/usage"
 import { cn } from "@/lib/utils"
@@ -72,21 +72,21 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
   })
   const { data: total = 0 } = useCountQuery(filter)
   const [collect, { isLoading: collecting }] = useCollectMutation()
+  const runWithToast = useMutateWithToast()
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const page = Math.floor(offset / PAGE_SIZE) + 1
 
   async function onCollect() {
-    const res = await collect()
-    if ("error" in res) {
-      toast.error(t("usage.collect.failed"))
-      return
-    }
-    toast.success(
-      t("usage.collect.doneShort", {
-        count: res.data?.collected.rows_inserted ?? 0,
-      }),
-    )
+    await runWithToast(collect, undefined, {
+      success: {
+        message: (data) =>
+          t("usage.collect.doneShort", {
+            count: data.collected.rows_inserted ?? 0,
+          }),
+      },
+      failed: { key: "usage.collect.failed" },
+    })
   }
 
   return (

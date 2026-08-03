@@ -17,7 +17,6 @@
 
 import { Check } from "lucide-react"
 import { useTranslation } from "react-i18next"
-import { toast } from "sonner"
 import { UpdateControl } from "@/app/shell/update-card"
 import {
   useAppInfoQuery,
@@ -38,6 +37,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { useMutateWithToast } from "@/hooks/use-toast-mutation"
 import { LANGUAGES } from "@/i18n/languages"
 import { describeError } from "@/lib/error"
 import { cn } from "@/lib/utils"
@@ -109,6 +109,7 @@ export function GeneralCard() {
   const [setPushInterval, { isLoading: savingPush }] =
     useSetPushIntervalMutation()
   const [setSkin, { isLoading: savingSkin }] = useSetSkinMutation()
+  const runWithToast = useMutateWithToast()
 
   return (
     <div className="flex flex-col">
@@ -137,12 +138,9 @@ export function GeneralCard() {
                 data-skin={s.brand ? undefined : s.value}
                 disabled={savingSkin}
                 onClick={async () => {
-                  const r = await setSkin(s.value)
-                  if ("error" in r)
-                    toast.error(t("settings.toast.saveFailed"), {
-                      description:
-                        describeError(r.error, t) || t("common.unknownReason"),
-                    })
+                  await runWithToast(setSkin, s.value, {
+                    failed: { key: "settings.toast.saveFailed" },
+                  })
                 }}
                 className={cn(
                   "flex h-8 w-8 items-center justify-center rounded-md border-2 transition",
@@ -172,12 +170,9 @@ export function GeneralCard() {
         <Select
           value={prefs?.language}
           onValueChange={async (v) => {
-            const r = await setLanguage(v as Language)
-            if ("error" in r)
-              toast.error(t("settings.toast.saveFailed"), {
-                description:
-                  describeError(r.error, t) || t("common.unknownReason"),
-              })
+            await runWithToast(setLanguage, v as Language, {
+              failed: { key: "settings.toast.saveFailed" },
+            })
           }}
         >
           <SelectTrigger className="w-36" disabled={savingLang}>
@@ -204,12 +199,9 @@ export function GeneralCard() {
         <Select
           value={prefs ? String(prefs.collect_interval_secs) : undefined}
           onValueChange={async (v) => {
-            const r = await setCollectInterval(Number(v))
-            if ("error" in r)
-              toast.error(t("settings.toast.saveFailed"), {
-                description:
-                  describeError(r.error, t) || t("common.unknownReason"),
-              })
+            await runWithToast(setCollectInterval, Number(v), {
+              failed: { key: "settings.toast.saveFailed" },
+            })
           }}
         >
           <SelectTrigger className="w-36" disabled={savingCollect}>
@@ -235,12 +227,9 @@ export function GeneralCard() {
           <Select
             value={prefs ? String(prefs.push_interval_secs) : undefined}
             onValueChange={async (v) => {
-              const r = await setPushInterval(Number(v))
-              if ("error" in r)
-                toast.error(t("settings.toast.saveFailed"), {
-                  description:
-                    describeError(r.error, t) || t("common.unknownReason"),
-                })
+              await runWithToast(setPushInterval, Number(v), {
+                failed: { key: "settings.toast.saveFailed" },
+              })
             }}
           >
             <SelectTrigger className="w-36" disabled={savingPush}>
@@ -275,12 +264,9 @@ export function GeneralCard() {
               variant={prefs?.close_behavior === value ? "default" : "outline"}
               disabled={savingClose}
               onClick={async () => {
-                const r = await setCloseBehavior(value)
-                if ("error" in r)
-                  toast.error(t("settings.toast.saveFailed"), {
-                    description:
-                      describeError(r.error, t) || t("common.unknownReason"),
-                  })
+                await runWithToast(setCloseBehavior, value, {
+                  failed: { key: "settings.toast.saveFailed" },
+                })
               }}
             >
               {t(key)}
@@ -303,12 +289,9 @@ export function GeneralCard() {
               }
               disabled={savingExpand}
               onClick={async () => {
-                const r = await setLightweightExpand(value)
-                if ("error" in r)
-                  toast.error(t("settings.toast.saveFailed"), {
-                    description:
-                      describeError(r.error, t) || t("common.unknownReason"),
-                  })
+                await runWithToast(setLightweightExpand, value, {
+                  failed: { key: "settings.toast.saveFailed" },
+                })
               }}
             >
               {t(key)}

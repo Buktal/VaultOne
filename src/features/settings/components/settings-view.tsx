@@ -19,7 +19,6 @@ import {
 } from "lucide-react"
 import { useState } from "react"
 import { useTranslation } from "react-i18next"
-import { toast } from "sonner"
 import {
   useAppInfoQuery,
   useClearSyncRepoMutation,
@@ -36,7 +35,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { DeviceList } from "@/features/settings/components/device-list"
 import { GeneralCard } from "@/features/settings/components/general-card"
-import { describeError } from "@/lib/error"
+import { useMutateWithToast } from "@/hooks/use-toast-mutation"
 import type { VerifyReport } from "@/types/generated/bindings"
 
 export function SettingsView() {
@@ -48,6 +47,7 @@ export function SettingsView() {
   const [rebill, { isLoading: rebilling }] = useRebillMutation()
   const [syncNow, { isLoading: syncing }] = useSyncMutation()
   const [verify, { isLoading: verifying }] = useVerifySyncRepoMutation()
+  const runWithToast = useMutateWithToast()
 
   const [displayName, setDisplayName] = useState("")
   const [repoUrl, setRepoUrl] = useState("")
@@ -55,7 +55,6 @@ export function SettingsView() {
   const [verifyResult, setVerifyResult] = useState<VerifyReport | null>(null)
 
   const synced = info?.mode === "synced"
-  const unknown = t("common.unknownReason")
 
   /** 测试连接：未绑定时用输入框里的值校验；已绑定时传 null，由后端读 config
    *  里的原文令牌复查（脱敏 token 拿不到原文）。改输入框会先清掉旧结果。 */
@@ -123,12 +122,11 @@ export function SettingsView() {
               size="sm"
               disabled={naming || !displayName.trim()}
               onClick={async () => {
-                const r = await setName(displayName.trim())
-                if ("error" in r) toast.error(t("settings.toast.renameFailed"))
-                else {
-                  toast.success(t("settings.toast.displayNameUpdated"))
-                  setDisplayName("")
-                }
+                const ok = await runWithToast(setName, displayName.trim(), {
+                  success: { key: "settings.toast.displayNameUpdated" },
+                  failed: { key: "settings.toast.renameFailed" },
+                })
+                if (ok) setDisplayName("")
               }}
             >
               {t("common.save")}
@@ -206,16 +204,15 @@ export function SettingsView() {
             size="sm"
             disabled={binding || synced || !repoUrl.trim() || !token.trim()}
             onClick={async () => {
-              const r = await setRepo({
-                repoUrl: repoUrl.trim(),
-                githubToken: token.trim(),
-              })
-              if ("error" in r)
-                toast.error(t("settings.toast.configFailed"), {
-                  description: describeError(r.error, t) || unknown,
-                })
-              else {
-                toast.success(t("settings.toast.syncEnabled"))
+              const ok = await runWithToast(
+                setRepo,
+                { repoUrl: repoUrl.trim(), githubToken: token.trim() },
+                {
+                  success: { key: "settings.toast.syncEnabled" },
+                  failed: { key: "settings.toast.configFailed" },
+                },
+              )
+              if (ok) {
                 setRepoUrl("")
                 setToken("")
               }
@@ -229,12 +226,10 @@ export function SettingsView() {
             size="sm"
             disabled={clearing || !synced}
             onClick={async () => {
-              const r = await clearRepo()
-              if ("error" in r)
-                toast.error(t("settings.toast.unbindFailed"), {
-                  description: describeError(r.error, t) || unknown,
-                })
-              else toast.success(t("settings.toast.unbound"))
+              await runWithToast(clearRepo, undefined, {
+                success: { key: "settings.toast.unbound" },
+                failed: { key: "settings.toast.unbindFailed" },
+              })
             }}
           >
             <Unplug className="size-4" />
@@ -246,18 +241,16 @@ export function SettingsView() {
               size="sm"
               disabled={syncing}
               onClick={async () => {
-                const r = await syncNow()
-                if ("error" in r)
-                  toast.error(t("settings.toast.syncFailed"), {
-                    description: describeError(r.error, t) || unknown,
-                  })
-                else
-                  toast.success(
-                    t("settings.toast.synced", {
-                      count: r.data?.imported ?? 0,
-                    }) +
-                      (r.data?.pushed ? t("settings.toast.syncedPushed") : ""),
-                  )
+                await runWithToast(syncNow, undefined, {
+                  success: {
+                    message: (data) =>
+                      t("settings.toast.synced", {
+                        count: data.imported ?? 0,
+                      }) +
+                      (data.pushed ? t("settings.toast.syncedPushed") : ""),
+                  },
+                  failed: { key: "settings.toast.syncFailed" },
+                })
               }}
             >
               <RefreshCw className="size-4" />
@@ -283,12 +276,13 @@ export function SettingsView() {
             size="sm"
             disabled={rebilling}
             onClick={async () => {
-              const r = await rebill()
-              if ("error" in r) toast.error(t("settings.toast.rebillFailed"))
-              else
-                toast.success(
-                  t("settings.toast.rebilled", { count: r.data ?? 0 }),
-                )
+              await runWithToast(rebill, undefined, {
+                success: {
+                  message: (count) =>
+                    t("settings.toast.rebilled", { count: count ?? 0 }),
+                },
+                failed: { key: "settings.toast.rebillFailed" },
+              })
             }}
           >
             <Calculator className="size-4" />

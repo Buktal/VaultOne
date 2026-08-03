@@ -8,7 +8,6 @@
 import { Trash2 } from "lucide-react"
 import { useState } from "react"
 import { useTranslation } from "react-i18next"
-import { toast } from "sonner"
 
 import {
   useDevicesQuery,
@@ -32,6 +31,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { useMutateWithToast } from "@/hooks/use-toast-mutation"
 import { cn } from "@/lib/utils"
 import type { LibraryForgetAction } from "@/types/generated/bindings"
 
@@ -59,6 +59,7 @@ export function DeviceList() {
   const { data: devices = [] } = useDevicesQuery()
   const [setName, { isLoading }] = useSetDeviceDisplayNameMutation()
   const [forget, { isLoading: forgetting }] = useForgetDeviceMutation()
+  const runWithToast = useMutateWithToast()
   const [editing, setEditing] = useState<string | null>(null)
   const [draft, setDraft] = useState("")
   const [removing, setRemoving] = useState<string | null>(null)
@@ -86,13 +87,15 @@ export function DeviceList() {
     const id = removing
     const name = targetName
     const action = libAction
-    const r = await forget({ deviceId: id, libraryAction: action })
-    if ("error" in r) {
-      toast.error(t("devices.removeFailed"))
-    } else {
-      toast.success(t("devices.removed", { name }))
-      setRemoving(null)
-    }
+    const ok = await runWithToast(
+      forget,
+      { deviceId: id, libraryAction: action },
+      {
+        success: { key: "devices.removed", vars: { name } },
+        failed: { key: "devices.removeFailed" },
+      },
+    )
+    if (ok) setRemoving(null)
   }
 
   return (
@@ -128,14 +131,18 @@ export function DeviceList() {
                   size="sm"
                   disabled={isLoading || !draft.trim()}
                   onClick={async () => {
-                    const r = await setName({
-                      deviceId: d.device_id,
-                      displayName: draft.trim(),
-                    })
-                    if ("error" in r)
-                      toast.error(t("settings.toast.renameFailed"))
-                    else {
-                      toast.success(t("settings.toast.displayNameUpdated"))
+                    const ok = await runWithToast(
+                      setName,
+                      {
+                        deviceId: d.device_id,
+                        displayName: draft.trim(),
+                      },
+                      {
+                        success: { key: "settings.toast.displayNameUpdated" },
+                        failed: { key: "settings.toast.renameFailed" },
+                      },
+                    )
+                    if (ok) {
                       setEditing(null)
                       setDraft("")
                     }

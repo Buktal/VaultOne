@@ -15,7 +15,6 @@ import {
 } from "lucide-react"
 import { useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
-import { toast } from "sonner"
 import {
   useDeletePricingMutation,
   useFetchLitellmMutation,
@@ -45,6 +44,7 @@ import {
   type PricingSortKey,
   paginate,
 } from "@/features/pricing/derive"
+import { useMutateWithToast } from "@/hooks/use-toast-mutation"
 
 import type { PricingEntry } from "@/types/generated/bindings"
 import { EntryEditorDialog, emptyEntry } from "./entry-editor-dialog"
@@ -60,6 +60,7 @@ export function PricingView() {
   const [fetchLitellm, { isLoading: fetching }] = useFetchLitellmMutation()
   const [reloadFile, { isLoading: reloading }] = useReloadPricingMutation()
   const [saveFile, { isLoading: savingFile }] = useSavePricingToFileMutation()
+  const runWithToast = useMutateWithToast()
 
   const [search, setSearch] = useState("")
   const [sortKey, setSortKey] = useState<PricingSortKey | null>(null)
@@ -96,19 +97,26 @@ export function PricingView() {
   }
 
   async function onFetchLitellm() {
-    const res = await fetchLitellm()
-    if ("error" in res) toast.error(t("pricing.toast.fetchFailed"))
-    else toast.success(t("pricing.toast.fetched", { count: res.data ?? 0 }))
+    await runWithToast(fetchLitellm, undefined, {
+      success: {
+        message: (count) => t("pricing.toast.fetched", { count: count ?? 0 }),
+      },
+      failed: { key: "pricing.toast.fetchFailed" },
+    })
   }
   async function onReloadFile() {
-    const res = await reloadFile()
-    if ("error" in res) toast.error(t("pricing.toast.reloadFailed"))
-    else toast.success(t("pricing.toast.reloaded", { count: res.data ?? 0 }))
+    await runWithToast(reloadFile, undefined, {
+      success: {
+        message: (count) => t("pricing.toast.reloaded", { count: count ?? 0 }),
+      },
+      failed: { key: "pricing.toast.reloadFailed" },
+    })
   }
   async function onSaveFile() {
-    const res = await saveFile()
-    if ("error" in res) toast.error(t("pricing.toast.saveFileFailed"))
-    else toast.success(t("pricing.toast.savedFile"))
+    await runWithToast(saveFile, undefined, {
+      success: { key: "pricing.toast.savedFile" },
+      failed: { key: "pricing.toast.saveFileFailed" },
+    })
   }
 
   const sortProps = { sortKey, sortDir, onSort }

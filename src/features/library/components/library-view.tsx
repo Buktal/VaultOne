@@ -26,7 +26,6 @@ import {
 } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
-import { toast } from "sonner"
 import {
   useDeleteFromLibraryMutation,
   useDevicesQuery,
@@ -58,6 +57,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { useMutateWithToast } from "@/hooks/use-toast-mutation"
 import { cn } from "@/lib/utils"
 import type { LibraryEntry } from "@/types/generated/bindings"
 import { PreviewSheet } from "./preview-sheet"
@@ -111,6 +111,7 @@ export function LibraryView() {
   const [exportMut] = useExportFromLibraryMutation()
   const [deleteMut] = useDeleteFromLibraryMutation()
   const [renameMut] = useRenameInLibraryMutation()
+  const runWithToast = useMutateWithToast()
 
   // Webview-level file drag-drop → collect dropped paths into the pending
   // upload dialog. (HTML5 drop events don't expose local file paths under
@@ -210,10 +211,14 @@ export function LibraryView() {
     if (!dir) return
     setBusyRelPath(entry.rel_path)
     try {
-      await exportMut({ relPath: entry.rel_path, targetDir: dir }).unwrap()
-      toast.success(t("library.toast.exported"))
-    } catch {
-      toast.error(t("library.toast.failed"))
+      await runWithToast(
+        exportMut,
+        { relPath: entry.rel_path, targetDir: dir },
+        {
+          success: { key: "library.toast.exported" },
+          failed: { key: "library.toast.failed" },
+        },
+      )
     } finally {
       setBusyRelPath(null)
     }
@@ -222,10 +227,10 @@ export function LibraryView() {
   async function onDelete(entry: LibraryEntry) {
     setBusyRelPath(entry.rel_path)
     try {
-      await deleteMut(entry.rel_path).unwrap()
-      toast.success(t("library.toast.deleted"))
-    } catch {
-      toast.error(t("library.toast.failed"))
+      await runWithToast(deleteMut, entry.rel_path, {
+        success: { key: "library.toast.deleted" },
+        failed: { key: "library.toast.failed" },
+      })
     } finally {
       setBusyRelPath(null)
     }
@@ -243,11 +248,15 @@ export function LibraryView() {
     }
     setBusyRelPath(entry.rel_path)
     try {
-      await renameMut({ relPath: entry.rel_path, newName: name }).unwrap()
-      toast.success(t("library.toast.renamed"))
-      setRenaming(null)
-    } catch {
-      toast.error(t("library.toast.failed"))
+      const ok = await runWithToast(
+        renameMut,
+        { relPath: entry.rel_path, newName: name },
+        {
+          success: { key: "library.toast.renamed" },
+          failed: { key: "library.toast.failed" },
+        },
+      )
+      if (ok) setRenaming(null)
     } finally {
       setBusyRelPath(null)
     }

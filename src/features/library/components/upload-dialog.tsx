@@ -14,7 +14,6 @@ import {
 } from "lucide-react"
 import { useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
-import { toast } from "sonner"
 import {
   useAppInfoQuery,
   useScanLibraryQuery,
@@ -29,6 +28,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { useMutateWithToast } from "@/hooks/use-toast-mutation"
 import type { UploadItem } from "@/types/generated/bindings"
 
 type Row = { sourcePath: string; name: string }
@@ -60,6 +60,7 @@ export function UploadDialog({
 }) {
   const { t } = useTranslation()
   const [upload, { isLoading: busy }] = useUploadToLibraryMutation()
+  const runWithToast = useMutateWithToast()
   const { data: info } = useAppInfoQuery()
   const selfId = info?.device_id ?? ""
   const { data: existing = [] } = useScanLibraryQuery({
@@ -81,13 +82,18 @@ export function UploadDialog({
       source_path: r.sourcePath,
       target_name: r.name,
     }))
-    try {
-      await upload({ items, subpath }).unwrap()
-      toast.success(t("library.toast.uploaded", { count: items.length }))
-      onClose()
-    } catch {
-      toast.error(t("library.toast.failed"))
-    }
+    const ok = await runWithToast(
+      upload,
+      { items, subpath },
+      {
+        success: {
+          key: "library.toast.uploaded",
+          vars: { count: items.length },
+        },
+        failed: { key: "library.toast.failed" },
+      },
+    )
+    if (ok) onClose()
   }
 
   return (

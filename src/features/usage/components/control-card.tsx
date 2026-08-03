@@ -17,7 +17,6 @@
 import { Activity, CalendarRange, ChevronDown } from "lucide-react"
 import { type ReactNode, useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
-import { toast } from "sonner"
 import { DataFreshness } from "@/app/shell/data-freshness"
 import {
   useCollectMutation,
@@ -51,6 +50,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { useFreshness } from "@/hooks/use-freshness"
+import { useMutateWithToast } from "@/hooks/use-toast-mutation"
 import { cn } from "@/lib/utils"
 import { sourceLabel } from "../source-labels"
 import { useDeviceOptions } from "../use-device-options"
@@ -77,20 +77,19 @@ function useCollectAction(multiDevice: boolean) {
   const { t } = useTranslation()
   const { markCollected } = useFreshness()
   const [collect, { isLoading: collecting }] = useCollectMutation()
+  const runWithToast = useMutateWithToast()
   async function onCollect() {
-    const res = await collect()
-    if ("error" in res) {
-      toast.error(t("usage.collect.failed"))
-      return
-    }
-    markCollected()
-    const r = res.data
-    toast.success(
-      t(multiDevice ? "usage.collect.doneSync" : "usage.collect.done", {
-        rows: r?.collected.rows_inserted ?? 0,
-        files: r?.collected.files_scanned ?? 0,
-      }),
-    )
+    const ok = await runWithToast(collect, undefined, {
+      success: {
+        message: (data) =>
+          t(multiDevice ? "usage.collect.doneSync" : "usage.collect.done", {
+            rows: data.collected.rows_inserted ?? 0,
+            files: data.collected.files_scanned ?? 0,
+          }),
+      },
+      failed: { key: "usage.collect.failed" },
+    })
+    if (ok) markCollected()
   }
   return { onCollect, collecting }
 }

@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { useMutateWithToast } from "@/hooks/use-toast-mutation"
 
 import type { PricingEntry } from "@/types/generated/bindings"
 
@@ -47,6 +48,7 @@ export function EntryEditorDialog({
   const { t } = useTranslation()
   const [draft, setDraft] = useState<PricingEntry>(entry ?? emptyEntry())
   const [save, { isLoading: saving }] = useSavePricingMutation()
+  const runWithToast = useMutateWithToast()
 
   useEffect(() => {
     if (open) setDraft(entry ?? emptyEntry())
@@ -60,12 +62,18 @@ export function EntryEditorDialog({
       toast.error(t("pricing.toast.modelKeyRequired"))
       return
     }
-    const res = await save({ entry: draft, isBuiltin: draft.is_builtin })
-    if ("error" in res) toast.error(t("settings.toast.saveFailed"))
-    else {
-      toast.success(t("pricing.toast.saved", { key: draft.model_key }))
-      onSaved()
-    }
+    const ok = await runWithToast(
+      save,
+      { entry: draft, isBuiltin: draft.is_builtin },
+      {
+        success: {
+          key: "pricing.toast.saved",
+          vars: { key: draft.model_key },
+        },
+        failed: { key: "settings.toast.saveFailed" },
+      },
+    )
+    if (ok) onSaved()
   }
 
   return (
