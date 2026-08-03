@@ -230,6 +230,31 @@ impl Drop for DirSnapshot {
     }
 }
 
+/// Snapshot this device's own `data/` before a destructive git op (force
+/// checkout / pull's fast-forward checkout), restore it after on success. The
+/// local `data/<deviceId>/` may be newer than the remote's copy — rows appended
+/// locally while unbound, or collected between pushes (dirty worktree) — and a
+/// force checkout would silently overwrite it, dropping those rows so they never
+/// reach the remote. On op failure the snapshot is NOT restored, matching the
+/// prior inline `op()?; restore` shape at both call sites: the worktree is left
+/// as the failed op left it, and the snapshot's temp dir is cleaned by `Drop`.
+/// Single point of truth for the take/restore invariant.
+fn with_own_data_protected<R>(
+    own_dir: Option<&Path>,
+    op: impl FnOnce() -> AppResult<R>,
+) -> AppResult<R> {
+    let snap = own_dir
+        .filter(|p| p.exists())
+        .and_then(|p| DirSnapshot::take(p).ok());
+    let r = op();
+    if r.is_ok() {
+        if let (Some(s), Some(dir)) = (snap, own_dir.filter(|p| p.exists())) {
+            let _ = s.restore(dir);
+        }
+    }
+    r
+}
+
 /// Bootstrap a sync repo inside an already-populated `local` — the Standalone →
 /// Synced switch, or the unbind→re-bind case. `clone` refuses a non-empty target,
 /// so init in place, fetch the remote, and force-checkout the remote tip. Because
@@ -253,36 +278,30 @@ fn init_with_remote(
             None,
         )?;
     }
-    // Snapshot this device's data/ before any checkout — a force checkout would
-    // overwrite it with the remote's (possibly staler) copy, losing rows appended
-    // locally while unbound. Restored after checkout so this device's own JSONL —
-    // and thus what we push — is always the local truth. Only when we know our
-    // device id (production); tests pass None.
-    let own = device_id.map(|d| local.join("data").join(d));
-    let snap = own
-        .as_ref()
-        .filter(|p| p.exists())
-        .and_then(|p| DirSnapshot::take(p).ok());
-
     // Point HEAD at the remote's default branch and force-checkout its tree. If
     // the remote is unborn (empty repo) there is nothing to check out — pin HEAD
     // at our `main` (unborn) so the first commit+push creates `main`, not
-    // libgit2's hardcoded `master`.
+    // libgit2's hardcoded `master`. This device's `data/` is snapshotted inside
+    // `with_own_data_protected` immediately before the checkout (only when our
+    // device id is known — production; tests pass None) and restored after, so a
+    // force checkout can't drop locally-collected rows.
     if let Some((branch, tip)) = pick_origin_branch(&repo)? {
-        let commit = repo.find_commit(tip)?;
-        repo.branch(&branch, &commit, true)?;
-        repo.set_head(&format!("refs/heads/{branch}"))?;
-        let mut co = CheckoutBuilder::new();
-        // Force: the worktree may already hold files the remote also carries
-        // (the unbind→re-bind case — `.git` was dropped but `data/` remains, so
-        // those files are now untracked and a SAFE checkout rejects them as
-        // conflicts). This device's data/ is restored from the snapshot below,
-        // so force is safe; other devices' data + README land at the remote tip.
-        co.force();
-        repo.checkout_head(Some(&mut co))?;
-        if let (Some(snap), Some(own)) = (snap, own.as_ref()) {
-            let _ = snap.restore(own);
-        }
+        let own = device_id.map(|d| local.join("data").join(d));
+        with_own_data_protected(own.as_deref(), || {
+            let commit = repo.find_commit(tip)?;
+            repo.branch(&branch, &commit, true)?;
+            repo.set_head(&format!("refs/heads/{branch}"))?;
+            let mut co = CheckoutBuilder::new();
+            // Force: the worktree may already hold files the remote also carries
+            // (the unbind→re-bind case — `.git` was dropped but `data/` remains,
+            // so those files are now untracked and a SAFE checkout rejects them
+            // as conflicts). This device's data/ is restored from the snapshot
+            // taken inside `with_own_data_protected`, so force is safe; other
+            // devices' data + README land at the remote tip.
+            co.force();
+            repo.checkout_head(Some(&mut co))?;
+            Ok(())
+        })?;
     } else {
         // Empty remote: libgit2's init default (`master`) would otherwise win.
         // Pin to our `main` as an unborn HEAD; the first commit lands on it.
@@ -673,22 +692,18 @@ pub fn pull_and_import(
 ) -> AppResult<u32> {
     let (url, token) = require_synced(cfg)?;
     let repo = open_or_clone_for_device(&url, &paths.repo, &token, &cfg.device_id)?;
-    // Protect this device's own data/ from pull's force checkout. The collector
-    // appends new rows to data/<deviceId>/*.jsonl between pushes (dirty worktree);
-    // pull's fast-forward force-checkout reverts those files to the last-committed
-    // copy, silently dropping the uncommitted append — those rows never reach the
-    // remote, so peers never see them. Snapshot before pull, restore after, so the
-    // local truth (including not-yet-pushed rows) survives the checkout.
+    // Protect this device's own data/ from pull's fast-forward force-checkout:
+    // the collector appends rows to data/<deviceId>/*.jsonl between pushes (dirty
+    // worktree), and pull's checkout would revert those files to the
+    // last-committed copy, silently dropping the uncommitted append — those rows
+    // never reach the remote, so peers never see them. `with_own_data_protected`
+    // snapshots before pull and restores after, so the local truth (including
+    // not-yet-pushed rows) survives. Restored here, before `read_all_artifacts`,
+    // matching the original ordering.
     let own_dir = paths.device_data_dir(&cfg.device_id);
-    let snap = if own_dir.exists() {
-        DirSnapshot::take(&own_dir).ok()
-    } else {
-        None
-    };
-    pull(&repo, &token, &cfg.display_name, &author_email(cfg))?;
-    if let Some(s) = snap {
-        let _ = s.restore(&own_dir);
-    }
+    with_own_data_protected(Some(&own_dir), || {
+        pull(&repo, &token, &cfg.display_name, &author_email(cfg))
+    })?;
     let records = crate::ingest::read_all_artifacts(paths)?;
     let inserted = store.ingest(&records)?;
     // Per-turn durations (separate grain, uuid-deduped).
