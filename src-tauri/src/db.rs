@@ -9,6 +9,8 @@
 //! them read back as REAL for display (f64 is display-only — JS never recomputes
 //! cost).
 
+mod schema;
+
 use std::sync::Mutex;
 
 use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection, OptionalExtension};
@@ -21,9 +23,6 @@ use crate::model::{
 use crate::pricing::{ModelPricing, PricingBook};
 use crate::providers::{FileCursor, ScanProgress, ScanProgressDelta};
 
-/// Schema DDL. `IF NOT EXISTS` ⇒ idempotent migration.
-pub const SCHEMA: &str = include_str!("db_schema.sql");
-
 /// Thread-safe wrapper over a single SQLite connection.
 pub struct Store {
     conn: Mutex<Connection>,
@@ -34,7 +33,7 @@ impl Store {
     pub fn open(path: &std::path::Path) -> AppResult<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
-        conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(&schema::schema_sql())?;
         migrate_schema(&conn)?;
         let store = Self {
             conn: Mutex::new(conn),
@@ -849,7 +848,9 @@ fn migrate_schema(conn: &Connection) -> AppResult<()> {
             have.insert(n?);
         }
     }
-    // (column, DDL) — kept in sync with db_schema.sql.
+    // (column, DDL) — columns added after the initial schema. These are a subset
+    // of `schema::USAGE_RECORDS_COLS_DDL`; ALTER carries them on an old install,
+    // then `migrate_to_composite_pk` rebuilds the table from the full constant.
     let need: &[(&str, &str)] = &[
         ("stop_reason", "TEXT NOT NULL DEFAULT ''"),
         ("service_tier", "TEXT NOT NULL DEFAULT ''"),
@@ -906,52 +907,26 @@ fn migrate_to_composite_pk(conn: &Connection) -> AppResult<()> {
         rebuild_table_pk(
             conn,
             "usage_records",
-            "uuid TEXT NOT NULL, timestamp TEXT NOT NULL, day TEXT NOT NULL,
-             model TEXT NOT NULL, pricing_model TEXT NOT NULL, source TEXT NOT NULL,
-             device_id TEXT NOT NULL,
-             input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
-             cache_creation_tokens INTEGER NOT NULL, cache_read_tokens INTEGER NOT NULL,
-             server_tool_use TEXT NOT NULL DEFAULT '{}',
-             stop_reason TEXT NOT NULL DEFAULT '', service_tier TEXT NOT NULL DEFAULT '',
-             iterations INTEGER NOT NULL DEFAULT 0,
-             input_cost_usd TEXT NOT NULL, output_cost_usd TEXT NOT NULL,
-             cache_read_cost_usd TEXT NOT NULL, cache_creation_cost_usd TEXT NOT NULL,
-             total_cost_usd TEXT NOT NULL, PRIMARY KEY (uuid, device_id)",
-            "uuid, timestamp, day, model, pricing_model, source, device_id,
-             input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-             server_tool_use, stop_reason, service_tier, iterations,
-             input_cost_usd, output_cost_usd, cache_read_cost_usd,
-             cache_creation_cost_usd, total_cost_usd",
+            schema::USAGE_RECORDS_COLS_DDL,
+            schema::USAGE_RECORDS_COLNAMES,
         )?;
-        conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_usage_day    ON usage_records(day);
-             CREATE INDEX IF NOT EXISTS idx_usage_model  ON usage_records(model);
-             CREATE INDEX IF NOT EXISTS idx_usage_device ON usage_records(device_id);
-             CREATE INDEX IF NOT EXISTS idx_usage_source ON usage_records(source);
-             CREATE INDEX IF NOT EXISTS idx_usage_ts     ON usage_records(timestamp);",
-        )?;
+        conn.execute_batch(schema::USAGE_RECORDS_INDEXES)?;
     }
     if needs_composite_pk_migration(conn, "turn_durations")? {
         rebuild_table_pk(
             conn,
             "turn_durations",
-            "uuid TEXT NOT NULL, timestamp TEXT NOT NULL, day TEXT NOT NULL,
-             device_id TEXT NOT NULL, duration_ms INTEGER NOT NULL,
-             PRIMARY KEY (uuid, device_id)",
-            "uuid, timestamp, day, device_id, duration_ms",
+            schema::TURN_DURATIONS_COLS_DDL,
+            schema::TURN_DURATIONS_COLNAMES,
         )?;
-        conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_turndur_day    ON turn_durations(day);
-             CREATE INDEX IF NOT EXISTS idx_turndur_device ON turn_durations(device_id);",
-        )?;
+        conn.execute_batch(schema::TURN_DURATIONS_INDEXES)?;
     }
     if needs_composite_pk_migration(conn, "ledger")? {
         rebuild_table_pk(
             conn,
             "ledger",
-            "uuid TEXT NOT NULL, source TEXT NOT NULL, device_id TEXT NOT NULL,
-             ingested_at TEXT NOT NULL, PRIMARY KEY (uuid, device_id)",
-            "uuid, source, device_id, ingested_at",
+            schema::LEDGER_COLS_DDL,
+            schema::LEDGER_COLNAMES,
         )?;
     }
     Ok(())
