@@ -29,13 +29,19 @@ import {
   setUpToDate,
 } from "@/app/store/slices/updateSlice"
 import { describeError } from "@/lib/error"
+import { usePersistedState } from "@/lib/persistence"
 
 const LAST_CHECK_KEY = "vaultone:update-last-check"
 const THROTTLE_MS = 24 * 60 * 60 * 1000
 
 const RELEASES_URL = "https://github.com/Buktal/VaultOne/releases/latest"
 
-/** Singleton: the Update found by the last check (holds downloadAndInstall). */
+/** Singleton: the Update found by the last check (holds downloadAndInstall).
+ *  This is the documented exception to usePersistedState — a Tauri `Update`
+ *  carries a non-serializable side-effect (`downloadAndInstall`) and must be
+ *  shared app-wide across the App / footer / Settings hook instances; it stays
+ *  a module-level `let`, not persisted state. Only the throttle timestamp
+ *  below is serializable leaf state. */
 let pendingUpdate: Update | null = null
 /** Singleton: the startup probe runs exactly once app-wide, even though
  *  useUpdateCheck is mounted in App + footer + Settings. */
@@ -46,6 +52,10 @@ export function useUpdateCheck() {
   const { t } = useTranslation()
   // Guard against a probe already in flight (startup fire + manual click).
   const inFlight = useRef(false)
+  // 24h-throttle stamp for the silent startup probe. Plain number →
+  // usePersistedState. The legacy raw-numeric-string format JSON-parses to the
+  // same number, so an upgrade carries the old stamp over.
+  const [lastCheck, setLastCheck] = usePersistedState<number>(LAST_CHECK_KEY, 0)
 
   const checkNow = useCallback(async () => {
     if (inFlight.current) return
@@ -110,15 +120,16 @@ export function useUpdateCheck() {
 
   // Startup silent probe, 24h-throttled. Guarded app-wide so the
   // many useUpdateCheck mounts (App + footer + Settings) fire it exactly once.
+  // The stamp write is debounced via usePersistedState and flushed on unmount,
+  // so it still lands before a close even if checkNow() never returns.
   useEffect(() => {
     if (startupProbed) return
     startupProbed = true
-    const last = Number(localStorage.getItem(LAST_CHECK_KEY) ?? 0)
-    if (Date.now() - last >= THROTTLE_MS) {
-      localStorage.setItem(LAST_CHECK_KEY, String(Date.now()))
+    if (Date.now() - lastCheck >= THROTTLE_MS) {
+      setLastCheck(Date.now())
       void checkNow()
     }
-  }, [checkNow])
+  }, [checkNow, lastCheck, setLastCheck])
 
   return { checkNow, applyUpdate, restartNow, openReleases }
 }

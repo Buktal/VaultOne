@@ -21,7 +21,7 @@
 // by a lightweight switch), so the onMoved/onResized listeners it attaches in
 // full mode keep recording the user's placement for the whole session.
 
-import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window"
+import { getCurrentWindow } from "@tauri-apps/api/window"
 import { useEffect } from "react"
 
 import {
@@ -37,18 +37,10 @@ import {
   saveFullRect,
 } from "@/app/shell/window-geometry"
 import { useAppSelector } from "@/app/store/hooks"
+import { flushPendingWrites } from "@/lib/persistence"
+import { clampToMinFull, DEFAULT_SIZE, meetsMinFull } from "./window-shapes"
 
 const appWindow = getCurrentWindow()
-
-/** The default full-mode window size, kept in sync with tauri.conf.json. */
-const DEFAULT_SIZE = new LogicalSize(800, 600)
-
-/** Minimum full-mode client size (logical px). The dashboard never goes below
- *  this — distinct from the ~120 / 320-wide glance shapes, so the large window
- *  can't end up "as small as the small window". Enforced as an OS min-size
- *  (drag constraint) in full mode, and as a clamp / guard on restore + record.
- *  Cleared on every lightweight dock so the fixed glance sizes still apply. */
-const MIN_FULL = { w: 720, h: 520 }
 
 export function useWindowMode() {
   const mode = useAppSelector((s) => s.view.mode)
@@ -126,6 +118,9 @@ export function useWindowMode() {
       cancelled = true
       unlistenMoved?.()
       unlistenResized?.()
+      // Land the trailing debounced geometry write so closing/unmounting right
+      // after a drag/resize can't drop the last on-screen position.
+      flushPendingWrites()
     }
   }, [mode])
 }
@@ -137,13 +132,12 @@ export function useWindowMode() {
 async function restoreFullGeometry(): Promise<void> {
   const geom: FullGeom | null = readFull()
   if (!geom) {
-    await centerWindow(DEFAULT_SIZE.width, DEFAULT_SIZE.height)
+    await centerWindow(DEFAULT_SIZE.w, DEFAULT_SIZE.h)
     return
   }
   // Clamp the stored rect to the full-mode minimum so a stale / corrupted
   // small record never restores the dashboard undersized.
-  const w = Math.max(geom.w, MIN_FULL.w)
-  const h = Math.max(geom.h, MIN_FULL.h)
+  const { w, h } = clampToMinFull(geom.w, geom.h)
   if (geom.maximized) {
     await setWindowRect(geom.x, geom.y, w, h)
     await appWindow.maximize()
@@ -171,6 +165,6 @@ async function snapshotFull(): Promise<void> {
   const h = size.height / f
   // Refuse to record a degenerate (sub-minimum) size as the full-mode rect —
   // it would re-restore undersized. Leave the prior record untouched instead.
-  if (w < MIN_FULL.w || h < MIN_FULL.h) return
+  if (!meetsMinFull(w, h)) return
   saveFull({ maximized: false, x: pos.x / f, y: pos.y / f, w, h })
 }

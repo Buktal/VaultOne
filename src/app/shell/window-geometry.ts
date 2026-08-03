@@ -14,7 +14,25 @@
 // All values are LOGICAL px. Full-mode x/y are relative to the virtual-screen
 // origin (outerPosition / scaleFactor); w/h are outer size / scaleFactor. The
 // Rust set_window_rect command converts back to physical on restore.
+//
+// ── Debounced writes + in-memory cache ──
+// `onMoved`/`onResized` fire once per pixel during a drag/resize, so a direct
+// localStorage write per event is a burst of synchronous setItems. Writes now
+// go through the shared `debouncedLocalStorageWrite` primitive (300ms), which
+// coalesces a whole drag into one disk write.
+//
+// Debouncing a write-through cache would lose data: `saveFullRect({x})` then
+// `saveFullRect({y})` would both read whatever is on disk, and while the first
+// write is still pending the second reads stale data and clobbers x. So the
+// canonical record lives in an in-memory `cached` variable, lazily loaded from
+// localStorage on first access; every save* mutates that snapshot and
+// schedules a debounced mirror to disk. Reads within a session hit the cache
+// (always fresh); the disk file is only the cross-session mirror. The hooks
+// that drive these writes (useWindowMode, useLightweightTuck) call
+// `flushPendingWrites()` on unmount, and the persistence module flushes on
+// `beforeunload`, so the trailing debounced value is never lost to a close.
 
+import { debouncedLocalStorageWrite } from "@/lib/persistence"
 import { ENTRY_DOCK_Y } from "./lightweight-geometry"
 
 export type FullGeom = {
@@ -32,6 +50,7 @@ export type WindowGeometry = {
 }
 
 const KEY = "vaultone:window-geometry"
+const DEBOUNCE_MS = 300
 
 function defaults(): WindowGeometry {
   return {
@@ -41,28 +60,35 @@ function defaults(): WindowGeometry {
   }
 }
 
+/** In-memory source of truth for the session, lazily seeded from localStorage.
+ *  Held outside localStorage so the read-modify-write `save*` helpers always
+ *  patch the latest record even while a debounced disk write is in flight. */
+let cached: WindowGeometry | undefined
+
 function load(): WindowGeometry {
+  if (cached) return cached
   try {
     const raw = localStorage.getItem(KEY)
-    if (!raw) return defaults()
-    const p = JSON.parse(raw) as Partial<WindowGeometry>
-    return {
-      full: p.full ?? null,
-      expanded: { y: p.expanded?.y ?? ENTRY_DOCK_Y },
-      tucked: { y: p.tucked?.y ?? ENTRY_DOCK_Y },
+    if (raw) {
+      const p = JSON.parse(raw) as Partial<WindowGeometry>
+      cached = {
+        full: p.full ?? null,
+        expanded: { y: p.expanded?.y ?? ENTRY_DOCK_Y },
+        tucked: { y: p.tucked?.y ?? ENTRY_DOCK_Y },
+      }
+      return cached
     }
   } catch {
-    return defaults()
+    // fall through to defaults
   }
+  cached = defaults()
+  return cached
 }
 
-function save(g: WindowGeometry): void {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(g))
-  } catch {
-    // localStorage unavailable (private mode / quota) — geometry just won't
-    // persist this session; never crash window placement over it.
-  }
+/** Replace the canonical record and debounced-mirror it to disk. */
+function persist(next: WindowGeometry): void {
+  cached = next
+  debouncedLocalStorageWrite(KEY, next, DEBOUNCE_MS)
 }
 
 export function readFull(): FullGeom | null {
@@ -71,9 +97,7 @@ export function readFull(): FullGeom | null {
 
 /** Overwrite the full-mode record wholesale (used by the entry snapshot). */
 export function saveFull(full: FullGeom): void {
-  const g = load()
-  g.full = full
-  save(g)
+  persist({ ...load(), full })
 }
 
 /** Patch the restored-window rect (x/y/w/h) leaving `maximized` as-is. No-op
@@ -83,8 +107,7 @@ export function saveFullRect(
 ): void {
   const g = load()
   if (!g.full) return
-  g.full = { ...g.full, ...rect }
-  save(g)
+  persist({ ...g, full: { ...g.full, ...rect } })
 }
 
 /** Flip the maximized flag without touching the restored rect (the rect is
@@ -93,8 +116,7 @@ export function saveFullRect(
 export function saveFullMaximized(maximized: boolean): void {
   const g = load()
   if (!g.full || g.full.maximized === maximized) return
-  g.full.maximized = maximized
-  save(g)
+  persist({ ...g, full: { ...g.full, maximized } })
 }
 
 export function readLwY(phase: "expanded" | "tucked"): number {
@@ -102,7 +124,5 @@ export function readLwY(phase: "expanded" | "tucked"): number {
 }
 
 export function saveLwY(phase: "expanded" | "tucked", y: number): void {
-  const g = load()
-  g[phase] = { y }
-  save(g)
+  persist({ ...load(), [phase]: { y } })
 }

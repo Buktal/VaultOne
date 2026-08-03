@@ -25,18 +25,21 @@ import { useCallback, useEffect, useRef } from "react"
 
 import { useAppDispatch, useAppSelector } from "@/app/store/hooks"
 import { setLightweightPhase } from "@/app/store/slices/viewSlice"
+import { flushPendingWrites } from "@/lib/persistence"
 
 import {
-  CARD_HEIGHT_DEFAULT,
-  CARD_WIDTH,
   dockRight,
   INSET_EXPANDED,
   INSET_TUCKED,
   monitorForWindow,
-  TUCKED_HEIGHT,
-  TUCKED_WIDTH,
 } from "./lightweight-geometry"
 import { readLwY, saveLwY } from "./window-geometry"
+import {
+  CARD_HEIGHT_DEFAULT,
+  CARD_WIDTH,
+  TUCKED_HEIGHT,
+  TUCKED_WIDTH,
+} from "./window-shapes"
 
 const appWindow = getCurrentWindow()
 
@@ -148,6 +151,9 @@ export function useLightweightTuck() {
     })
     return () => {
       void unlisten.then((u) => u())
+      // Land the trailing debounced geometry write so unmounting the card (a
+      // full-mode switch) right after a drag can't drop the last Y.
+      flushPendingWrites()
     }
   }, [])
 

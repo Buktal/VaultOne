@@ -15,7 +15,7 @@
 // —— 采到任意来源就显示, 与设备维度同理.
 
 import { Activity, CalendarRange, ChevronDown } from "lucide-react"
-import { type ReactNode, useEffect, useState } from "react"
+import type { ReactNode } from "react"
 import { useTranslation } from "react-i18next"
 import { DataFreshness } from "@/app/shell/data-freshness"
 import {
@@ -51,6 +51,7 @@ import {
 } from "@/components/ui/select"
 import { useFreshness } from "@/hooks/use-freshness"
 import { useMutateWithToast } from "@/hooks/use-toast-mutation"
+import { usePersistedState } from "@/lib/persistence"
 import { cn } from "@/lib/utils"
 import { sourceLabel } from "../source-labels"
 import { useDeviceOptions } from "../use-device-options"
@@ -299,13 +300,11 @@ export function ControlCard() {
   const { onCollect, collecting } = useCollectAction(multiDevice)
   const { data: sources = [] } = useDistinctSourcesQuery()
   const hasSources = sources.length > 0
-  const [collapsed, setCollapsed] = useState<boolean>(() => {
-    if (typeof localStorage === "undefined") return false
-    return localStorage.getItem(CONTROL_COLLAPSE_KEY) === "1"
-  })
-  useEffect(() => {
-    localStorage.setItem(CONTROL_COLLAPSE_KEY, collapsed ? "1" : "0")
-  }, [collapsed])
+  // Collapse persists across restarts (debounced write, flushed on unmount).
+  const [collapsed, setCollapsed] = usePersistedState<boolean>(
+    CONTROL_COLLAPSE_KEY,
+    false,
+  )
   return (
     <Card size="sm" interactive>
       <CardHeader>

@@ -17,7 +17,6 @@ import {
   Settings,
   Tags,
 } from "lucide-react"
-import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { useAppInfoQuery } from "@/app/store/api"
 import { useAppDispatch, useAppSelector } from "@/app/store/hooks"
@@ -30,6 +29,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { usePersistedState } from "@/lib/persistence"
 import { cn } from "@/lib/utils"
 import { TitleBar } from "./title-bar"
 import { UpdateIndicator } from "./update-card"
@@ -155,13 +155,13 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const synced = info?.mode === "synced"
   const { openReleases } = useUpdateCheck()
 
-  const [collapsed, setCollapsed] = useState<boolean>(() => {
-    if (typeof localStorage === "undefined") return false
-    return localStorage.getItem(COLLAPSE_KEY) === "1"
-  })
-  useEffect(() => {
-    localStorage.setItem(COLLAPSE_KEY, collapsed ? "1" : "0")
-  }, [collapsed])
+  // Sidebar collapse persists across restarts (debounced write, flushed on
+  // unmount — see usePersistedState). The previous raw "1"/"0" format reads
+  // back truthy/falsy, so an upgrade carries the old value over transparently.
+  const [collapsed, setCollapsed] = usePersistedState<boolean>(
+    COLLAPSE_KEY,
+    false,
+  )
 
   const modeLabel = t(synced ? "shell.synced" : "shell.standalone")
   const deviceName = info?.display_name || t("common.unnamed")

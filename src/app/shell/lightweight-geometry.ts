@@ -6,8 +6,8 @@
 // once — the shadow no longer overshoots the monitor edge (was ~1/5 on the
 // neighbour), there is no intermediate [new pos, old size] state to flip
 // MonitorFromWindow, and the window stays wholly on one monitor so WebView2
-// renders at that monitor's DPI. This file keeps the JS-side constants and
-// monitor helpers only.
+// renders at that monitor's DPI. This file keeps the docking math and the
+// positioning/inset constants; window-shape SIZES live in window-shapes.ts.
 
 import {
   availableMonitors,
@@ -16,21 +16,11 @@ import {
   type Monitor,
 } from "@tauri-apps/api/window"
 
+// Window-shape SIZES (CARD_WIDTH, CARD_HEIGHT_DEFAULT, TUCKED_WIDTH,
+// TUCKED_HEIGHT) live in window-shapes.ts; this file keeps only the docking
+// math and the positioning/inset constants.
 import { commands } from "@/types/generated/bindings"
 
-/** Expanded glance card (window) width. The reused TokenHero card sits inside a
- *  p-3 inset so its rounded corners clear the square window edge, so the card
- *  renders a touch narrower than this. 320 keeps the window compact on the
- *  right edge while the card's content mirrors the 右中 anchor. Height adapts. */
-export const CARD_WIDTH = 320
-/** Initial height guess before the content is measured; replaced on mount. */
-export const CARD_HEIGHT_DEFAULT = 360
-/** Tucked mini-bar — [grip][number][→大]. The three cells are spaced
- * with px-1 + gap-1 and the hover tiles inset (my-0.5), so the width fits the
- * longest compact token (up to ~"123.4M") plus grip + →大 + that spacing.
- * Short height = thin strip. */
-export const TUCKED_WIDTH = 120
-export const TUCKED_HEIGHT = 40
 /** Logical px from the top where the glance card docks on entry. */
 export const ENTRY_DOCK_Y = 48
 /** How far the OUTER rect is kept inside the monitor edge (passed to the Rust

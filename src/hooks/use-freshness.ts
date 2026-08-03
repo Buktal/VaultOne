@@ -14,6 +14,7 @@ import { listen } from "@tauri-apps/api/event"
 import { useEffect, useSyncExternalStore } from "react"
 
 import { useAppInfoQuery } from "@/app/store/api"
+import { debouncedLocalStorageWrite } from "@/lib/persistence"
 
 export interface FreshnessState {
   /** epoch ms of last successful collect (or null if never). */
@@ -54,13 +55,18 @@ function ensure(deviceId: string): FreshnessState {
   return s
 }
 
+// NOTE: this module is one of the two documented exceptions to
+// usePersistedState (see src/lib/persistence.ts). Freshness state is shared
+// LIVE across multiple hooks/components, which needs useSyncExternalStore over
+// a module Map; it reuses only the debounced writer primitive to mirror the
+// in-memory map to disk.
 function write(deviceId: string, next: FreshnessState) {
   stores.set(deviceId, next)
-  try {
-    localStorage.setItem(storageKey(deviceId), JSON.stringify(next))
-  } catch {
-    // localStorage unavailable (quota / private mode) — in-memory only.
-  }
+  // Debounced disk mirror of the in-memory map. The map is the session source
+  // of truth; this just survives reloads. Writes are infrequent (collect/sync
+  // edges) so the 300ms window is harmless, and the persistence module flushes
+  // on beforeunload.
+  debouncedLocalStorageWrite(storageKey(deviceId), next)
   for (const l of listeners) l()
 }
 
