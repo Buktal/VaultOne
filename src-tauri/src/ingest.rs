@@ -339,102 +339,11 @@ pub fn read_all_turn_artifacts(paths: &Paths) -> AppResult<Vec<TurnDuration>> {
     read_all_artifacts_of::<TurnGrain>(paths)
 }
 
-// ---------------- DeviceArtifact (device-name sync, one file per device) ----
-
-/// Idempotently publish THIS device's identity to `config/devices/<id>.json`
-/// (device-name sync ADR). Writes only when the file is missing or its
-/// `display_name` is stale, so repeated calls (boot, every sync) don't churn
-/// the worktree. `first_seen` is preserved across rewrites. Returns whether a
-/// write actually happened.
-///
-/// No network: the file is merely staged in the worktree — the normal Git sync
-/// (`commit_all` + `push`) carries the whole repo, so this file rides along.
-pub fn ensure_own_device_artifact(
-    paths: &Paths,
-    device_id: &str,
-    display_name: &str,
-) -> AppResult<bool> {
-    // Flat layout: repo/config/devices_<id>.json (no devices/ subdir).
-    let path = paths.devices_file_path(device_id);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let existing = std::fs::read_to_string(&path).ok();
-    // Preserve first_seen across rewrites; seed on first publish.
-    let first_seen = existing
-        .as_deref()
-        .and_then(|t| serde_json::from_str::<crate::model::DeviceArtifact>(t).ok())
-        .map(|a| a.first_seen)
-        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
-    let artifact = crate::model::DeviceArtifact {
-        device_id: device_id.to_string(),
-        display_name: display_name.to_string(),
-        first_seen,
-    };
-    let desired = serde_json::to_string_pretty(&artifact)?;
-    if existing.as_deref().map(str::trim_end) == Some(desired.as_str()) {
-        return Ok(false);
-    }
-    std::fs::write(&path, format!("{desired}\n"))?;
-    Ok(true)
-}
-
-/// Read every device's identity artifact under `config/devices/`. Skips entries
-/// whose stem isn't a valid 12-hex device id and files that fail to parse, so a
-/// stray/broken file never blocks the rest from loading.
-pub fn read_all_device_artifacts(paths: &Paths) -> Vec<crate::model::DeviceArtifact> {
-    let mut out: Vec<crate::model::DeviceArtifact> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    // New flat layout: config/devices_<id>.json. Strip the `devices_` prefix
-    // and `.json` suffix; the remainder must be a valid device id.
-    if let Ok(entries) = std::fs::read_dir(&paths.repo_config) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            let Some(id) = name
-                .strip_prefix("devices_")
-                .and_then(|s| s.strip_suffix(".json"))
-            else {
-                continue;
-            };
-            if !crate::config::is_valid_device_id(id) {
-                continue;
-            }
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                if let Ok(a) = serde_json::from_str::<crate::model::DeviceArtifact>(&text) {
-                    if seen.insert(a.device_id.clone()) {
-                        out.push(a);
-                    }
-                }
-            }
-        }
-    }
-
-    // Legacy layout: config/devices/<id>.json (read-only fallback; new wins).
-    if let Ok(entries) = std::fs::read_dir(paths.legacy_devices_dir()) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            if !crate::config::is_valid_device_id(stem) || seen.contains(stem) {
-                continue;
-            }
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                if let Ok(a) = serde_json::from_str::<crate::model::DeviceArtifact>(&text) {
-                    if seen.insert(a.device_id.clone()) {
-                        out.push(a);
-                    }
-                }
-            }
-        }
-    }
-
-    out
-}
+// The device-name artifact I/O (`ensure_own_device_artifact` /
+// `read_all_device_artifacts`) lived here once; it moved to `crate::devices`,
+// the registry module that owns device membership + naming + the name
+// artifact. The per-call/per-turn JSONL Artifact machinery above
+// (`ArtifactGrain`) is a separate concern and stays here.
 
 #[cfg(test)]
 mod tests {
@@ -676,53 +585,5 @@ mod tests {
         assert_eq!(rep.turn_durations_inserted, 0);
         let turns = read_device_artifacts_of::<TurnGrain>(&paths, "0123456789ab").unwrap();
         assert_eq!(turns.len(), 2, "JSONL holds each turn once, not doubled");
-    }
-
-    #[test]
-    fn device_artifact_flat_layout_round_trips() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = Paths::resolve(tmp.path());
-        // Writes to the new flat path (config/devices_<id>.json).
-        assert!(ensure_own_device_artifact(&paths, "0123456789ab", "Laptop").unwrap());
-        // Idempotent: identical content ⇒ no rewrite.
-        assert!(!ensure_own_device_artifact(&paths, "0123456789ab", "Laptop").unwrap());
-        // Reads back from the flat path.
-        let read = read_all_device_artifacts(&paths);
-        assert_eq!(read.len(), 1);
-        assert_eq!(read[0].device_id, "0123456789ab");
-        assert_eq!(read[0].display_name, "Laptop");
-        // Path is flat — no legacy devices/ subdir was created.
-        assert!(paths.devices_file_path("0123456789ab").exists());
-        assert!(!paths
-            .legacy_devices_dir()
-            .join("0123456789ab.json")
-            .exists());
-    }
-
-    #[test]
-    fn read_all_device_artifacts_reads_legacy_layout_too() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = Paths::resolve(tmp.path());
-        // Seed a legacy file under config/devices/<id>.json (old layout peer).
-        let legacy = paths.legacy_devices_dir().join("abcdef012345.json");
-        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-        std::fs::write(
-            &legacy,
-            r#"{"device_id":"abcdef012345","display_name":"OldPeer","first_seen":"2026-01-01T00:00:00.000Z"}"#,
-        )
-        .unwrap();
-        // And a flat file for a different device (new layout).
-        ensure_own_device_artifact(&paths, "0123456789ab", "NewPeer").unwrap();
-
-        let mut ids: Vec<String> = read_all_device_artifacts(&paths)
-            .into_iter()
-            .map(|a| a.device_id)
-            .collect();
-        ids.sort();
-        assert_eq!(
-            ids,
-            vec!["0123456789ab".to_string(), "abcdef012345".to_string()],
-            "both layouts are read"
-        );
     }
 }

@@ -165,7 +165,7 @@ pub fn set_display_name(state: State<'_, AppState>, display_name: String) -> App
     // Publish the new name to the cloud registry (config/devices/<id>.json);
     // the normal Git sync carries it. Best-effort — a write failure doesn't
     // undo the local rename. No write if the file is already current.
-    let _ = crate::ingest::ensure_own_device_artifact(
+    let _ = crate::devices::ensure_own_device_artifact(
         &state.config.paths(),
         &cfg.device_id,
         &cfg.display_name,
@@ -369,17 +369,7 @@ pub fn query_distinct_models(state: State<'_, AppState>) -> AppResult<Vec<String
 pub fn list_devices(state: State<'_, AppState>) -> AppResult<Vec<DeviceInfo>> {
     let mut devices = state.store.list_devices()?;
     let cfg = state.config.get();
-    for d in &mut devices {
-        // Re-derive is_self from the live config — the stored column can go
-        // stale (e.g. this device's id was regenerated) and a peer must never
-        // be mislabeled "this device".
-        d.is_self = d.device_id == cfg.device_id;
-        // Layer local aliases (set_device_display_name) over the synced names:
-        // an alias wins where present, the device table's synced name otherwise.
-        if let Some(alias) = cfg.device_names.get(&d.device_id) {
-            d.display_name = alias.clone();
-        }
-    }
+    crate::devices::apply_aliases(&mut devices, &cfg);
     // NOTE: duplicate display names are no longer disambiguated with an id
     // prefix — the picker shows the raw name and truncates with an ellipsis if
     // it overflows. Users tell peers apart by renaming them in Settings.

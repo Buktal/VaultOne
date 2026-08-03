@@ -695,7 +695,7 @@ pub fn pull_and_import(
     let turns = crate::ingest::read_all_turn_artifacts(paths)?;
     store.ingest_turn_durations(&turns)?;
     // Device-name registry: pull may have added/updated config/devices/*.json.
-    reload_devices_into_store(store, paths, cfg)?;
+    crate::devices::reload_devices_into_store(store, paths, cfg)?;
     Ok(inserted.len() as u32)
 }
 
@@ -731,69 +731,6 @@ pub fn commit_and_push_best_effort(paths: &crate::config::Paths, cfg: &ConfigDat
     if let Err(e) = commit_and_push(paths, cfg, message) {
         eprintln!("[vaultone] push failed: {e}");
     }
-}
-
-/// Reload the (just-pulled) cloud device registry into the Store, then
-/// reconcile dirty devices. Each registry file upsert is best-effort so one bad
-/// row can't abort the rest. Aliases stay local and are layered on at
-/// `list_devices`. Used by the usage-sync pull path; reconcile itself also
-/// runs on the collect path.
-pub(crate) fn reload_devices_into_store(
-    store: &crate::db::Store,
-    paths: &crate::config::Paths,
-    cfg: &ConfigData,
-) -> AppResult<()> {
-    for a in crate::ingest::read_all_device_artifacts(paths) {
-        let is_self = a.device_id == cfg.device_id;
-        if let Err(e) = store.upsert_device(&a.device_id, &a.display_name, is_self) {
-            eprintln!("[vaultone] device reload skipped {}: {e}", a.device_id);
-        }
-    }
-    reconcile_devices(store, paths, cfg)
-}
-
-/// Purge local device rows Git no longer backs. Git is the source of truth for
-/// which devices exist, so a device with NO git presence is residue and is
-/// forgotten locally (row + usage + rollups). "Present" = this device ∪ devices
-/// with a registry file (`config/devices_<id>.json`) ∪ devices with a data dir
-/// under `repo/data/<id>/`. The local repo filesystem is always available (even
-/// Standalone), so this runs on both the sync and collect paths — a stale
-/// device is cleaned on the next collect (~30 s via the background scheduler),
-/// not only on a pull. `is_self` is always kept. A failure on one id is logged,
-/// not fatal.
-pub fn reconcile_devices(
-    store: &crate::db::Store,
-    paths: &crate::config::Paths,
-    cfg: &ConfigData,
-) -> AppResult<()> {
-    // Build the set of devices Git still backs.
-    let mut present: std::collections::HashSet<String> = std::collections::HashSet::new();
-    present.insert(cfg.device_id.clone());
-    for a in crate::ingest::read_all_device_artifacts(paths) {
-        present.insert(a.device_id.clone());
-    }
-    if let Ok(entries) = std::fs::read_dir(&paths.repo_data) {
-        for e in entries.flatten() {
-            if let Some(name) = e.file_name().to_str() {
-                if crate::config::is_valid_device_id(name) {
-                    present.insert(name.to_string());
-                }
-            }
-        }
-    }
-
-    // Purge dirty rows: local-only devices Git no longer backs. Self is always
-    // kept (it's in `present`). A failure on one id is logged, not fatal.
-    for id in store.list_device_ids()? {
-        if id == cfg.device_id || present.contains(&id) {
-            continue;
-        }
-        match store.forget_device_local(&id) {
-            Ok(n) => eprintln!("[vaultone] reconciled stale device {id} ({n} rows dropped)"),
-            Err(e) => eprintln!("[vaultone] failed to reconcile device {id}: {e}"),
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1494,50 +1431,5 @@ mod tests {
             .query_stats(&crate::model::UsageFilter::default())
             .unwrap();
         assert_eq!(stats.request_count, 1);
-    }
-
-    /// Git is the source of truth for which devices exist. After a pull,
-    /// `reload_devices_into_store` must keep devices Git still backs (this
-    /// device, a peer with a registry file, a peer with a data dir) and purge
-    /// local-only residue (a device with no git presence at all).
-    #[test]
-    fn reload_devices_reconciles_stale_local_only_devices() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = crate::config::Paths::resolve(tmp.path());
-        std::fs::create_dir_all(&paths.repo_config).unwrap();
-        std::fs::create_dir_all(&paths.repo_data).unwrap();
-        let store = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
-
-        let self_id = "0123456789ab";
-        let live_peer = "aaaaaaaaaaaa"; // backed by a pulled registry file
-        let data_peer = "bbbbbbbbbbbb"; // backed by a repo/data/<id>/ dir
-        let ghost = "cccccccccccc"; // local-only: no git presence
-
-        let cfg = crate::config::ConfigData {
-            device_id: self_id.into(),
-            ..Default::default()
-        };
-
-        // Seed all four into the local registry.
-        for id in [self_id, live_peer, data_peer, ghost] {
-            store.upsert_device(id, "name", id == self_id).unwrap();
-        }
-        assert_eq!(store.list_device_ids().unwrap().len(), 4);
-
-        // Git presence after the (simulated) pull.
-        crate::ingest::ensure_own_device_artifact(&paths, live_peer, "name").unwrap();
-        std::fs::create_dir_all(paths.device_data_dir(data_peer)).unwrap();
-        // ghost: intentionally nothing in git.
-
-        reload_devices_into_store(&store, &paths, &cfg).unwrap();
-
-        let ids = store.list_device_ids().unwrap();
-        assert!(ids.iter().any(|i| i == self_id), "self always kept");
-        assert!(ids.iter().any(|i| i == live_peer), "registry peer kept");
-        assert!(ids.iter().any(|i| i == data_peer), "data-dir peer kept");
-        assert!(
-            !ids.iter().any(|i| i == ghost),
-            "local-only ghost must be pruned"
-        );
     }
 }

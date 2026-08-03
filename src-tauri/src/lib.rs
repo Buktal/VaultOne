@@ -19,6 +19,7 @@ mod collect;
 mod commands;
 mod config;
 mod db;
+mod devices;
 mod error;
 mod ingest;
 mod library;
@@ -183,7 +184,7 @@ pub fn run() {
         // registry (config/devices/<id>.json). Covers both first run and an
         // upgrade from a version that predates device-name sync. Best-effort;
         // the normal Git sync carries it.
-        let _ = crate::ingest::ensure_own_device_artifact(
+        let _ = crate::devices::ensure_own_device_artifact(
             &config.paths(),
             &cfg.device_id,
             &cfg.display_name,

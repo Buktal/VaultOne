@@ -69,7 +69,7 @@ pub fn collect_into(store: &Store, config: &ConfigStore) -> AppResult<IngestRepo
     // and its data is gone, or a regenerated-id residue). The local repo
     // filesystem is the source of truth and is always available, so this runs
     // on every collect — not only on a sync pull.
-    crate::sync::reconcile_devices(store, &paths, &cfg)?;
+    crate::devices::reconcile_devices(store, &paths, &cfg)?;
     Ok(merged)
 }
 
