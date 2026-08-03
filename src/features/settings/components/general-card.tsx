@@ -115,7 +115,7 @@ export function GeneralCard() {
       {prefsError ? (
         <p className="border-destructive/40 bg-destructive/5 text-destructive mb-2 rounded-md border p-2 text-xs leading-relaxed">
           {t("settings.general.readError", {
-            detail: describeError(prefsError) || t("common.unknownReason"),
+            detail: describeError(prefsError, t) || t("common.unknownReason"),
           })}
         </p>
       ) : null}
@@ -141,7 +141,7 @@ export function GeneralCard() {
                   if ("error" in r)
                     toast.error(t("settings.toast.saveFailed"), {
                       description:
-                        describeError(r.error) || t("common.unknownReason"),
+                        describeError(r.error, t) || t("common.unknownReason"),
                     })
                 }}
                 className={cn(
@@ -176,7 +176,7 @@ export function GeneralCard() {
             if ("error" in r)
               toast.error(t("settings.toast.saveFailed"), {
                 description:
-                  describeError(r.error) || t("common.unknownReason"),
+                  describeError(r.error, t) || t("common.unknownReason"),
               })
           }}
         >
@@ -208,7 +208,7 @@ export function GeneralCard() {
             if ("error" in r)
               toast.error(t("settings.toast.saveFailed"), {
                 description:
-                  describeError(r.error) || t("common.unknownReason"),
+                  describeError(r.error, t) || t("common.unknownReason"),
               })
           }}
         >
@@ -239,7 +239,7 @@ export function GeneralCard() {
               if ("error" in r)
                 toast.error(t("settings.toast.saveFailed"), {
                   description:
-                    describeError(r.error) || t("common.unknownReason"),
+                    describeError(r.error, t) || t("common.unknownReason"),
                 })
             }}
           >
@@ -279,7 +279,7 @@ export function GeneralCard() {
                 if ("error" in r)
                   toast.error(t("settings.toast.saveFailed"), {
                     description:
-                      describeError(r.error) || t("common.unknownReason"),
+                      describeError(r.error, t) || t("common.unknownReason"),
                   })
               }}
             >
@@ -307,7 +307,7 @@ export function GeneralCard() {
                 if ("error" in r)
                   toast.error(t("settings.toast.saveFailed"), {
                     description:
-                      describeError(r.error) || t("common.unknownReason"),
+                      describeError(r.error, t) || t("common.unknownReason"),
                   })
               }}
             >

@@ -1,40 +1,55 @@
+import type { TFunction } from "i18next"
 import { describe, expect, it } from "vitest"
 
 import { describeError } from "@/lib/error"
 
-describe("describeError", () => {
-  it("extracts the message from a thrown Error", () => {
-    expect(describeError(new Error("boom"))).toBe("boom")
-  })
+// A stand-in for i18next's `t`: echoes the key, appending the interpolated
+// `data` so tests can assert both the chosen key and the payload. Cast to
+// `TFunction` (a branded type) so the signature matches production callers.
+const t = ((key: string, opts?: Record<string, unknown>) =>
+  opts && "data" in opts ? `${key}:${String(opts.data)}` : key) as TFunction
 
-  it("extracts .message from a plain object (RTK Query-serialised shape)", () => {
-    // run() throws `new Error("Type: detail")`; RTK Query serialises that to
-    // { name, message } — message is the path that must win.
-    expect(describeError({ message: "Config: bad token" })).toBe(
-      "Config: bad token",
+describe("describeError", () => {
+  it("maps a structured AppError to errors.<type> with data interpolation", () => {
+    expect(describeError({ type: "Config", data: "bad token" }, t)).toBe(
+      "errors.Config:bad token",
+    )
+    expect(describeError({ type: "Sync", data: "offline" }, t)).toBe(
+      "errors.Sync:offline",
+    )
+    expect(describeError({ type: "Internal", data: "serde: eof" }, t)).toBe(
+      "errors.Internal:serde: eof",
     )
   })
 
-  it("extracts a string .data field", () => {
-    expect(describeError({ data: "rate limited" })).toBe("rate limited")
+  it("covers every backend AppError variant", () => {
+    const variants = ["Config", "Db", "Provider", "Pricing", "Sync", "Internal"]
+    for (const type of variants) {
+      expect(describeError({ type, data: "x" }, t)).toBe(`errors.${type}:x`)
+    }
   })
 
-  it("extracts a string .error field", () => {
-    expect(describeError({ error: "denied" })).toBe("denied")
+  it("extracts the message from a thrown Error (non-API path, e.g. updater)", () => {
+    expect(describeError(new Error("boom"), t)).toBe("boom")
   })
 
-  it("prefers message over data and error", () => {
-    expect(describeError({ message: "m", data: "d", error: "e" })).toBe("m")
+  it("extracts .message from a plain object (RTK Query-serialised shape)", () => {
+    expect(describeError({ message: "network down" }, t)).toBe("network down")
+  })
+
+  it("extracts a string .data / .error field when there is no .message", () => {
+    expect(describeError({ data: "rate limited" }, t)).toBe("rate limited")
+    expect(describeError({ error: "denied" }, t)).toBe("denied")
   })
 
   it("returns a bare string verbatim", () => {
-    expect(describeError("plain string")).toBe("plain string")
+    expect(describeError("plain string", t)).toBe("plain string")
   })
 
   it("returns empty when nothing recognisable (caller adds fallback)", () => {
-    expect(describeError(null)).toBe("")
-    expect(describeError(undefined)).toBe("")
-    expect(describeError({})).toBe("")
-    expect(describeError(42)).toBe("")
+    expect(describeError(null, t)).toBe("")
+    expect(describeError(undefined, t)).toBe("")
+    expect(describeError({}, t)).toBe("")
+    expect(describeError(42, t)).toBe("")
   })
 })

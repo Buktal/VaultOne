@@ -16,6 +16,7 @@ import { openUrl } from "@tauri-apps/plugin-opener"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { check, type Update } from "@tauri-apps/plugin-updater"
 import { useCallback, useEffect, useRef } from "react"
+import { useTranslation } from "react-i18next"
 
 import { useAppDispatch } from "@/app/store/hooks"
 import {
@@ -42,6 +43,7 @@ let startupProbed = false
 
 export function useUpdateCheck() {
   const dispatch = useAppDispatch()
+  const { t } = useTranslation()
   // Guard against a probe already in flight (startup fire + manual click).
   const inFlight = useRef(false)
 
@@ -94,9 +96,9 @@ export function useUpdateCheck() {
       await update.close()
     } catch (e) {
       // Manual Fallback: surface the "go to GitHub" card.
-      dispatch(setFailed({ error: describeError(e) || String(e) }))
+      dispatch(setFailed({ error: describeError(e, t) || String(e) }))
     }
-  }, [dispatch])
+  }, [dispatch, t])
 
   const restartNow = useCallback(async () => {
     await relaunch()

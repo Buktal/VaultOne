@@ -32,18 +32,42 @@ import {
  * RTK Query data layer over the typed Tauri command contract.
  *
  * Every command returns a `{ status: "ok" | "error" }` envelope (tauri-specta).
- * `run` unwraps it: ok ⇒ data, error ⇒ throw (RTK Query surfaces it as the
- * query's `error`). The UI never sees SQL or invoke() directly.
+ * `run` unwraps it into a discriminated `RunResult` — `{ data }` on ok or
+ * `{ error: AppError }` on error — which queryFns return verbatim. RTK Query
+ * stores a plain-object error returned from `queryFn` as-is (it only
+ * serialises *thrown* Errors into `{ name, message, stack }`), so the typed
+ * `AppError` reaches the UI intact and `describeError` can map `error.type`
+ * to an i18n key. The UI never sees SQL or invoke() directly.
+ *
+ * `fakeBaseQuery<AppError>` pins the endpoint error type so `result.error` is
+ * always `AppError` (not `unknown`) at call sites.
  */
 
 type Envelope<T> =
   | { status: "ok"; data: T }
   | { status: "error"; error: AppError }
 
-async function run<T>(p: Promise<Envelope<T>>): Promise<T> {
-  const r = await p
-  if (r.status === "ok") return r.data
-  throw new Error(`${r.error.type}: ${r.error.data}`)
+/** Outcome of `run`: the unwrapped payload, or the backend's typed error. */
+export type RunResult<T> = { data: T } | { error: AppError }
+
+async function run<T>(p: Promise<Envelope<T>>): Promise<RunResult<T>> {
+  let r: Envelope<T>
+  try {
+    r = await p
+  } catch (e) {
+    // tauri-specta's `typedError` re-throws JS-level Errors (e.g. an invoke
+    // failure or a Rust panic) instead of wrapping them in the envelope.
+    // Normalise those into `Internal` so `run` never throws and the endpoint
+    // error type stays honestly `AppError` — callers always get a typed result.
+    return {
+      error: {
+        type: "Internal",
+        data: e instanceof Error ? e.message : String(e),
+      },
+    }
+  }
+  if (r.status === "ok") return { data: r.data }
+  return { error: r.error }
 }
 
 /** Stable cache id for a filter (so each filter scope caches independently). */
@@ -67,82 +91,71 @@ export const ZERO_STATS: UsageStats = {
 
 export const vaultApi = createApi({
   reducerPath: "vaultApi",
-  baseQuery: fakeBaseQuery(),
+  baseQuery: fakeBaseQuery<AppError>(),
   tagTypes: ["Usage", "Logs", "Models", "Devices", "Pricing", "Library", "App"],
   endpoints: (b) => ({
     // ---- reads ----
     appInfo: b.query<AppInfo, void>({
-      queryFn: async () => ({ data: await run(commands.getAppInfo()) }),
+      queryFn: async () => run(commands.getAppInfo()),
       providesTags: ["App"],
     }),
     stats: b.query<UsageStats, UsageFilter>({
-      queryFn: async (filter) => ({
-        data: await run(commands.queryUsageStats(filter)),
-      }),
+      queryFn: async (filter) => run(commands.queryUsageStats(filter)),
       providesTags: (_r, _e, filter) => [
         { type: "Usage", id: filterId(filter) },
       ],
     }),
     trend: b.query<TrendPoint[], { filter: UsageFilter; bucket: TrendBucket }>({
-      queryFn: async ({ filter, bucket }) => ({
-        data: await run(commands.queryUsageTrend(filter, bucket)),
-      }),
+      queryFn: async ({ filter, bucket }) =>
+        run(commands.queryUsageTrend(filter, bucket)),
       providesTags: (_r, _e, { filter }) => [
         { type: "Usage", id: filterId(filter) },
       ],
     }),
     logs: b.query<UsageLogRow[], LogsQuery>({
-      queryFn: async (q) => ({ data: await run(commands.queryUsageLogs(q)) }),
+      queryFn: async (q) => run(commands.queryUsageLogs(q)),
       providesTags: (_r, _e, q) => [{ type: "Logs", id: filterId(q.filter) }],
     }),
     count: b.query<number, UsageFilter>({
-      queryFn: async (filter) => ({
-        data: await run(commands.countUsageLogs(filter)),
-      }),
+      queryFn: async (filter) => run(commands.countUsageLogs(filter)),
       providesTags: (_r, _e, filter) => [
         { type: "Logs", id: filterId(filter) },
       ],
     }),
     models: b.query<ModelStatsRow[], UsageFilter>({
-      queryFn: async (filter) => ({
-        data: await run(commands.queryModels(filter)),
-      }),
+      queryFn: async (filter) => run(commands.queryModels(filter)),
       providesTags: (_r, _e, filter) => [
         { type: "Models", id: filterId(filter) },
       ],
     }),
     distinctSources: b.query<string[], void>({
-      queryFn: async () => ({
-        data: await run(commands.queryDistinctSources()),
-      }),
+      queryFn: async () => run(commands.queryDistinctSources()),
       providesTags: ["Usage"],
     }),
     distinctModels: b.query<string[], void>({
-      queryFn: async () => ({
-        data: await run(commands.queryDistinctModels()),
-      }),
+      queryFn: async () => run(commands.queryDistinctModels()),
       providesTags: ["Usage"],
     }),
     devices: b.query<DeviceInfo[], void>({
-      queryFn: async () => ({ data: await run(commands.listDevices()) }),
+      queryFn: async () => run(commands.listDevices()),
       providesTags: ["Devices"],
     }),
     pricing: b.query<PricingEntry[], void>({
-      queryFn: async () => ({ data: await run(commands.listPricing()) }),
+      queryFn: async () => run(commands.listPricing()),
       providesTags: ["Pricing"],
     }),
 
     // ---- mutations ----
     collect: b.mutation<AlignReport, void>({
-      queryFn: async () => ({ data: await run(commands.collectNow()) }),
+      queryFn: async () => run(commands.collectNow()),
       invalidatesTags: ["Usage", "Logs", "Models", "Devices"],
     }),
     sync: b.mutation<AlignReport, void>({
-      queryFn: async () => ({ data: await run(commands.syncNow()) }),
+      queryFn: async () => run(commands.syncNow()),
       invalidatesTags: ["Usage", "Logs", "Models", "Devices"],
     }),
     rebill: b.mutation<number, void>({
-      queryFn: async () => ({ data: await run(commands.rebillZeroCost()) }),
+      queryFn: async () => run(commands.rebillZeroCost()),
       invalidatesTags: ["Usage", "Logs", "Models"],
     }),
 
@@ -151,30 +164,23 @@ export const vaultApi = createApi({
       null,
       { entry: PricingEntry; isBuiltin: boolean | null }
     >({
-      queryFn: async ({ entry, isBuiltin }) => ({
-        data: await run(commands.savePricingEntry(entry, isBuiltin)),
-      }),
+      queryFn: async ({ entry, isBuiltin }) =>
+        run(commands.savePricingEntry(entry, isBuiltin)),
       invalidatesTags: ["Pricing"],
     }),
     deletePricing: b.mutation<null, string>({
-      queryFn: async (modelKey) => ({
-        data: await run(commands.deletePricingEntry(modelKey)),
-      }),
+      queryFn: async (modelKey) => run(commands.deletePricingEntry(modelKey)),
       invalidatesTags: ["Pricing"],
     }),
     reloadPricing: b.mutation<number, void>({
-      queryFn: async () => ({
-        data: await run(commands.reloadPricingFromFile()),
-      }),
+      queryFn: async () => run(commands.reloadPricingFromFile()),
       invalidatesTags: ["Pricing"],
     }),
     savePricingToFile: b.mutation<null, void>({
-      queryFn: async () => ({ data: await run(commands.savePricingToFile()) }),
+      queryFn: async () => run(commands.savePricingToFile()),
     }),
     fetchLitellm: b.mutation<number, void>({
-      queryFn: async () => ({
-        data: await run(commands.fetchLitellmPricing()),
-      }),
+      queryFn: async () => run(commands.fetchLitellmPricing()),
       invalidatesTags: ["Pricing"],
     }),
 
@@ -183,88 +189,74 @@ export const vaultApi = createApi({
       LibraryEntry[],
       { deviceScope: string; subpath: string }
     >({
-      queryFn: async ({ deviceScope, subpath }) => ({
-        data: await run(commands.scanLibrary(deviceScope, subpath)),
-      }),
+      queryFn: async ({ deviceScope, subpath }) =>
+        run(commands.scanLibrary(deviceScope, subpath)),
       providesTags: ["Library"],
     }),
     uploadToLibrary: b.mutation<null, { items: UploadItem[]; subpath: string }>(
       {
-        queryFn: async ({ items, subpath }) => ({
-          data: await run(commands.uploadToLibrary(items, subpath)),
-        }),
+        queryFn: async ({ items, subpath }) =>
+          run(commands.uploadToLibrary(items, subpath)),
         invalidatesTags: ["Library"],
       },
     ),
     exportFromLibrary: b.mutation<null, { relPath: string; targetDir: string }>(
       {
-        queryFn: async ({ relPath, targetDir }) => ({
-          data: await run(commands.exportFromLibrary(relPath, targetDir)),
-        }),
+        queryFn: async ({ relPath, targetDir }) =>
+          run(commands.exportFromLibrary(relPath, targetDir)),
       },
     ),
     deleteFromLibrary: b.mutation<null, string>({
-      queryFn: async (relPath) => ({
-        data: await run(commands.deleteFromLibrary(relPath)),
-      }),
+      queryFn: async (relPath) => run(commands.deleteFromLibrary(relPath)),
       invalidatesTags: ["Library"],
     }),
     renameInLibrary: b.mutation<null, { relPath: string; newName: string }>({
-      queryFn: async ({ relPath, newName }) => ({
-        data: await run(commands.renameInLibrary(relPath, newName)),
-      }),
+      queryFn: async ({ relPath, newName }) =>
+        run(commands.renameInLibrary(relPath, newName)),
       invalidatesTags: ["Library"],
     }),
     /** Pre-flight file/folder counts for one device's library subtree — drives
      *  the forget-device dialog's migrate-vs-delete choice. Read-only probe. */
     libraryDeviceSummary: b.query<DeviceLibrarySummary, string>({
-      queryFn: async (deviceId) => ({
-        data: await run(commands.libraryDeviceSummary(deviceId)),
-      }),
+      queryFn: async (deviceId) => run(commands.libraryDeviceSummary(deviceId)),
     }),
 
     // ---- device / repo config ----
     setSyncRepo: b.mutation<RunMode, { repoUrl: string; githubToken: string }>({
-      queryFn: async ({ repoUrl, githubToken }) => ({
-        data: await run(commands.setSyncRepo(repoUrl, githubToken)),
-      }),
+      queryFn: async ({ repoUrl, githubToken }) =>
+        run(commands.setSyncRepo(repoUrl, githubToken)),
       invalidatesTags: ["App"],
     }),
     verifySyncRepo: b.mutation<
       VerifyReport,
       { repoUrl: string | null; githubToken: string | null }
     >({
-      queryFn: async ({ repoUrl, githubToken }) => ({
-        data: await run(commands.verifySyncRepo(repoUrl, githubToken)),
-      }),
+      queryFn: async ({ repoUrl, githubToken }) =>
+        run(commands.verifySyncRepo(repoUrl, githubToken)),
       // Probe is read-only (ls-remote) — never invalidates any cache.
     }),
     clearSyncRepo: b.mutation<RunMode, void>({
-      queryFn: async () => ({ data: await run(commands.clearSyncRepo()) }),
+      queryFn: async () => run(commands.clearSyncRepo()),
       invalidatesTags: ["App"],
     }),
     setDisplayName: b.mutation<null, string>({
-      queryFn: async (displayName) => ({
-        data: await run(commands.setDisplayName(displayName)),
-      }),
+      queryFn: async (displayName) => run(commands.setDisplayName(displayName)),
       invalidatesTags: ["App", "Devices"],
     }),
     setDeviceDisplayName: b.mutation<
       null,
       { deviceId: string; displayName: string }
     >({
-      queryFn: async ({ deviceId, displayName }) => ({
-        data: await run(commands.setDeviceDisplayName(deviceId, displayName)),
-      }),
+      queryFn: async ({ deviceId, displayName }) =>
+        run(commands.setDeviceDisplayName(deviceId, displayName)),
       invalidatesTags: ["Devices"],
     }),
     forgetDevice: b.mutation<
       null,
       { deviceId: string; libraryAction: LibraryForgetAction }
     >({
-      queryFn: async ({ deviceId, libraryAction }) => ({
-        data: await run(commands.forgetDevice(deviceId, libraryAction)),
-      }),
+      queryFn: async ({ deviceId, libraryAction }) =>
+        run(commands.forgetDevice(deviceId, libraryAction)),
       // "Library" too: migrate/delete rewrites the library listing.
       invalidatesTags: ["Devices", "Usage", "Logs", "Models", "Library"],
     }),
@@ -273,43 +265,32 @@ export const vaultApi = createApi({
     // Go through the generated `commands.*` so tauri-specta's `typedError`
     // wrapping matches what `run` expects. Raw `invoke` skips that wrapping.
     preferences: b.query<Preferences_Serialize, void>({
-      queryFn: async () => ({ data: await run(commands.getPreferences()) }),
+      queryFn: async () => run(commands.getPreferences()),
       providesTags: ["App"],
     }),
     setCloseBehavior: b.mutation<Preferences_Serialize, CloseBehavior>({
-      queryFn: async (closeBehavior) => ({
-        data: await run(commands.setCloseBehavior(closeBehavior)),
-      }),
+      queryFn: async (closeBehavior) =>
+        run(commands.setCloseBehavior(closeBehavior)),
       invalidatesTags: ["App"],
     }),
     setCollectInterval: b.mutation<Preferences_Serialize, number>({
-      queryFn: async (seconds) => ({
-        data: await run(commands.setCollectInterval(seconds)),
-      }),
+      queryFn: async (seconds) => run(commands.setCollectInterval(seconds)),
       invalidatesTags: ["App"],
     }),
     setPushInterval: b.mutation<Preferences_Serialize, number>({
-      queryFn: async (seconds) => ({
-        data: await run(commands.setPushInterval(seconds)),
-      }),
+      queryFn: async (seconds) => run(commands.setPushInterval(seconds)),
       invalidatesTags: ["App"],
     }),
     setLanguage: b.mutation<Preferences_Serialize, Language>({
-      queryFn: async (language) => ({
-        data: await run(commands.setLanguage(language)),
-      }),
+      queryFn: async (language) => run(commands.setLanguage(language)),
       invalidatesTags: ["App"],
     }),
     setLightweightExpand: b.mutation<Preferences_Serialize, LightweightExpand>({
-      queryFn: async (mode) => ({
-        data: await run(commands.setLightweightExpand(mode)),
-      }),
+      queryFn: async (mode) => run(commands.setLightweightExpand(mode)),
       invalidatesTags: ["App"],
     }),
     setSkin: b.mutation<Preferences_Serialize, Skin_Deserialize>({
-      queryFn: async (skin) => ({
-        data: await run(commands.setSkin(skin)),
-      }),
+      queryFn: async (skin) => run(commands.setSkin(skin)),
       invalidatesTags: ["App"],
     }),
   }),
@@ -360,10 +341,13 @@ export type VaultApi = typeof vaultApi
 /**
  * Resolve the one-time close dialog. Not an RTK Query endpoint —
  * it is a one-shot action (hide window / exit app). `remember` pins `choice`.
+ * The sole caller fire-and-forgets this; on the rare error path the structured
+ * `AppError` is thrown so a future caller could `describeError` it.
  */
 export async function confirmClose(
   choice: CloseBehavior,
   remember: boolean,
 ): Promise<void> {
-  await run(commands.confirmClose(choice, remember))
+  const r = await run(commands.confirmClose(choice, remember))
+  if ("error" in r) throw r.error
 }

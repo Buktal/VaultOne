@@ -37,7 +37,7 @@ export function QueryState({
     return (
       <div className="text-destructive text-sm">
         {t("common.loadFailed", {
-          detail: describeError(error) || t("common.unknownError"),
+          detail: describeError(error, t) || t("common.unknownError"),
         })}
       </div>
     )

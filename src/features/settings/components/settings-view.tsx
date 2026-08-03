@@ -212,7 +212,7 @@ export function SettingsView() {
               })
               if ("error" in r)
                 toast.error(t("settings.toast.configFailed"), {
-                  description: describeError(r.error) || unknown,
+                  description: describeError(r.error, t) || unknown,
                 })
               else {
                 toast.success(t("settings.toast.syncEnabled"))
@@ -232,7 +232,7 @@ export function SettingsView() {
               const r = await clearRepo()
               if ("error" in r)
                 toast.error(t("settings.toast.unbindFailed"), {
-                  description: describeError(r.error) || unknown,
+                  description: describeError(r.error, t) || unknown,
                 })
               else toast.success(t("settings.toast.unbound"))
             }}
@@ -249,7 +249,7 @@ export function SettingsView() {
                 const r = await syncNow()
                 if ("error" in r)
                   toast.error(t("settings.toast.syncFailed"), {
-                    description: describeError(r.error) || unknown,
+                    description: describeError(r.error, t) || unknown,
                   })
                 else
                   toast.success(
