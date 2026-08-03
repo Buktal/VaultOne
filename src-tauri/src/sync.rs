@@ -8,10 +8,14 @@
 //!
 //! Primitives provided here (timing — startup pull / flush push /
 //! periodic push / manual — is wired in S2b):
-//! - `open_or_clone` — open the local repo, or clone on first use
-//! - `pull`           — fetch `origin` + fast-forward (refuses to auto-merge)
-//! - `commit_all`     — stage every change (add/modify/delete) + commit
-//! - `push`           — push the current branch to `origin`
+//! - `open_or_clone`    — open the local repo, or clone on first use
+//! - `pull`             — fetch `origin` + fast-forward only; on divergent
+//!   histories returns `Diverged` for the caller to resolve (refuses to
+//!   auto-merge or push)
+//! - `rebase_and_push`  — rebase local-only commits onto a given upstream tip
+//!   and push (the diverge self-heal `pull` declines to do)
+//! - `commit_all`       — stage every change (add/modify/delete) + commit
+//! - `push`             — push the current branch to `origin`
 
 use std::path::Path;
 
@@ -333,35 +337,46 @@ fn pick_origin_branch(repo: &Repository) -> AppResult<Option<(String, Oid)>> {
 }
 
 // ---------------------------------------------------------------------------
-// pull (fetch + fast-forward)
+// pull (fetch + fast-forward) + rebase_and_push (diverge self-heal)
 // ---------------------------------------------------------------------------
 
-/// Fetch `origin` and advance the current branch to its tip. Fast-forwards when
-/// possible; if the local branch has commits the remote doesn't (a lost push
-/// race — another device pushed between our last pull and push), rebases the
-/// local-only commits onto the remote tip and pushes, auto-healing a state
-/// fast-forward-only could never recover from. Device isolation
+/// Outcome of [`pull`]. `pull` is fetch + fast-forward only — it never rebases
+/// or pushes. When the local and remote histories have diverged (a lost push
+/// race — another device pushed between our last pull and push) it does NOT
+/// mutate, returning [`PullOutcome::Diverged`] with the upstream tip so the
+/// caller can resolve it explicitly with [`rebase_and_push`]. This keeps `pull`
+/// honest about its name: no hidden rebase, no hidden push.
+pub enum PullOutcome<'a> {
+    /// Local is already at the remote tip — or there is no branch/upstream to
+    /// advance (unborn HEAD, first push pending). No mutation.
+    UpToDate,
+    /// Local branch was fast-forwarded to the remote tip and the worktree
+    /// synced to it.
+    FastForwarded,
+    /// Histories diverged. `pull` did nothing; the caller decides whether to
+    /// rebase + push via [`rebase_and_push`].
+    Diverged(AnnotatedCommit<'a>),
+}
+
+/// Fetch `origin` and advance the current branch to its tip when possible.
+/// Fast-forwards when it can; returns [`PullOutcome::Diverged`] WITHOUT
+/// mutating when the local branch has commits the remote doesn't (a lost push
+/// race). The caller — typically [`pull_and_import`] — then resolves the
+/// diverge explicitly with [`rebase_and_push`]. Device isolation
 /// (`data/<deviceId>/`) means a local-only commit only touches files the remote
-/// didn't, so the rebase applies without conflict. Usage artifacts are the
+/// didn't, so that rebase applies without conflict. Usage artifacts are the
 /// only thing in the repo and they are per-device isolated (`data/<deviceId>/`),
 /// so no shared file two devices could diverge on.
-///
-/// `author_name` / `author_email` are this device's commit identity, reused as
-/// the rebaser's signature (authors of replayed commits are preserved). Synced
-/// callers pass `cfg.display_name` / `author_email(cfg)`.
-pub fn pull(
-    repo: &Repository,
-    token: &str,
-    author_name: &str,
-    author_email: &str,
-) -> AppResult<()> {
+pub fn pull<'a>(repo: &'a Repository, token: &str) -> AppResult<PullOutcome<'a>> {
     // Unborn HEAD (fresh init, first commit still pending): no local branch to
     // fast-forward, so there is nothing to pull — the first commit+push creates
     // the branch. Covers the Standalone→Synced switch against an empty remote,
     // where `head()` would otherwise error on the missing HEAD ref.
     let mut head = match repo.head() {
         Ok(h) => h,
-        Err(ref e) if e.code() == git2::ErrorCode::UnbornBranch => return Ok(()),
+        Err(ref e) if e.code() == git2::ErrorCode::UnbornBranch => {
+            return Ok(PullOutcome::UpToDate)
+        }
         Err(e) => return Err(e.into()),
     };
     fetch_options_with_proxy!(fo, token);
@@ -377,38 +392,46 @@ pub fn pull(
     // Remote may not yet have this branch (first push pending) — nothing to pull.
     let upstream_oid = match repo.refname_to_id(&upstream_ref) {
         Ok(oid) => oid,
-        Err(_) => return Ok(()),
+        Err(_) => return Ok(PullOutcome::UpToDate),
     };
 
     let upstream = repo.find_annotated_commit(upstream_oid)?;
     let (analysis, _pref) = repo.merge_analysis(&[&upstream])?;
     if analysis.is_up_to_date() {
-        return Ok(());
+        return Ok(PullOutcome::UpToDate);
     }
     if !analysis.is_fast_forward() {
-        // Diverged: rebase local-only commits onto the remote tip and push.
-        return rebase_diverged(repo, &upstream, token, author_name, author_email);
+        // Diverged: surface the upstream tip only. `pull` declines to rebase/push
+        // — the caller resolves it via `rebase_and_push`.
+        return Ok(PullOutcome::Diverged(upstream));
     }
     // Fast-forward: move the branch ref to the remote tip, then sync the tree.
     head.set_target(upstream_oid, "pull: fast-forward")?;
     let mut co = CheckoutBuilder::new();
     co.force();
     repo.checkout_head(Some(&mut co))?;
-    Ok(())
+    Ok(PullOutcome::FastForwarded)
 }
 
-/// Rebase this branch's local-only commits onto the remote tip, then push.
-/// Called when [`pull`] finds divergent histories (a prior push lost a race).
+/// Rebase this branch's local-only commits onto `upstream` and push. The
+/// explicit diverge step [`pull`] declines to do — [`pull_and_import`]
+/// invokes it when [`pull`] returns [`PullOutcome::Diverged`], keeping the
+/// rebase+push inside the own-data snapshot so a hard-reset here can't drop
+/// uncommitted local rows.
 ///
 /// `git rebase` needs a clean worktree. Callers snapshot their dirty files and
-/// restore them after `pull` returns, so any in-worktree change here is
+/// restore them after this returns, so any in-worktree change here is
 /// regenerable — we hard-reset it away before rebasing. Device isolation
 /// (`data/<deviceId>/`) guarantees the rebase applies without conflict. A
 /// commit whose diff is already on the upstream tip (e.g. a device-cleanup a
 /// peer pushed first) is dropped as already-applied; any other failure is a
 /// real conflict, so we abort and surface it instead of silently merging, and
 /// the caller reports it as a plain failed sync.
-fn rebase_diverged(
+///
+/// `author_name` / `author_email` are this device's commit identity, reused as
+/// the rebaser's signature (authors of replayed commits are preserved). Synced
+/// callers pass `cfg.display_name` / `author_email(cfg)`.
+pub(crate) fn rebase_and_push(
     repo: &Repository,
     upstream: &AnnotatedCommit,
     token: &str,
@@ -692,17 +715,32 @@ pub fn pull_and_import(
 ) -> AppResult<u32> {
     let (url, token) = require_synced(cfg)?;
     let repo = open_or_clone_for_device(&url, &paths.repo, &token, &cfg.device_id)?;
-    // Protect this device's own data/ from pull's fast-forward force-checkout:
-    // the collector appends rows to data/<deviceId>/*.jsonl between pushes (dirty
-    // worktree), and pull's checkout would revert those files to the
-    // last-committed copy, silently dropping the uncommitted append — those rows
-    // never reach the remote, so peers never see them. `with_own_data_protected`
-    // snapshots before pull and restores after, so the local truth (including
-    // not-yet-pushed rows) survives. Restored here, before `read_all_artifacts`,
-    // matching the original ordering.
+    // Two-step sync: pull (fetch + fast-forward), then — only on diverge —
+    // rebase local-only commits onto the remote tip and push. Both steps run
+    // inside the own-data snapshot. pull's fast-forward force-checkout AND
+    // rebase_and_push's hard-reset-if-dirty would otherwise revert this
+    // device's uncommitted JSONL appends (rows the collector writes to
+    // data/<deviceId>/*.jsonl between pushes — dirty worktree), silently
+    // dropping them so they never reach the remote and peers never see them.
+    // `with_own_data_protected` snapshots before the closure and restores after
+    // it succeeds, so the local truth (including not-yet-pushed rows) survives
+    // both a ff checkout and a diverge rebase. Restored before
+    // `read_all_artifacts` below, matching the original ordering.
     let own_dir = paths.device_data_dir(&cfg.device_id);
-    with_own_data_protected(Some(&own_dir), || {
-        pull(&repo, &token, &cfg.display_name, &author_email(cfg))
+    with_own_data_protected(Some(&own_dir), || -> AppResult<()> {
+        match pull(&repo, &token)? {
+            PullOutcome::Diverged(upstream) => {
+                rebase_and_push(
+                    &repo,
+                    &upstream,
+                    &token,
+                    &cfg.display_name,
+                    &author_email(cfg),
+                )?;
+            }
+            PullOutcome::UpToDate | PullOutcome::FastForwarded => {}
+        }
+        Ok(())
     })?;
     let records = crate::ingest::read_all_artifacts(paths)?;
     let inserted = store.ingest(&records)?;
@@ -953,7 +991,10 @@ mod tests {
         let url = remote.to_string_lossy().to_string();
         let local = tmp.path().join("dev");
         let repo = init_with_remote(&url, &local, "", None).unwrap();
-        pull(&repo, "", "T", "t@devices.vaultone").unwrap();
+        assert!(
+            matches!(pull(&repo, "").unwrap(), PullOutcome::UpToDate),
+            "unborn HEAD must short-circuit as UpToDate"
+        );
     }
 
     /// End-to-end Standalone→Synced against an EMPTY remote: `local` already holds
@@ -1128,14 +1169,14 @@ mod tests {
         std::fs::write(a_data.join("usage-2026-07-17.jsonl"), "{\"uuid\":\"u2\"}\n").unwrap();
         commit_all(&repo_a, "device A day 2", "DevA", "a@devices.vaultone").unwrap();
         push(&repo_a, "").unwrap();
-        pull(&repo_b, "", "T", "t@devices.vaultone").unwrap();
+        pull(&repo_b, "").unwrap();
         assert!(dir_b.join("data/dev_a/usage-2026-07-17.jsonl").exists());
 
         // B's local artifact (its own device subtree) survives the pull untouched.
         let b_data = dir_b.join("data/dev_b");
         std::fs::create_dir_all(&b_data).unwrap();
         std::fs::write(b_data.join("usage-2026-07-16.jsonl"), "{\"uuid\":\"b1\"}\n").unwrap();
-        pull(&repo_b, "", "T", "t@devices.vaultone").unwrap();
+        pull(&repo_b, "").unwrap();
         assert_eq!(
             std::fs::read_to_string(b_data.join("usage-2026-07-16.jsonl")).unwrap(),
             "{\"uuid\":\"b1\"}\n",
@@ -1237,8 +1278,14 @@ mod tests {
         std::fs::write(&a_file, "a-1\na-2\n").unwrap();
         commit_all(&repo_a, "A2", "A", "a@devices.vaultone").unwrap();
 
-        // Pull self-heals: rebases A2 onto B1 and pushes.
-        pull(&repo_a, "", "A", "a@devices.vaultone").unwrap();
+        // pull surfaces the diverge (does NOT rebase/push itself); rebase_and_push
+        // self-heals — rebases A2 onto B1 and pushes — as an explicit step.
+        let outcome = pull(&repo_a, "").unwrap();
+        let upstream = match outcome {
+            PullOutcome::Diverged(u) => u,
+            _ => panic!("expected PullOutcome::Diverged after A's local-only commit"),
+        };
+        rebase_and_push(&repo_a, &upstream, "", "A", "a@devices.vaultone").unwrap();
 
         // A fresh clone sees BOTH devices' data — A's local-only a-2 change
         // landed on top of B1 without clobbering B (a soft/reset-only fix would
@@ -1316,9 +1363,15 @@ mod tests {
         std::fs::write(&b_file, "b-1\n").unwrap();
         commit_all(&repo_b, "B unique", "B", "b@devices.vaultone").unwrap();
 
-        // Pull self-heals: drops B_dup (patch == A1, already upstream) and
-        // rebases B_unique onto A1.
-        pull(&repo_b, "", "B", "b@devices.vaultone").unwrap();
+        // pull surfaces the diverge (does NOT rebase/push itself); rebase_and_push
+        // self-heals — drops B_dup (patch == A1, already upstream), rebases
+        // B_unique onto A1, and pushes — as an explicit step.
+        let outcome = pull(&repo_b, "").unwrap();
+        let upstream = match outcome {
+            PullOutcome::Diverged(u) => u,
+            _ => panic!("expected PullOutcome::Diverged after B's local-only commits"),
+        };
+        rebase_and_push(&repo_b, &upstream, "", "B", "b@devices.vaultone").unwrap();
 
         // A fresh clone sees A's file (from A1) AND B's unique file; B_dup was
         // skipped rather than turning the rebase into a conflict.
