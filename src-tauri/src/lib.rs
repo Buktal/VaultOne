@@ -313,7 +313,7 @@ pub fn run() {
                     );
                 loop {
                     let cfg = config.get();
-                    let collect_secs = cfg.collect_interval_secs.clamp(10, 3600) as u64;
+                    let collect_secs = cfg.collect_interval_secs.clamp(5, 3600) as u64;
                     let push_secs = cfg.push_interval_secs.clamp(60, 7200) as u64;
 
                     // Sleep to the nearer deadline (re-reading intervals each

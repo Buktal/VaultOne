@@ -498,7 +498,7 @@ pub fn set_close_behavior(
 #[tauri::command]
 #[specta::specta]
 pub fn set_collect_interval(state: State<'_, AppState>, seconds: u32) -> AppResult<Preferences> {
-    let clamped = seconds.clamp(10, 3600);
+    let clamped = seconds.clamp(5, 3600);
     let cfg = state.config.update(|c| c.collect_interval_secs = clamped)?;
     Ok(to_preferences(&cfg))
 }

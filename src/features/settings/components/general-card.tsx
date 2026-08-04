@@ -62,7 +62,7 @@ const EXPAND_OPTIONS: ReadonlyArray<[LightweightExpand, string]> = [
 ]
 
 /** Collect presets: seconds-level, local-only. */
-const COLLECT_OPTIONS: ReadonlyArray<number> = [10, 30, 60]
+const COLLECT_OPTIONS: ReadonlyArray<number> = [5, 10, 30, 60]
 
 /** Push presets: minutes-level, Git, Synced only. */
 const PUSH_OPTIONS: ReadonlyArray<number> = [300, 600, 900, 1800, 3600]
