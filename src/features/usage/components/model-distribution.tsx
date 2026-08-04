@@ -6,7 +6,13 @@
 import { useState } from "react"
 import { useTranslation } from "react-i18next"
 import { useModelsQuery } from "@/app/store/api"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
 import { topNModels } from "@/features/usage/derive"
 import { formatCost, formatTokens } from "@/lib/format"
 
@@ -46,24 +52,32 @@ export function ModelDistribution({
 
   return (
     <Card interactive>
-      <CardHeader className="flex-row items-center justify-between">
+      <CardHeader>
         <CardTitle>{t("usage.models.title")}</CardTitle>
-        <div className="bg-muted/60 inline-flex items-center gap-0.5 rounded-md p-0.5">
-          {(["cost", "tokens"] as const).map((m) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => setMetric(m)}
-              className={`rounded-[5px] px-2 py-0.5 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40 ${
-                metric === m
-                  ? "bg-background text-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {m === "cost" ? t("usage.models.cost") : t("usage.models.tokens")}
-            </button>
-          ))}
-        </div>
+        {/* 指标开关放进 CardAction: header 的 has-[card-action] 会切到
+            grid-cols-[1fr_auto], 开关待在自己的 auto 宽列里、justify-self-end
+            右对齐, 永不被标题宽度拉伸 (否则英文长标题会把胶囊背景撑出一截空隙)。
+            与同目录 usage-trend-chart 的 header 写法一致。 */}
+        <CardAction>
+          <div className="bg-muted/60 inline-flex items-center gap-0.5 rounded-md p-0.5">
+            {(["cost", "tokens"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setMetric(m)}
+                className={`rounded-[5px] px-2 py-0.5 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40 ${
+                  metric === m
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {m === "cost"
+                  ? t("usage.models.cost")
+                  : t("usage.models.tokens")}
+              </button>
+            ))}
+          </div>
+        </CardAction>
       </CardHeader>
       <CardContent className="flex flex-col gap-2">
         {items.length === 0 ? (

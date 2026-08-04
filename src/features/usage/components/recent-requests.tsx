@@ -9,7 +9,13 @@ import { useCountQuery, useLogsQuery } from "@/app/store/api"
 import { useAppDispatch } from "@/app/store/hooks"
 import { useUsageFilter } from "@/app/store/slices/filterSlice"
 import { setView } from "@/app/store/slices/viewSlice"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
 import { formatCost, formatInt, formatTime } from "@/lib/format"
 import { tokenTotal } from "@/lib/usage"
 import { cn } from "@/lib/utils"
@@ -32,19 +38,23 @@ export function RecentRequests() {
 
   return (
     <Card interactive>
-      <CardHeader className="flex-row items-center justify-between">
+      <CardHeader>
         <CardTitle>{t("usage.recent.title")}</CardTitle>
-        <button
-          type="button"
-          onClick={() => dispatch(setView("logs"))}
-          className="text-primary hover:text-primary/80 inline-flex items-center gap-1 text-xs"
-        >
-          {t("usage.recent.all")}
-          <ArrowRight className="size-3" />
-          {total > 0 ? (
-            <span className="text-muted-foreground">({formatInt(total)})</span>
-          ) : null}
-        </button>
+        <CardAction>
+          <button
+            type="button"
+            onClick={() => dispatch(setView("logs"))}
+            className="text-primary hover:text-primary/80 inline-flex items-center gap-1 text-xs"
+          >
+            {t("usage.recent.all")}
+            <ArrowRight className="size-3" />
+            {total > 0 ? (
+              <span className="text-muted-foreground">
+                ({formatInt(total)})
+              </span>
+            ) : null}
+          </button>
+        </CardAction>
       </CardHeader>
       <CardContent className="flex flex-col">
         {rows.length === 0 ? (
