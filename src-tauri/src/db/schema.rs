@@ -110,6 +110,17 @@ pub(super) const DAILY_ROLLUPS_COLS_DDL: &str = "\
     total_cost_usd TEXT NOT NULL, \
     PRIMARY KEY (day, model, device_id)";
 
+/// `dirty_days` — day-buckets (`yyyy-mm-dd`) holding un-pushed local changes.
+/// The collect path flags a day dirty in the SAME transaction that writes new
+/// usage/turn rows for it; the push path recomputes that day's per-day Artifact
+/// from the store and clears the flag once the push lands. One shared set
+/// serves both grains — a day is dirty if a usage row OR a turn row landed for
+/// it. Local-only: never part of the JSONL Artifact, never synced. It describes
+/// local write dirtiness and makes no claim about git worktree state, so a pull
+/// that rewrites the worktree can never desync it (contrast with a sync cursor,
+/// which would). Minimal shape: the day is the whole row.
+pub(super) const DIRTY_DAYS_COLS_DDL: &str = "day TEXT PRIMARY KEY";
+
 /// `model_pricing` — LiteLLM seed + user overrides. Decimal as TEXT.
 pub(super) const MODEL_PRICING_COLS_DDL: &str = "\
     model_key TEXT PRIMARY KEY, \
@@ -150,6 +161,7 @@ pub(super) fn schema_sql() -> String {
         TURN_DURATIONS_INDEXES.to_string(),
         create_table("ledger", LEDGER_COLS_DDL),
         create_table("daily_rollups", DAILY_ROLLUPS_COLS_DDL),
+        create_table("dirty_days", DIRTY_DAYS_COLS_DDL),
         create_table("model_pricing", MODEL_PRICING_COLS_DDL),
         create_table("device", DEVICE_COLS_DDL),
         create_table("scan_progress", SCAN_PROGRESS_COLS_DDL),
@@ -225,6 +237,7 @@ mod tests {
             "turn_durations",
             "ledger",
             "daily_rollups",
+            "dirty_days",
             "model_pricing",
             "device",
             "scan_progress",

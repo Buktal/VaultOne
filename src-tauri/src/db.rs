@@ -164,7 +164,30 @@ impl Store {
 
     /// Insert a batch of records, deduping by uuid via the ledger.
     /// Returns the newly imported rows (in order). Recomputes affected rollups.
+    /// The pull path: imported rows are already on git, so their days are NOT
+    /// flagged dirty. The local-collect path uses [`Store::ingest_marking_dirty`].
     pub fn ingest(&self, records: &[UsageRecord]) -> AppResult<Vec<UsageRecord>> {
+        self.ingest_impl(records, false)
+    }
+
+    /// Local-collect ingest: like [`Store::ingest`], but flags each inserted
+    /// row's day dirty in the SAME transaction. Same-tx is load-bearing — if the
+    /// row write and the dirty flag were separate transactions, a crash between
+    /// them would leave a written row whose day is never flagged, so the next
+    /// push's per-day recompute would never pick it up and it would silently
+    /// miss git (the exact failure the old JSONL-first ordering guarded). Pull
+    /// does not call this: peer rows are already on git, so flagging their days
+    /// would only cause spurious recomputes and muddy the "local dirtiness"
+    /// invariant (`dirty_days` describes un-pushed LOCAL writes, never imports).
+    pub fn ingest_marking_dirty(&self, records: &[UsageRecord]) -> AppResult<Vec<UsageRecord>> {
+        self.ingest_impl(records, true)
+    }
+
+    fn ingest_impl(
+        &self,
+        records: &[UsageRecord],
+        mark_dirty: bool,
+    ) -> AppResult<Vec<UsageRecord>> {
         if records.is_empty() {
             return Ok(Vec::new());
         }
@@ -236,6 +259,12 @@ impl Store {
             recompute_rollup(&tx, day, model, device)?;
         }
 
+        if mark_dirty {
+            let dirty: std::collections::BTreeSet<String> =
+                inserted.iter().map(|r| r.day.clone()).collect();
+            mark_days_dirty(&tx, &dirty)?;
+        }
+
         tx.commit()?;
         Ok(inserted)
     }
@@ -243,14 +272,33 @@ impl Store {
     /// Insert per-turn durations, deduping by uuid (INSERT OR IGNORE). Separate
     /// grain from per-call usage_records. Returns the newly inserted subset
     /// (mirrors `ingest`) so only new rows are appended to the JSONL Artifact.
+    /// Pull path — does not flag days dirty; see [`Self::ingest_turn_durations_marking_dirty`].
     pub fn ingest_turn_durations(&self, tds: &[TurnDuration]) -> AppResult<Vec<TurnDuration>> {
+        self.ingest_turn_durations_impl(tds, false)
+    }
+
+    /// Local-collect ingest for turns: flags each inserted turn's day dirty in
+    /// the same transaction (same rationale as [`Self::ingest_marking_dirty`]).
+    pub fn ingest_turn_durations_marking_dirty(
+        &self,
+        tds: &[TurnDuration],
+    ) -> AppResult<Vec<TurnDuration>> {
+        self.ingest_turn_durations_impl(tds, true)
+    }
+
+    fn ingest_turn_durations_impl(
+        &self,
+        tds: &[TurnDuration],
+        mark_dirty: bool,
+    ) -> AppResult<Vec<TurnDuration>> {
         if tds.is_empty() {
             return Ok(Vec::new());
         }
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut conn = self.conn.lock().expect("db mutex poisoned");
+        let tx = conn.transaction()?;
         let mut inserted = Vec::new();
         for td in tds {
-            let n = conn.execute(
+            let n = tx.execute(
                 "INSERT OR IGNORE INTO turn_durations
                  (uuid, timestamp, day, device_id, duration_ms)
                  VALUES (?1,?2,?3,?4,?5)",
@@ -266,6 +314,12 @@ impl Store {
                 inserted.push(td.clone());
             }
         }
+        if mark_dirty {
+            let dirty: std::collections::BTreeSet<String> =
+                inserted.iter().map(|t| t.day.clone()).collect();
+            mark_days_dirty(&tx, &dirty)?;
+        }
+        tx.commit()?;
         Ok(inserted)
     }
 
@@ -336,6 +390,30 @@ impl Store {
             set.insert(r?);
         }
         Ok(set)
+    }
+
+    // ---------------- Dirty days (sync recompute driver) ----------------
+    //
+    // The production reader (`dirty_days`) and clearer (`clear_dirty_days`) land
+    // with the push path that calls them — shipping them here would be dead code
+    // (this crate is a cdylib, so an uncalled `pub` method is flagged). The
+    // collect-side marking above is the load-bearing part of this ticket and has
+    // a production caller immediately; these read/clear helpers exist only so
+    // tests (including cross-module ones in `ingest`) can observe the marking.
+
+    /// Test-only view of the dirty day-buckets (sorted). Lets collect-side tests
+    /// assert that newly written rows flagged their days dirty. Replaced by the
+    /// real push-path reader in a later ticket.
+    #[cfg(test)]
+    pub(crate) fn dirty_days_for_test(&self) -> Vec<String> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn
+            .prepare("SELECT day FROM dirty_days ORDER BY day")
+            .expect("dirty_days prepared");
+        stmt.query_map([], |r| r.get::<_, String>(0))
+            .expect("dirty_days query")
+            .filter_map(Result::ok)
+            .collect()
     }
 
     /// Rebill zero-cost rows whose model now has a price (freeze +
@@ -729,6 +807,24 @@ fn row_to_pricing(r: &rusqlite::Row<'_>) -> rusqlite::Result<ModelPricing> {
         cache_creation: parse(r.get(5)?),
         is_builtin: r.get::<_, i64>(6)? != 0,
     })
+}
+
+/// Flag each day in `days` as dirty, within `tx` so the flag lands atomically
+/// with the row writes that made them dirty (a separate transaction could leave
+/// a written row whose day is never flagged, silently dropping it from the next
+/// push). `INSERT OR IGNORE` keeps it idempotent across collects.
+fn mark_days_dirty(
+    tx: &rusqlite::Transaction,
+    days: &std::collections::BTreeSet<String>,
+) -> AppResult<()> {
+    if days.is_empty() {
+        return Ok(());
+    }
+    let mut stmt = tx.prepare("INSERT OR IGNORE INTO dirty_days(day) VALUES (?1)")?;
+    for day in days {
+        stmt.execute(params![day])?;
+    }
+    Ok(())
 }
 
 /// Recompute one (day, model, device) rollup bucket from usage_records.
@@ -1198,6 +1294,123 @@ mod tests {
         let stats = s.query_stats(&UsageFilter::default()).unwrap();
         assert_eq!(stats.turn_count, 2);
         assert!((stats.avg_turn_duration_ms - 150_000.0).abs() < 1e-9);
+    }
+
+    // ---- dirty_days (sync recompute driver) ----
+
+    /// Wipe every dirty_days row — tests only (the production clearer lands with
+    /// the push path). db.rs tests can reach `conn` directly; cross-module tests
+    /// cannot, so they don't rely on clearing.
+    fn clear_dirty_days(s: &Store) {
+        s.conn
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM dirty_days", [])
+            .unwrap();
+    }
+
+    /// The local-collect ingest flags each newly inserted row's day dirty, in
+    /// the same transaction as the write. A collect that ingests rows on D1 and
+    /// D2 leaves exactly {D1, D2} dirty (deduped, sorted).
+    #[test]
+    fn ingest_marking_dirty_flags_days_of_new_rows() {
+        let s = mem();
+        s.ingest_marking_dirty(&[
+            rec("a", "2026-07-13", "glm-5.2", "dev1", 100, 50, 1.0),
+            rec("b", "2026-07-14", "glm-5.2", "dev1", 200, 0, 2.0),
+            rec("c", "2026-07-13", "gpt-4o", "dev1", 10, 0, 0.0),
+        ])
+        .unwrap();
+        assert_eq!(
+            s.dirty_days_for_test(),
+            vec!["2026-07-13".to_string(), "2026-07-14".to_string()],
+            "D1 (two rows) + D2, deduped and sorted"
+        );
+    }
+
+    /// The pull ingest path must NOT flag days dirty — imported rows are already
+    /// on git, so flagging them would only cause spurious recomputes and muddy
+    /// the "local dirtiness" invariant.
+    #[test]
+    fn pull_ingest_does_not_flag_days_dirty() {
+        let s = mem();
+        s.ingest(&[rec("a", "2026-07-13", "glm-5.2", "dev1", 100, 50, 1.0)])
+            .unwrap();
+        assert!(
+            s.dirty_days_for_test().is_empty(),
+            "pull-path ingest must not flag days dirty"
+        );
+    }
+
+    /// Re-ingesting already-known rows (uuid dedup) writes nothing new, so it
+    /// must not flag any day dirty — otherwise a retried collect would re-dirty
+    /// settled days forever. (Clearing first proves the second ingest adds nil.)
+    #[test]
+    fn deduped_reingest_does_not_flag_dirty() {
+        let s = mem();
+        let r = rec("a", "2026-07-13", "glm-5.2", "dev1", 100, 50, 1.0);
+        s.ingest_marking_dirty(std::slice::from_ref(&r)).unwrap();
+        clear_dirty_days(&s);
+        // Same uuid again ⇒ no new row ⇒ no dirty flag.
+        s.ingest_marking_dirty(std::slice::from_ref(&r)).unwrap();
+        assert!(s.dirty_days_for_test().is_empty());
+    }
+
+    /// Turn ingest marks its days dirty on the collect path too (one shared
+    /// dirty_days set serves both grains).
+    #[test]
+    fn turn_ingest_marking_dirty_flags_days() {
+        let s = mem();
+        s.ingest_turn_durations_marking_dirty(&[
+            TurnDuration {
+                uuid: "t1".into(),
+                timestamp: "2026-07-13T10:00:00Z".into(),
+                day: "2026-07-13".into(),
+                device_id: "d".into(),
+                duration_ms: 100_000,
+            },
+            TurnDuration {
+                uuid: "t2".into(),
+                timestamp: "2026-07-14T11:00:00Z".into(),
+                day: "2026-07-14".into(),
+                device_id: "d".into(),
+                duration_ms: 200_000,
+            },
+        ])
+        .unwrap();
+        assert_eq!(
+            s.dirty_days_for_test(),
+            vec!["2026-07-13".to_string(), "2026-07-14".to_string()]
+        );
+        // Pull-path turn ingest does not flag.
+        clear_dirty_days(&s);
+        s.ingest_turn_durations(&[TurnDuration {
+            uuid: "t3".into(),
+            timestamp: "2026-07-15T10:00:00Z".into(),
+            day: "2026-07-15".into(),
+            device_id: "d".into(),
+            duration_ms: 1,
+        }])
+        .unwrap();
+        assert!(
+            s.dirty_days_for_test().is_empty(),
+            "pull turn ingest no flag"
+        );
+    }
+
+    /// dirty_days accumulates across separate collects (a day stays dirty until
+    /// the push path clears it).
+    #[test]
+    fn dirty_days_accumulate_across_collects() {
+        let s = mem();
+        s.ingest_marking_dirty(&[rec("a", "2026-07-13", "glm-5.2", "d", 1, 0, 0.0)])
+            .unwrap();
+        s.ingest_marking_dirty(&[rec("b", "2026-07-14", "glm-5.2", "d", 1, 0, 0.0)])
+            .unwrap();
+        assert_eq!(
+            s.dirty_days_for_test(),
+            vec!["2026-07-13".to_string(), "2026-07-14".to_string()]
+        );
     }
 
     // ---- incremental scan cursors ----

@@ -94,7 +94,11 @@ pub fn ingest_collected(
         .map(|r| recordify(r, device_id, book))
         .collect();
     append_jsonl(paths, device_id, &records)?;
-    let inserted = store.ingest(&records)?;
+    // ingest_marking_dirty flags each new row's day dirty in the same tx as the
+    // write, so the next push's per-day recompute picks these rows up. (Ticket 02
+    // will delete the append_jsonl above; ticket 01 keeps the double-write so
+    // observable behavior is unchanged.)
+    let inserted = store.ingest_marking_dirty(&records)?;
 
     // Per-turn durations (separate grain). Same JSONL-first ordering as the
     // usage path above, for the same reason.
@@ -107,7 +111,7 @@ pub fn ingest_collected(
         Vec::new()
     } else {
         append_turn_jsonl(paths, device_id, &turns)?;
-        store.ingest_turn_durations(&turns)?
+        store.ingest_turn_durations_marking_dirty(&turns)?
     };
 
     Ok(IngestReport {
@@ -517,6 +521,36 @@ mod tests {
         ingest_collected(&store, &paths, dev, &book, result).unwrap();
         let clean = reconcile_artifact_gaps(&store, &paths, dev).unwrap();
         assert!(!clean, "no gap once the Artifact is backfilled");
+    }
+
+    /// The collect path flags the days of newly ingested rows dirty (in the same
+    /// tx as the write). A collect over D1 + D2 leaves {D1, D2} dirty. Proves the
+    /// `ingest_collected` wiring calls the marking ingest variant.
+    #[test]
+    fn ingest_collected_flags_dirty_days_for_new_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let book = seed_book();
+        let dev = "0123456789ab";
+        let d1 = raw("u1", "glm-5.2");
+        let d2 = RawUsage {
+            timestamp: "2026-07-14T16:55:22.467Z".into(),
+            ..raw("u2", "glm-5.2")
+        };
+        let result = CollectResult {
+            source: "claude_code".into(),
+            events: vec![d1, d2],
+            turn_durations: vec![raw_turn("td1")],
+            files_scanned: 1,
+            lines_skipped: 0,
+        };
+        ingest_collected(&store, &paths, dev, &book, result).unwrap();
+        assert_eq!(
+            store.dirty_days_for_test(),
+            vec!["2026-07-13".to_string(), "2026-07-14".to_string()],
+            "D1 (usage + turn) and D2 flagged, deduped + sorted"
+        );
     }
 
     #[test]
