@@ -21,9 +21,10 @@
 
 use std::collections::HashSet;
 
-use crate::config::{ConfigData, Paths};
+use crate::config::{ConfigData, ConfigStore, Paths};
 use crate::db::Store;
 use crate::error::AppResult;
+use crate::library::LibraryForgetAction;
 use crate::model::{DeviceArtifact, DeviceInfo};
 
 // ---------------- Device-name artifact (one file per device) ----------------
@@ -223,6 +224,136 @@ pub fn apply_aliases(devices: &mut [DeviceInfo], cfg: &ConfigData) {
     }
 }
 
+// ---------------- Lifecycle: register / rename / forget ----------------
+
+/// Register THIS device on boot: a row in the Local Store and the published
+/// name artifact. Both best-effort — boot must not fail on these (the original
+/// boot block ran two independent `let _ =`). The Store row is authoritative
+/// and self-heals on the next rename; the artifact write self-heals on the
+/// next sync. Idempotent: safe on every boot.
+pub fn register_self(store: &Store, config: &ConfigStore) -> AppResult<()> {
+    let cfg = config.get();
+    let _ = store.upsert_device(&cfg.device_id, &cfg.display_name, true);
+    let _ = ensure_own_device_artifact(&config.paths(), &cfg.device_id, &cfg.display_name);
+    Ok(())
+}
+
+/// Rename THIS device (display name only — not a uniqueness key): update local
+/// config, refresh the Store row, and republish the name artifact. Config +
+/// Store are hard errors (a half-applied rename would split the registry); the
+/// artifact write is best-effort (a failure doesn't undo the local rename, and
+/// the file self-heals on the next sync — `ensure_own_device_artifact` is a
+/// no-op when the file is already current).
+pub fn rename_self(store: &Store, config: &ConfigStore, new_name: &str) -> AppResult<()> {
+    let cfg = config.update(|c| {
+        c.display_name = new_name.to_string();
+    })?;
+    store.upsert_device(&cfg.device_id, &cfg.display_name, true)?;
+    let _ = ensure_own_device_artifact(&config.paths(), &cfg.device_id, &cfg.display_name);
+    Ok(())
+}
+
+/// Set a friendly name for a device (self or peer): upsert the Store row and
+/// record a local alias. Aliases are local-only (never synced); they layer
+/// over synced names at read time via [`apply_aliases`]. `is_self` is
+/// re-derived from the live config so the Store column can never mislabel a
+/// peer as "this device". Named `rename_peer` after the primary use case
+/// (naming a peer seen in the repo), but a self-id is handled correctly too.
+pub fn rename_peer(
+    store: &Store,
+    config: &ConfigStore,
+    device_id: &str,
+    display_name: &str,
+) -> AppResult<()> {
+    let is_self = config.get().device_id == device_id;
+    store.upsert_device(device_id, display_name, is_self)?;
+    config.update(|c| {
+        c.device_names
+            .insert(device_id.to_string(), display_name.to_string());
+    })?;
+    Ok(())
+}
+
+/// Delete a device's per-device Artifact dir `repo/data/<id>/` (best-effort:
+/// a missing dir is a no-op; an error is logged). Local-only — no Git push; a
+/// peer still in the repo reappears on the next sync.
+fn remove_device_data_dir(paths: &Paths, device_id: &str) {
+    let dir = paths.device_data_dir(device_id);
+    if dir.exists() {
+        if let Err(e) = std::fs::remove_dir_all(&dir) {
+            eprintln!(
+                "[vaultone] forget_device: failed to remove {}: {e}",
+                dir.display()
+            );
+        }
+    }
+}
+
+/// Delete a device's published name artifact `repo/config/devices_<id>.json`
+/// (best-effort: a missing file is a no-op; an error is logged). This module
+/// already owns the read + write of that file; this closes the delete side of
+/// the trio.
+fn remove_device_artifact_file(paths: &Paths, device_id: &str) {
+    let file = paths.devices_file_path(device_id);
+    if file.exists() {
+        if let Err(e) = std::fs::remove_file(&file) {
+            eprintln!(
+                "[vaultone] forget_device: failed to remove {}: {e}",
+                file.display()
+            );
+        }
+    }
+}
+
+/// Locally forget a peer device: drop its registry row + all its local usage
+/// data (records, rollups, turn durations, ledger), clear any local alias,
+/// delete its Artifact dir and published name artifact, and apply
+/// [`LibraryForgetAction`] to its library subtree. The Store + alias removals
+/// are hard errors (a half-forgotten device would leave the registry
+/// inconsistent); the filesystem + library cleanups are best-effort (logged,
+/// not propagated — a peer still in the repo reappears on the next sync, so a
+/// leftover dir/file self-heals). Nothing is pushed to Git.
+///
+/// `peer_name` is the peer's captured alias/name, grabbed by the caller BEFORE
+/// this runs — the migrate target folder is named after it (`from-<name>`).
+/// The caller MUST guard `is_self` (this device is never forgettable); the
+/// command layer enforces it, mirroring `db::Store::forget_device_local`'s own
+/// caller-guard contract.
+pub fn forget_device(
+    store: &Store,
+    config: &ConfigStore,
+    paths: &Paths,
+    device_id: &str,
+    library_action: LibraryForgetAction,
+    peer_name: &str,
+) -> AppResult<()> {
+    // Hard errors: registry row + alias map. Abort the whole forget if either
+    // fails — a half-forgotten device would leave the registry inconsistent.
+    store.forget_device_local(device_id)?;
+    config.update(|c| {
+        c.device_names.remove(device_id);
+    })?;
+    // Best-effort FS cleanups this module owns: the Artifact dir + name file.
+    remove_device_data_dir(paths, device_id);
+    remove_device_artifact_file(paths, device_id);
+    // Best-effort library cleanup (migrate or delete). Local-only — no Git push.
+    // Delegated to `library`: it owns the library subtree shape. `library` does
+    // not depend on `devices`, so this reverse call is not a cycle.
+    if let Err(e) = crate::library::forget_device_library(
+        paths,
+        &config.get(),
+        device_id,
+        library_action,
+        peer_name,
+    ) {
+        eprintln!(
+            "[vaultone] forget_device: library {:?} failed: {e}",
+            library_action
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,5 +499,159 @@ mod tests {
             devices[2].display_name, "Other Peer",
             "un-aliased device keeps its synced name"
         );
+    }
+
+    /// `register_self` seeds the Local Store row and publishes the name
+    /// artifact — the two boot-time writes that used to be inlined in `lib.rs`.
+    fn config_store_at(root: &std::path::Path, data: ConfigData) -> crate::config::ConfigStore {
+        crate::config::ConfigStore::for_test(Paths::resolve(root), data)
+    }
+
+    #[test]
+    fn register_self_writes_store_row_and_name_artifact() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        std::fs::create_dir_all(&paths.repo_config).unwrap();
+        let store = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let cfg = ConfigData {
+            device_id: "0123456789ab".into(),
+            display_name: "Laptop".into(),
+            ..Default::default()
+        };
+        let config = config_store_at(tmp.path(), cfg);
+
+        register_self(&store, &config).unwrap();
+
+        // Store row seeded as self.
+        let devices = store.list_devices().unwrap();
+        let row = devices
+            .iter()
+            .find(|d| d.device_id == "0123456789ab")
+            .unwrap();
+        assert_eq!(row.display_name, "Laptop");
+        assert!(row.is_self);
+        // Name artifact published to the flat path.
+        let arts = read_all_device_artifacts(&paths);
+        assert_eq!(arts.len(), 1);
+        assert_eq!(arts[0].device_id, "0123456789ab");
+        assert_eq!(arts[0].display_name, "Laptop");
+    }
+
+    #[test]
+    fn rename_self_updates_config_store_row_and_artifact() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        std::fs::create_dir_all(&paths.repo_config).unwrap();
+        let store = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let cfg = ConfigData {
+            device_id: "0123456789ab".into(),
+            display_name: "Old".into(),
+            ..Default::default()
+        };
+        let config = config_store_at(tmp.path(), cfg);
+        register_self(&store, &config).unwrap();
+
+        rename_self(&store, &config, "New Name").unwrap();
+
+        // Local config reflects the new name.
+        assert_eq!(config.get().display_name, "New Name");
+        // Store row carries the new name.
+        let row = store
+            .list_devices()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.device_id == "0123456789ab")
+            .unwrap();
+        assert_eq!(row.display_name, "New Name");
+        // Artifact republished with the new name.
+        let arts = read_all_device_artifacts(&paths);
+        assert_eq!(arts.len(), 1);
+        assert_eq!(arts[0].display_name, "New Name");
+    }
+
+    /// `rename_peer` records a local alias and upserts the Store row, re-deriving
+    /// `is_self` from the live config so a peer is never mislabeled.
+    #[test]
+    fn rename_peer_sets_alias_and_store_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let cfg = ConfigData {
+            device_id: "0123456789ab".into(),
+            ..Default::default()
+        };
+        let config = config_store_at(tmp.path(), cfg);
+
+        rename_peer(&store, &config, "aaaaaaaaaaaa", "Peer One").unwrap();
+
+        assert_eq!(
+            config
+                .get()
+                .device_names
+                .get("aaaaaaaaaaaa")
+                .map(String::as_str),
+            Some("Peer One"),
+            "alias recorded locally"
+        );
+        let row = store
+            .list_devices()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.device_id == "aaaaaaaaaaaa")
+            .unwrap();
+        assert_eq!(row.display_name, "Peer One");
+        assert!(!row.is_self, "is_self re-derived false for a peer");
+    }
+
+    /// `forget_device` drops everything local that named the peer: registry row,
+    /// alias, Artifact dir, name artifact, and (under Delete) the library
+    /// subtree. Best-effort steps must not abort the rest.
+    #[test]
+    fn forget_device_drops_row_alias_data_artifact_and_library() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        std::fs::create_dir_all(&paths.repo_config).unwrap();
+        std::fs::create_dir_all(&paths.repo_data).unwrap();
+        let store = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
+
+        let peer = "aaaaaaaaaaaa";
+        let mut cfg = ConfigData {
+            device_id: "0123456789ab".into(),
+            ..Default::default()
+        };
+        cfg.device_names.insert(peer.into(), "Old Peer".into());
+        let config = config_store_at(tmp.path(), cfg);
+
+        // Seed: Store row + alias (in cfg) + data dir + name artifact + library.
+        store.upsert_device(peer, "Old Peer", false).unwrap();
+        std::fs::create_dir_all(paths.device_data_dir(peer)).unwrap();
+        ensure_own_device_artifact(&paths, peer, "Old Peer").unwrap();
+        let peer_lib = paths.library.join(peer);
+        std::fs::create_dir_all(&peer_lib).unwrap();
+        std::fs::write(peer_lib.join("note.txt"), "hi").unwrap();
+
+        forget_device(
+            &store,
+            &config,
+            &paths,
+            peer,
+            crate::library::LibraryForgetAction::Delete,
+            "Old Peer",
+        )
+        .unwrap();
+
+        assert!(
+            !store.list_device_ids().unwrap().iter().any(|i| i == peer),
+            "peer registry row dropped"
+        );
+        assert!(
+            !config.get().device_names.contains_key(peer),
+            "alias cleared"
+        );
+        assert!(!paths.device_data_dir(peer).exists(), "data dir removed");
+        assert!(
+            !paths.devices_file_path(peer).exists(),
+            "name artifact removed"
+        );
+        assert!(!peer_lib.exists(), "library subtree deleted");
     }
 }

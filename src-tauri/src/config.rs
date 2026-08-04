@@ -352,6 +352,21 @@ impl ConfigStore {
     }
 }
 
+/// Test-only constructor: back a `ConfigStore` with `paths` and `data` without
+/// bootstrapping the home layout (`load` does that). The caller ensures the
+/// directory layout exists. Mutations persist to `paths.config_json`, so tests
+/// exercise the real `update`/`get`/`paths` code path. Used by `devices`
+/// lifecycle tests (register/rename/forget orchestrators take `&ConfigStore`).
+#[cfg(test)]
+impl ConfigStore {
+    pub(crate) fn for_test(paths: Paths, data: ConfigData) -> Self {
+        Self {
+            paths,
+            data: Mutex::new(data),
+        }
+    }
+}
+
 /// A valid deviceId is 12 lowercase hex chars (48-bit short id).
 pub fn is_valid_device_id(id: &str) -> bool {
     id.len() == 12

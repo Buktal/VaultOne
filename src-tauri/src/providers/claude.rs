@@ -82,6 +82,39 @@ impl ClaudeCodeProvider {
             Err(_) => true,
         }
     }
+
+    /// Fold one JSONL file's text into a per-file parse outcome. Lines at or
+    /// before `start_line` (1-based, the incremental cursor) are skipped. Dedup
+    /// is scoped per file: Claude Code writes one session per jsonl and a
+    /// message id is unique within that file, so per-file is the correct scope —
+    /// and it is the scope the production incremental path uses. Sharing this
+    /// fold between `parse` and `collect_incremental` makes the test and
+    /// production paths run the same code (architecture review #10: previously
+    /// `parse` cross-file-deduped while `collect_incremental` per-file-deduped).
+    ///
+    /// Invariant: the stored `RawUsage.uuid` is the source **event** uuid, NOT
+    /// the dedup key (the message id) — re-keying stored rows to the message id
+    /// would mass-duplicate on first run. The message id is the map key only.
+    fn fold_file(text: &str, start_line: i64) -> super::FileParseOutcome {
+        let mut events_by_mid: std::collections::HashMap<String, RawUsage> =
+            std::collections::HashMap::new();
+        let mut turn_durations = Vec::new();
+        let mut skipped = 0u32;
+        for (idx, line) in text.lines().enumerate() {
+            let line_no = idx as i64 + 1; // 1-based, matching the cursor
+            if line_no <= start_line {
+                continue;
+            }
+            if Self::fold_line(line, &mut events_by_mid, &mut turn_durations) {
+                skipped += 1;
+            }
+        }
+        super::FileParseOutcome {
+            events: events_by_mid.into_values().collect(),
+            turn_durations,
+            skipped,
+        }
+    }
 }
 
 impl Default for ClaudeCodeProvider {
@@ -125,8 +158,12 @@ impl Provider for ClaudeCodeProvider {
         // a separate event that repeats the full message.usage; without dedup
         // one API call becomes N records and tokens/cost inflate N× (observed
         // ~3.6× on CC-Switch/GLM transit logs). One message id ⇒ one record.
-        let mut events_by_mid: std::collections::HashMap<String, RawUsage> =
-            std::collections::HashMap::new();
+        // Per-file dedup via `fold_file` — the same fold the production
+        // incremental path uses, so test and production run identical logic.
+        // A message id never spans files (one session per jsonl), so per-file
+        // vs cross-file is observably identical here; sharing the fold is what
+        // matters.
+        let mut events = Vec::new();
         let mut turn_durations = Vec::new();
         let mut skipped = 0u32;
         for file in files {
@@ -137,15 +174,13 @@ impl Provider for ClaudeCodeProvider {
                     continue;
                 }
             };
-            for line in text.lines() {
-                if Self::fold_line(line, &mut events_by_mid, &mut turn_durations) {
-                    skipped += 1;
-                }
-            }
+            let outcome = Self::fold_file(&text, 0);
+            events.extend(outcome.events);
+            turn_durations.extend(outcome.turn_durations);
+            skipped += outcome.skipped;
         }
         // Deterministic order (timestamp, then uuid) so repeated parses of the
         // same sources yield identical artifact lines.
-        let mut events: Vec<RawUsage> = events_by_mid.into_values().collect();
         events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
         Ok(CollectResult {
             source: self.name().to_string(),
@@ -156,37 +191,18 @@ impl Provider for ClaudeCodeProvider {
         })
     }
 
-    /// Incremental collect: parse only lines past each file's
-    /// recorded cursor and return the advanced cursors to persist. The mtime
-    /// gate skips unchanged files (no IO/serde); a never-seen file ({0,0})
-    /// falls through to a full parse on first sight.
+    /// Incremental collect: parse only lines past each file's recorded cursor
+    /// and return the advanced cursors to persist. The mtime gate skips
+    /// unchanged files (no IO/serde); a never-seen file ({0,0}) falls through to
+    /// a full parse on first sight. Delegates to the shared JSONL driver — the
+    /// per-file fold is `fold_file`, the same one `parse` uses, so dedup scope
+    /// and event classification are identical between the two paths.
     fn collect_incremental(
         &self,
         progress: &ScanProgress,
     ) -> AppResult<(CollectResult, ScanProgressDelta)> {
         collect_jsonl_incremental(self, progress, |_file: &Path, text, start_line| {
-            // Same message-id dedup as `parse` — one assistant response may span
-            // several content-block events that all repeat the full usage. The
-            // stored uuid stays the event uuid (not the message id); re-keying
-            // would cause a mass migration duplicate on first run.
-            let mut events_by_mid: std::collections::HashMap<String, RawUsage> =
-                std::collections::HashMap::new();
-            let mut turn_durations = Vec::new();
-            let mut skipped = 0u32;
-            for (idx, line) in text.lines().enumerate() {
-                let line_no = idx as i64 + 1; // 1-based
-                if line_no <= start_line {
-                    continue;
-                }
-                if Self::fold_line(line, &mut events_by_mid, &mut turn_durations) {
-                    skipped += 1;
-                }
-            }
-            super::FileParseOutcome {
-                events: events_by_mid.into_values().collect(),
-                turn_durations,
-                skipped,
-            }
+            Self::fold_file(text, start_line)
         })
     }
 }

@@ -63,9 +63,13 @@ pub fn get_app_info(state: State<'_, AppState>) -> AppResult<AppInfo> {
 }
 
 /// Configure the sync repo + PAT, upgrading Standalone → Synced, then
-/// immediately pull the remote so peer devices show up without a restart (the
-/// startup pull only fires on next launch). Best-effort: a pull failure doesn't
-/// undo the bind — the next startup pull retries.
+/// immediately run one sync round (pull peers + push self) so peer devices show
+/// up and this device's existing data reaches the repo without a restart (the
+/// startup sync only fires on next launch). Routed through `collect::sync_round`
+/// — the same primitive the scheduler runs each push interval — but WITHOUT the
+/// retry wrapping that `align` (the manual collect/sync buttons) applies: a
+/// failure here is logged and left for the next startup sync to retry, not
+/// retried in place. Best-effort: a sync failure doesn't undo the bind.
 #[tauri::command]
 #[specta::specta]
 pub async fn set_sync_repo(
@@ -89,10 +93,18 @@ pub async fn set_sync_repo(
             };
         })?;
         if cfg.is_synced() {
-            let paths = config.paths();
-            match crate::sync::pull_and_import(&store, &paths, &cfg) {
-                Ok(n) => eprintln!("[vaultone] set_sync_repo imported {n} row(s)"),
-                Err(e) => eprintln!("[vaultone] set_sync_repo pull failed: {e}"),
+            let outcome = crate::collect::sync_round(&store, &config);
+            if outcome.imported > 0 {
+                eprintln!(
+                    "[vaultone] set_sync_repo imported {} row(s)",
+                    outcome.imported
+                );
+            }
+            if outcome.pushed {
+                eprintln!("[vaultone] set_sync_repo pushed local changes");
+            }
+            for e in &outcome.errors {
+                eprintln!("[vaultone] set_sync_repo sync error: {e}");
             }
         }
         Ok(cfg.mode())
@@ -156,21 +168,7 @@ pub async fn verify_sync_repo(
 #[tauri::command]
 #[specta::specta]
 pub fn set_display_name(state: State<'_, AppState>, display_name: String) -> AppResult<()> {
-    let cfg = state.config.update(|c| {
-        c.display_name = display_name;
-    })?;
-    state
-        .store
-        .upsert_device(&cfg.device_id, &cfg.display_name, true)?;
-    // Publish the new name to the cloud registry (config/devices/<id>.json);
-    // the normal Git sync carries it. Best-effort — a write failure doesn't
-    // undo the local rename. No write if the file is already current.
-    let _ = crate::devices::ensure_own_device_artifact(
-        &state.config.paths(),
-        &cfg.device_id,
-        &cfg.display_name,
-    );
-    Ok(())
+    crate::devices::rename_self(&state.store, &state.config, &display_name)
 }
 
 /// Set a friendly name for *another* device seen in the repo (map).
@@ -181,14 +179,7 @@ pub fn set_device_display_name(
     device_id: String,
     display_name: String,
 ) -> AppResult<()> {
-    let is_self = state.config.get().device_id == device_id;
-    state
-        .store
-        .upsert_device(&device_id, &display_name, is_self)?;
-    state.config.update(|c| {
-        c.device_names.insert(device_id, display_name);
-    })?;
-    Ok(())
+    crate::devices::rename_peer(&state.store, &state.config, &device_id, &display_name)
 }
 
 /// Locally forget a peer device: drop its registry row + all its local usage
@@ -212,48 +203,22 @@ pub fn forget_device(
         ));
     }
     // Capture the peer's alias BEFORE the registry row + alias map are dropped —
-    // the migrate target folder is named after it (`from-<name>`).
+    // the migrate target folder is named after it (`from-<name>`). The full
+    // five-step cleanup (DB row, alias, data dir, name file, library subtree)
+    // is owned by `devices::forget_device`.
     let peer_name = cfg
         .device_names
         .get(&device_id)
         .cloned()
         .unwrap_or_default();
-    state.store.forget_device_local(&device_id)?;
-    state.config.update(|c| {
-        c.device_names.remove(&device_id);
-    })?;
-    let paths = state.config.paths();
-    // Per-device JSONL artifact dir.
-    let data_dir = paths.device_data_dir(&device_id);
-    if data_dir.exists() {
-        if let Err(e) = std::fs::remove_dir_all(&data_dir) {
-            eprintln!(
-                "[vaultone] forget_device: failed to remove {}: {e}",
-                data_dir.display()
-            );
-        }
-    }
-    // Per-device library subtree (migrate or delete), mirroring the data-dir
-    // cleanup above: local-only, no Git push.
-    if let Err(e) =
-        crate::library::forget_device_library(&paths, &cfg, &device_id, library_action, &peer_name)
-    {
-        eprintln!(
-            "[vaultone] forget_device: library {:?} failed: {e}",
-            library_action
-        );
-    }
-    // Cloud device-name registry file this peer published.
-    let devices_file = paths.devices_file_path(&device_id);
-    if devices_file.exists() {
-        if let Err(e) = std::fs::remove_file(&devices_file) {
-            eprintln!(
-                "[vaultone] forget_device: failed to remove {}: {e}",
-                devices_file.display()
-            );
-        }
-    }
-    Ok(())
+    crate::devices::forget_device(
+        &state.store,
+        &state.config,
+        &state.config.paths(),
+        &device_id,
+        library_action,
+        &peer_name,
+    )
 }
 
 // ---------------- Collect / ingest ----------------

@@ -6,8 +6,8 @@ use crate::error::{AppError, AppResult};
 use crate::model::{ServerToolUse, TokenCounts};
 
 use super::{
-    metadata_modified_nanos, normalize_cache_inclusive, CollectResult, FileCursor, Provider,
-    RawUsage, ScanProgress, ScanProgressDelta,
+    collect_jsonl_incremental, normalize_cache_inclusive, CollectResult, FileParseOutcome,
+    Provider, RawUsage, ScanProgress, ScanProgressDelta,
 };
 
 /// Gemini CLI (`~/.gemini`) session-log provider.
@@ -108,58 +108,26 @@ impl Provider for GeminiCliProvider {
     }
 
     /// Incremental collect: a Gemini session file is a single JSON object, so
-    /// there is no line cursor — mtime-gate unchanged files and full re-parse
-    /// the rest. The ledger dedups already-seen message ids; a CLI rewrite that
-    /// changes an existing message's tokens is NOT re-costed (freeze + top-up
-    /// only), which matches the session-log contract.
+    /// there is no line cursor — only the mtime gate (owned by the shared JSONL
+    /// driver) is meaningful, and a gated file is re-parsed in full. The line
+    /// cursor the driver advances is harmless: this provider's `parse_file`
+    /// ignores `start_line` and parses the whole text every gate pass. The
+    /// ledger dedups already-seen message ids; a CLI rewrite that changes an
+    /// existing message's tokens is NOT re-costed (freeze + top-up only), which
+    /// matches the session-log contract.
     fn collect_incremental(
         &self,
         progress: &ScanProgress,
     ) -> AppResult<(CollectResult, ScanProgressDelta)> {
-        let files = self.discover()?;
-        let mut events = Vec::new();
-        let mut skipped = 0u32;
-        let mut delta = ScanProgressDelta::new();
-        for file in &files {
-            let path_str = file.to_string_lossy().into_owned();
-            let metadata = match std::fs::metadata(file) {
-                Ok(m) => m,
-                Err(_) => {
-                    skipped += 1;
-                    continue;
-                }
-            };
-            let mtime = metadata_modified_nanos(&metadata);
-            let prev = progress.get(&path_str).copied().unwrap_or_default();
-            if prev.last_modified != 0 && mtime <= prev.last_modified {
-                continue;
+        collect_jsonl_incremental(self, progress, |_file, text, _start_line| {
+            // Single JSON object per file ⇒ no line cursor; `start_line` is
+            // irrelevant and the whole text is parsed on every gate pass.
+            FileParseOutcome {
+                events: parse_gemini_text(text),
+                turn_durations: Vec::new(),
+                skipped: 0,
             }
-            let text = match std::fs::read_to_string(file) {
-                Ok(t) => t,
-                Err(_) => {
-                    skipped += 1;
-                    continue;
-                }
-            };
-            events.extend(parse_gemini_text(&text));
-            // No line cursor for a single-JSON file; offset stays 0.
-            delta.insert(
-                path_str,
-                FileCursor {
-                    last_modified: mtime,
-                    last_line_offset: 0,
-                },
-            );
-        }
-        events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
-        let result = CollectResult {
-            source: self.name().to_string(),
-            events,
-            turn_durations: Vec::new(),
-            files_scanned: files.len() as u32,
-            lines_skipped: skipped,
-        };
-        Ok((result, delta))
+        })
     }
 }
 

@@ -276,7 +276,7 @@ fn parse_codex_text(
                         .or_else(|| payload.get("info").and_then(|i| i.get("model")))
                         .and_then(|v| v.as_str())
                     {
-                        state.current_model = normalize_codex_model(model);
+                        state.current_model = crate::model::normalize_model_key(model);
                     }
                 }
             }
@@ -297,7 +297,7 @@ fn parse_codex_text(
                     .or_else(|| payload.get("model"))
                     .and_then(|v| v.as_str())
                 {
-                    state.current_model = normalize_codex_model(model);
+                    state.current_model = crate::model::normalize_model_key(model);
                 }
                 // Prefer cumulative total_token_usage; fall back to last_token_usage
                 // (already a per-call delta).
@@ -427,41 +427,6 @@ fn parse_codex_session_identity(payload: &serde_json::Value) -> Option<CodexSess
     })
 }
 
-/// Normalize a Codex model name: lowercase → strip `provider/` prefix → strip
-/// `-YYYY-MM-DD` / `-YYYYMMDD` date suffix. Required for pricing-table hits.
-fn normalize_codex_model(raw: &str) -> String {
-    let mut name = raw.to_lowercase();
-    if let Some(pos) = name.rfind('/') {
-        name = name[pos + 1..].to_string();
-    }
-    // Strip ISO date suffix -YYYY-MM-DD (exactly 11 chars).
-    if name.len() > 11 && name.is_char_boundary(name.len() - 11) {
-        let suffix = &name[name.len() - 11..];
-        if suffix.is_ascii()
-            && suffix.as_bytes()[0] == b'-'
-            && suffix[1..5].chars().all(|c| c.is_ascii_digit())
-            && suffix.as_bytes()[5] == b'-'
-            && suffix[6..8].chars().all(|c| c.is_ascii_digit())
-            && suffix.as_bytes()[8] == b'-'
-            && suffix[9..11].chars().all(|c| c.is_ascii_digit())
-        {
-            name.truncate(name.len() - 11);
-        }
-    }
-    // Strip compact date suffix -YYYYMMDD (exactly 8 chars after last '-').
-    if name.len() > 9 {
-        let parts: Vec<&str> = name.rsplitn(2, '-').collect();
-        if parts.len() == 2 {
-            if let Some(suffix) = parts.first() {
-                if suffix.len() == 8 && suffix.chars().all(|c| c.is_ascii_digit()) {
-                    name = parts[1].to_string();
-                }
-            }
-        }
-    }
-    name
-}
-
 /// Delta between two cumulative snapshots (saturating to guard against the
 /// current falling below the previous — abnormal but non-fatal).
 fn compute_delta(prev: &Option<CumulativeTokens>, current: &CumulativeTokens) -> DeltaTokens {
@@ -557,28 +522,24 @@ mod tests {
         })
     }
 
+    /// Codex model names flow through `crate::model::normalize_model_key` (the
+    /// shared superset normalizer). This pins the provider's observable
+    /// normalization contract: lowercase, strip `provider/` prefix, and strip
+    /// `-YYYY-MM-DD` / `-YYYYMMDD` date suffixes.
     #[test]
     fn codex_normalize_model_lowercase_prefix_and_dates() {
-        assert_eq!(normalize_codex_model("GLM-4.6"), "glm-4.6");
-        assert_eq!(normalize_codex_model("openai/gpt-5.4"), "gpt-5.4");
-        assert_eq!(normalize_codex_model("OPENAI/GPT-5.4"), "gpt-5.4");
-        assert_eq!(normalize_codex_model("gpt-5.4-2026-03-05"), "gpt-5.4");
-        assert_eq!(
-            normalize_codex_model("gpt-5.4-pro-2026-03-05"),
-            "gpt-5.4-pro"
-        );
-        assert_eq!(normalize_codex_model("gpt-5.4-20260305"), "gpt-5.4");
-        assert_eq!(
-            normalize_codex_model("claude-opus-4-6-20260206"),
-            "claude-opus-4-6"
-        );
-        assert_eq!(
-            normalize_codex_model("openai/GPT-5.4-2026-03-05"),
-            "gpt-5.4"
-        );
-        assert_eq!(normalize_codex_model("openai/gpt-5.4-20260305"), "gpt-5.4");
-        assert_eq!(normalize_codex_model("gpt-5.2-codex"), "gpt-5.2-codex");
-        assert_eq!(normalize_codex_model("o3"), "o3");
+        let norm = crate::model::normalize_model_key;
+        assert_eq!(norm("GLM-4.6"), "glm-4.6");
+        assert_eq!(norm("openai/gpt-5.4"), "gpt-5.4");
+        assert_eq!(norm("OPENAI/GPT-5.4"), "gpt-5.4");
+        assert_eq!(norm("gpt-5.4-2026-03-05"), "gpt-5.4");
+        assert_eq!(norm("gpt-5.4-pro-2026-03-05"), "gpt-5.4-pro");
+        assert_eq!(norm("gpt-5.4-20260305"), "gpt-5.4");
+        assert_eq!(norm("claude-opus-4-6-20260206"), "claude-opus-4-6");
+        assert_eq!(norm("openai/GPT-5.4-2026-03-05"), "gpt-5.4");
+        assert_eq!(norm("openai/gpt-5.4-20260305"), "gpt-5.4");
+        assert_eq!(norm("gpt-5.2-codex"), "gpt-5.2-codex");
+        assert_eq!(norm("o3"), "o3");
     }
 
     #[test]

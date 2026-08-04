@@ -66,7 +66,7 @@ impl PricingBook {
     pub fn from_iter<I: IntoIterator<Item = ModelPricing>>(iter: I) -> Self {
         let mut by_key = HashMap::new();
         for p in iter {
-            by_key.insert(normalize_key(&p.model_key), p);
+            by_key.insert(crate::model::normalize_pricing_key(&p.model_key), p);
         }
         Self { by_key }
     }
@@ -148,32 +148,10 @@ fn dec(s: &str) -> Decimal {
     Decimal::from_str_exact(s).expect("seed literal: not a valid decimal")
 }
 
-/// Normalize a model key for matching: lowercase, strip `[...]` brackets and
-/// trailing `-yyyymmdd` dates. e.g. `glm-5.2[1m]` → `glm-5.2`,
-/// `claude-3-5-haiku-20241022` → `claude-3-5-haiku`.
-pub fn normalize_key(model: &str) -> String {
-    let lower = model.to_ascii_lowercase();
-    // drop bracketed suffixes like [1m]
-    let no_brackets = lower.split('[').next().unwrap_or(&lower).trim_end();
-    // drop trailing 8-digit date
-    let bytes = no_brackets.as_bytes();
-    let cut = if bytes.len() >= 9 {
-        let tail = &no_brackets[no_brackets.len() - 9..];
-        if tail.starts_with('-') && tail[1..].chars().all(|c| c.is_ascii_digit()) {
-            no_brackets.len() - 9
-        } else {
-            no_brackets.len()
-        }
-    } else {
-        no_brackets.len()
-    };
-    no_brackets[..cut].to_string()
-}
-
 /// Ordered candidates to try: full normalized key, then progressively shorter
 /// `-`-delimited prefixes (prefix fallback).
 fn normalization_candidates(model: &str) -> Vec<String> {
-    let norm = normalize_key(model);
+    let norm = crate::model::normalize_pricing_key(model);
     let mut out = vec![norm.clone()];
     let parts: Vec<&str> = norm.split('-').collect();
     // build prefixes by dropping trailing segments (keep ≥1 segment)
@@ -400,18 +378,6 @@ fn per_million(per_token: f64) -> Decimal {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn normalize_key_strips_brackets_lowercases_and_drops_date() {
-        assert_eq!(normalize_key("glm-5.2[1m]"), "glm-5.2");
-        assert_eq!(
-            normalize_key("Claude-3-5-Haiku-20241022"),
-            "claude-3-5-haiku"
-        );
-        assert_eq!(normalize_key("GPT-4o"), "gpt-4o");
-        // No bracket suffix, no trailing 8-digit date → only lowercased.
-        assert_eq!(normalize_key("claude-3-5-sonnet"), "claude-3-5-sonnet");
-    }
 
     #[test]
     fn calc_is_zero_when_rate_missing() {

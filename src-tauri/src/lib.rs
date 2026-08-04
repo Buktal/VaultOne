@@ -7,6 +7,7 @@
 //!.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 #[cfg(debug_assertions)]
 use specta_typescript::Typescript;
@@ -32,7 +33,7 @@ mod time;
 mod window_geom;
 
 use commands::AppState;
-use config::ConfigStore;
+use config::{ConfigData, ConfigStore};
 use db::Store;
 
 /// Assemble the tauri-specta builder with all typed commands.
@@ -160,6 +161,61 @@ fn export_bindings(builder: &Builder<tauri::Wry>) {
     }
 }
 
+/// One scheduler action returned by [`plan_tick`]. The list order IS the
+/// execution order — `Collect` always precedes `Sync` (see [`plan_tick`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TickAction {
+    /// Parse Sources → Local Store (+ JSONL Artifact). No network.
+    Collect,
+    /// One pull+push round (Synced only). The cadence is the retry — no
+    /// per-tick retry here.
+    Sync,
+}
+
+/// Pure per-tick decision for the background scheduler: given the current
+/// time, the two deadlines, and the live config, return the actions to run
+/// this tick (in order) plus the updated deadlines.
+///
+/// **Encodes the collect-before-sync invariant.** When both deadlines fire in
+/// the same tick, `Collect` is always placed before `Sync` in the returned
+/// `Vec`: collect's JSONL `writeln!` has fully flushed by the time it returns,
+/// so the subsequent `git add` snapshots complete lines only (no half-line
+/// race) — safe only because the scheduler runs them serially on one thread.
+/// This ordering used to live only in a prose comment next to the spawn; it is
+/// now a table-testable `Vec` ordering.
+///
+/// Pure: no IO, no global state, no clock — `now` is a parameter, so the full
+/// decision surface (independent intervals, collect-before-sync, `is_synced`
+/// gate, interval clamping) is covered by `tests::plan_tick_table`.
+///
+/// A deadline that does not fire is returned unchanged, so in Standalone
+/// (where `Sync` never fires) `next_push` stays at its initial value —
+/// preserved exactly from the inline loop.
+fn plan_tick(
+    now: Instant,
+    next_collect: Instant,
+    next_push: Instant,
+    cfg: &ConfigData,
+) -> (Vec<TickAction>, Instant, Instant) {
+    let collect_secs = cfg.collect_interval_secs.clamp(5, 3600) as u64;
+    let push_secs = cfg.push_interval_secs.clamp(60, 7200) as u64;
+
+    let mut actions = Vec::new();
+    let mut new_collect = next_collect;
+    let mut new_push = next_push;
+    // Collect is evaluated and pushed first, so when both deadlines fire the
+    // JSONL has flushed before git add runs. The invariant is this Vec order.
+    if now >= next_collect {
+        actions.push(TickAction::Collect);
+        new_collect = now + Duration::from_secs(collect_secs);
+    }
+    if now >= next_push && cfg.is_synced() {
+        actions.push(TickAction::Sync);
+        new_push = now + Duration::from_secs(push_secs);
+    }
+    (actions, new_collect, new_push)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = specta_builder();
@@ -178,17 +234,12 @@ pub fn run() {
     let config = ConfigStore::load().expect("vaultone: failed to load local config");
     let store = Store::open(&config.paths().db).expect("vaultone: failed to open Local Store");
     {
-        let cfg = config.get();
-        let _ = store.upsert_device(&cfg.device_id, &cfg.display_name, true);
-        // Self-heal: ensure this device's name is published to the cloud
-        // registry (config/devices/<id>.json). Covers both first run and an
-        // upgrade from a version that predates device-name sync. Best-effort;
-        // the normal Git sync carries it.
-        let _ = crate::devices::ensure_own_device_artifact(
-            &config.paths(),
-            &cfg.device_id,
-            &cfg.display_name,
-        );
+        // Register this device in the Local Store and publish its name
+        // artifact (covers both first run and an upgrade from a version that
+        // predates device-name sync). Best-effort; the normal Git sync carries
+        // the artifact. The registry lifecycle owns this now — see
+        // `devices::register_self`.
+        let _ = crate::devices::register_self(&store, &config);
         // Best-effort zero-cost top-up on boot: newly-seeded pricing
         // may price rows that were imported while the model was missing.
         let book = store.load_pricing_book().unwrap_or_else(|e| {
@@ -290,58 +341,69 @@ pub fn run() {
             // round per tick — so peer devices' usage lands here, this device's
             // goes up, and the Git history grows at a controlled rate.
             //
-            // One thread, two deadlines, slept-to (not polled): on each wake we
-            // re-read both intervals, so Settings changes apply without restart.
-            // Within a tick where BOTH deadlines fire, collect runs BEFORE sync:
-            // collect's `writeln!` has fully flushed the JSONL by the time it
-            // returns, so the subsequent `git add` snapshots complete lines only
-            // (no half-line race). Serial execution on a single thread is what
-            // makes this safe — no lock is needed.
+            // One thread, two deadlines, slept-to (not polled): each tick
+            // re-reads the config snapshot and hands it to [`plan_tick`], so
+            // Settings changes apply without restart.
             //
-            // First collect fires immediately (dashboard is fresh on open). The
-            // first sync is delayed by one push_interval so it cannot race the
-            // startup pull's git-worktree ops (rationale, preserved).
+            // The collect-before-sync invariant — when BOTH deadlines fire in a
+            // tick, collect's JSONL `writeln!` has fully flushed before the
+            // subsequent `git add` runs (no half-line race), safe only because
+            // execution is serial on this single thread — is encoded and tested
+            // in [`plan_tick`]: `Collect` always precedes `Sync` in the returned
+            // action list, and this closure just walks that list in order.
+            //
+            // Startup strategy: first collect fires immediately (next_collect =
+            // start — dashboard is fresh on open); first sync is delayed one
+            // push_interval (next_push = start + push_interval) so it cannot
+            // race the startup pull's git-worktree ops. These are one-off
+            // initializations; [`plan_tick`] owns the per-tick logic.
             let store = state.store.clone();
             let config = state.config.clone();
             let app_handle = app.handle().clone();
             std::thread::spawn(move || {
-                let start = std::time::Instant::now();
+                let start = Instant::now();
                 let mut next_collect = start;
                 let mut next_push = start
-                    + std::time::Duration::from_secs(
-                        config.get().push_interval_secs.clamp(60, 7200) as u64,
-                    );
+                    + Duration::from_secs(config.get().push_interval_secs.clamp(60, 7200) as u64);
                 loop {
+                    // Snapshot config once per tick (matches the original
+                    // pre-sleep read so live Settings changes apply next tick).
                     let cfg = config.get();
-                    let collect_secs = cfg.collect_interval_secs.clamp(5, 3600) as u64;
-                    let push_secs = cfg.push_interval_secs.clamp(60, 7200) as u64;
 
-                    // Sleep to the nearer deadline (re-reading intervals each
-                    // wake lets Settings apply live).
-                    let now = std::time::Instant::now();
+                    // Sleep to the nearer deadline (not polled).
+                    let now = Instant::now();
                     let next_deadline = next_collect.min(next_push);
                     if next_deadline > now {
                         std::thread::sleep(next_deadline - now);
                     }
 
-                    let now = std::time::Instant::now();
-                    if now >= next_collect {
-                        if let Err(e) = collect::collect_into(&store, &config) {
-                            eprintln!("[vaultone] scheduled collect failed: {e}");
+                    let now = Instant::now();
+                    let (actions, new_collect, new_push) =
+                        plan_tick(now, next_collect, next_push, &cfg);
+                    next_collect = new_collect;
+                    next_push = new_push;
+                    // Execute in returned order: Collect before Sync when both
+                    // fire (the collect-before-sync invariant — Vec order, not prose).
+                    for action in actions {
+                        match action {
+                            TickAction::Collect => {
+                                if let Err(e) = collect::collect_into(&store, &config) {
+                                    eprintln!("[vaultone] scheduled collect failed: {e}");
+                                }
+                                let _ = app_handle.emit("usage_changed", ());
+                            }
+                            TickAction::Sync => {
+                                // One pull+push round (best-effort; the cadence
+                                // is the retry — no explicit retry here). Pull
+                                // lands peer devices' usage here, push sends
+                                // this device's up.
+                                let sr = collect::sync_round(&store, &config);
+                                for e in &sr.errors {
+                                    eprintln!("[vaultone] scheduled sync error: {e}");
+                                }
+                                let _ = app_handle.emit("usage_changed", ());
+                            }
                         }
-                        let _ = app_handle.emit("usage_changed", ());
-                        next_collect = now + std::time::Duration::from_secs(collect_secs);
-                    }
-                    if now >= next_push && cfg.is_synced() {
-                        // One pull+push round (best-effort; the cadence is the
-                        // retry — no explicit retry here). Pull lands peer
-                        // devices' usage here, push sends this device's up.
-                        let sr = collect::sync_round(&store, &config);
-                        for e in &sr.errors {
-                            eprintln!("[vaultone] scheduled sync error: {e}");
-                        }
-                        let _ = app_handle.emit("usage_changed", ());
-                        next_push = now + std::time::Duration::from_secs(push_secs);
                     }
                 }
             });
@@ -361,4 +423,147 @@ pub fn run() {
             crate::sync::commit_and_push_best_effort(&paths, &cfg, "vaultone: usage sync");
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{plan_tick, TickAction};
+    use crate::config::ConfigData;
+    use std::time::{Duration, Instant};
+
+    /// Synced-mode config: repo URL + PAT present ⇒ `is_synced()` true.
+    fn synced_config() -> ConfigData {
+        ConfigData {
+            repo_url: Some("https://github.com/vaultone/test".to_string()),
+            github_token: Some("github_pat_test".to_string()),
+            collect_interval_secs: 30,
+            push_interval_secs: 600,
+            ..ConfigData::default()
+        }
+    }
+
+    /// `plan_tick` table: every decision the scheduler makes per wake must be
+    /// covered here — independent intervals, collect-before-sync ordering,
+    /// `is_synced` gate, and unchanged-when-not-due deadlines.
+    #[test]
+    fn plan_tick_table() {
+        let t0 = Instant::now();
+        let collect_after = Duration::from_secs(30);
+        let push_after = Duration::from_secs(600);
+
+        struct Case {
+            name: &'static str,
+            now: Instant,
+            next_collect: Instant,
+            next_push: Instant,
+            cfg: ConfigData,
+            expect: Vec<TickAction>,
+            expect_collect: Instant,
+            expect_push: Instant,
+        }
+
+        let cases = vec![
+            // 1. Only collect deadline reached (synced) → collect advances, push unchanged.
+            Case {
+                name: "only collect due (synced)",
+                now: t0 + Duration::from_secs(100),
+                next_collect: t0 + Duration::from_secs(100),
+                next_push: t0 + Duration::from_secs(700),
+                cfg: synced_config(),
+                expect: vec![TickAction::Collect],
+                expect_collect: t0 + Duration::from_secs(100) + collect_after,
+                expect_push: t0 + Duration::from_secs(700),
+            },
+            // 2. Only push deadline reached (synced) → sync advances, collect unchanged.
+            Case {
+                name: "only push due (synced)",
+                now: t0 + Duration::from_secs(200),
+                next_collect: t0 + Duration::from_secs(300),
+                next_push: t0 + Duration::from_secs(200),
+                cfg: synced_config(),
+                expect: vec![TickAction::Sync],
+                expect_collect: t0 + Duration::from_secs(300),
+                expect_push: t0 + Duration::from_secs(200) + push_after,
+            },
+            // 3. BOTH due (synced) → Collect BEFORE Sync (the invariant), both advance.
+            Case {
+                name: "both due (synced) — collect-before-sync",
+                now: t0 + Duration::from_secs(500),
+                next_collect: t0 + Duration::from_secs(100),
+                next_push: t0 + Duration::from_secs(200),
+                cfg: synced_config(),
+                expect: vec![TickAction::Collect, TickAction::Sync],
+                expect_collect: t0 + Duration::from_secs(500) + collect_after,
+                expect_push: t0 + Duration::from_secs(500) + push_after,
+            },
+            // 4. Neither due → no action, both deadlines unchanged.
+            Case {
+                name: "neither due (synced)",
+                now: t0 + Duration::from_secs(10),
+                next_collect: t0 + Duration::from_secs(100),
+                next_push: t0 + Duration::from_secs(700),
+                cfg: synced_config(),
+                expect: vec![],
+                expect_collect: t0 + Duration::from_secs(100),
+                expect_push: t0 + Duration::from_secs(700),
+            },
+            // 5. Push deadline reached but Standalone → Sync suppressed AND next_push
+            //    is NOT advanced (the gate skips both the action and the reschedule).
+            Case {
+                name: "push due but standalone — sync suppressed",
+                now: t0 + Duration::from_secs(300),
+                next_collect: t0 + Duration::from_secs(400),
+                next_push: t0 + Duration::from_secs(200),
+                cfg: ConfigData::default(),
+                expect: vec![],
+                expect_collect: t0 + Duration::from_secs(400),
+                expect_push: t0 + Duration::from_secs(200),
+            },
+            // 6. Both due but Standalone → Collect only; next_push unchanged.
+            Case {
+                name: "both due but standalone — collect only",
+                now: t0 + Duration::from_secs(500),
+                next_collect: t0 + Duration::from_secs(100),
+                next_push: t0 + Duration::from_secs(200),
+                cfg: ConfigData::default(),
+                expect: vec![TickAction::Collect],
+                expect_collect: t0 + Duration::from_secs(500) + collect_after,
+                expect_push: t0 + Duration::from_secs(200),
+            },
+        ];
+
+        for c in cases {
+            let (actions, new_collect, new_push) =
+                plan_tick(c.now, c.next_collect, c.next_push, &c.cfg);
+            assert_eq!(actions, c.expect, "{}: actions", c.name);
+            assert_eq!(new_collect, c.expect_collect, "{}: next_collect", c.name);
+            assert_eq!(new_push, c.expect_push, "{}: next_push", c.name);
+        }
+    }
+
+    /// Interval clamping must match the scheduler's `clamp` ranges exactly:
+    /// collect ∈ [5, 3600], push ∈ [60, 7200].
+    #[test]
+    fn plan_tick_clamps_intervals() {
+        let t0 = Instant::now();
+        let far_future = t0 + Duration::from_secs(99_999);
+
+        // collect floor 5s and ceiling 3600s (push held not-due).
+        let mut cfg = synced_config();
+        cfg.collect_interval_secs = 1;
+        let (_, nc, _) = plan_tick(t0, t0, far_future, &cfg);
+        assert_eq!(nc, t0 + Duration::from_secs(5), "collect floor 5s");
+        cfg.collect_interval_secs = 50_000;
+        let (_, nc, _) = plan_tick(t0, t0, far_future, &cfg);
+        assert_eq!(nc, t0 + Duration::from_secs(3600), "collect ceiling 3600s");
+
+        // push floor 60s and ceiling 7200s (collect held not-due, synced so Sync fires).
+        cfg.collect_interval_secs = 30;
+        cfg.push_interval_secs = 1;
+        let (_, _, np) = plan_tick(t0, far_future, t0, &cfg);
+        assert_eq!(np, t0 + Duration::from_secs(60), "push floor 60s");
+        cfg.push_interval_secs = 50_000;
+        let (_, _, np) = plan_tick(t0, far_future, t0, &cfg);
+        assert_eq!(np, t0 + Duration::from_secs(7200), "push ceiling 7200s");
+    }
 }

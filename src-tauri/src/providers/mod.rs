@@ -92,30 +92,27 @@ pub trait Provider: Send + Sync {
     /// Discover Source files for this provider.
     fn discover(&self) -> AppResult<Vec<PathBuf>>;
 
-    /// Parse discovered files into usage events + turn durations.
+    /// Full-scan parse of the given files into usage events + turn durations.
+    /// Diagnostic/test surface and the semantic reference for a "parse
+    /// everything" run; the production collect path is
+    /// [`Provider::collect_incremental`] (which, with empty progress, also
+    /// yields a full scan). Each provider's `parse` delegates to the same
+    /// parsing helpers its `collect_incremental` closure uses, so testing via
+    /// `parse` exercises production logic — not a divergent path.
+    #[allow(dead_code)] // off the production path by design; kept as the test/diagnostic full-scan surface
     fn parse(&self, files: &[PathBuf]) -> AppResult<CollectResult>;
 
-    /// Convenience: discover + parse.
-    fn collect(&self) -> AppResult<CollectResult> {
-        let files = self.discover()?;
-        self.parse(&files)
-    }
-
-    /// Incremental collect: parse only lines past each file's
-    /// recorded cursor, returning the advanced cursors to persist. The default
-    /// impl **degrades to a full parse and returns an empty delta** (the cursor
-    /// never advances), so a provider that does not override this stays correct
-    /// and full-scan. Override for append-only JSONL sources (ClaudeCodeProvider).
+    /// Incremental collect: parse only what each file's recorded cursor says is
+    /// new, returning the advanced cursors to persist. This is the ONLY collect
+    /// entry point the production path (`collect_into`) calls. Each provider
+    /// implements its own — the JSONL providers delegate to the shared
+    /// [`collect_jsonl_incremental`] driver; OpenCode (SQLite, two-level
+    /// watermark) keeps its own. There is intentionally no default impl: a
+    /// provider that skipped this would have no production collect path.
     fn collect_incremental(
         &self,
         progress: &ScanProgress,
-    ) -> AppResult<(CollectResult, ScanProgressDelta)> {
-        let _ = progress;
-        let result = self.collect()?;
-        // Empty delta ⇒ nothing saved; next collect is still full. Correct for a
-        // provider with no incremental logic.
-        Ok((result, ScanProgressDelta::new()))
-    }
+    ) -> AppResult<(CollectResult, ScanProgressDelta)>;
 }
 
 /// All enabled Source-log providers, in collection order. A provider whose
@@ -141,15 +138,16 @@ pub(super) struct FileParseOutcome {
     pub(super) skipped: u32,
 }
 
-/// Shared incremental collect for append-only JSONL sources (Claude Code,
-/// Codex, Grok). Walks every discovered file: mtime-gates unchanged ones,
-/// re-reads changed ones past their line cursor, and hands the file text +
-/// start line to `parse_file` — the only thing that differs across JSONL
-/// providers is "how a file's lines become events". `parse_file` receives the
-/// 1-based start line (already self-healed on truncation) and must skip lines at
-/// or before it. Gemini (single JSON object, no line cursor) and OpenCode
-/// (SQLite, two-level watermark) keep their own `collect_incremental` — their
-/// source shapes do not fit this driver.
+/// Shared incremental collect for line-oriented JSONL sources (Claude Code,
+/// Codex, Grok) plus Gemini (single JSON object per file, no line cursor — its
+/// `parse_file` ignores `start_line` and re-parses the whole text on each gate
+/// pass). Walks every discovered file: mtime-gates unchanged ones, re-reads
+/// changed ones past their line cursor, and hands the file text + start line to
+/// `parse_file` — the only thing that differs across these providers is "how a
+/// file's text becomes events". `parse_file` receives the 1-based start line
+/// (already self-healed on truncation) and must skip lines at or before it.
+/// OpenCode (SQLite, two-level watermark) keeps its own `collect_incremental` —
+/// its source shape does not fit this driver.
 pub(super) fn collect_jsonl_incremental(
     provider: &dyn Provider,
     progress: &ScanProgress,
@@ -285,30 +283,5 @@ mod tests {
         // Both zero ⇒ both zero.
         let (fresh, cached) = normalize_cache_inclusive(0, 0);
         assert_eq!((fresh, cached), (0, 0));
-    }
-
-    #[test]
-    fn incremental_default_impl_returns_empty_delta() {
-        // A provider that does NOT override collect_incremental must still work:
-        // full parse, empty delta (cursor never advances).
-        struct StubProvider;
-        impl Provider for StubProvider {
-            fn name(&self) -> &'static str {
-                "stub"
-            }
-            fn discover(&self) -> AppResult<Vec<PathBuf>> {
-                Ok(Vec::new())
-            }
-            fn parse(&self, _files: &[PathBuf]) -> AppResult<CollectResult> {
-                Ok(CollectResult::default())
-            }
-        }
-        let p = StubProvider;
-        let (result, delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
-        assert!(delta.is_empty(), "default impl advances no cursor");
-        assert!(
-            result.events.is_empty(),
-            "default impl still yields a full-parse result"
-        );
     }
 }

@@ -35,7 +35,7 @@ pub struct IngestReport {
 /// Turn a raw per-call event into a full stored record (cost + device + day).
 /// Pure: given the same book, deterministic.
 pub fn recordify(raw: &RawUsage, device_id: &str, book: &PricingBook) -> UsageRecord {
-    let pricing_model = crate::pricing::normalize_key(&raw.model);
+    let pricing_model = crate::model::normalize_pricing_key(&raw.model);
     let rate = book.resolve(&raw.model);
     let cost = CostCalculator::calc(raw.tokens, rate);
     UsageRecord {

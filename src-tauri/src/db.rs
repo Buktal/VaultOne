@@ -9,6 +9,7 @@
 //! them read back as REAL for display (f64 is display-only — JS never recomputes
 //! cost).
 
+mod migrate;
 mod schema;
 
 use std::sync::Mutex;
@@ -34,7 +35,7 @@ impl Store {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
         conn.execute_batch(&schema::schema_sql())?;
-        migrate_schema(&conn)?;
+        migrate::migrate_schema(&conn)?;
         let store = Self {
             conn: Mutex::new(conn),
         };
@@ -832,111 +833,10 @@ fn build_where(filter: &UsageFilter, include_model_source: bool) -> (String, Vec
     (clause, params)
 }
 
-/// Upgrade a pre-existing `usage_records` table with columns added after the
-/// initial schema (scorched-rebuild: `stop_reason` / `service_tier` /
-/// `iterations`). `CREATE TABLE IF NOT EXISTS` only creates missing tables —
-/// it does **not** add columns to an existing one, so an older Local Store
-/// must be upgraded in place. SQLite has no `ADD COLUMN IF NOT EXISTS`, so we
-/// probe `table_info` and ALTER each gap. `turn_durations` is a brand-new
-/// table and is created normally by SCHEMA.
-fn migrate_schema(conn: &Connection) -> AppResult<()> {
-    let mut have = std::collections::HashSet::new();
-    {
-        let mut stmt = conn.prepare("PRAGMA table_info(usage_records)")?;
-        let names = stmt.query_map([], |r| r.get::<_, String>(1))?;
-        for n in names {
-            have.insert(n?);
-        }
-    }
-    // (column, DDL) — columns added after the initial schema. These are a subset
-    // of `schema::USAGE_RECORDS_COLS_DDL`; ALTER carries them on an old install,
-    // then `migrate_to_composite_pk` rebuilds the table from the full constant.
-    let need: &[(&str, &str)] = &[
-        ("stop_reason", "TEXT NOT NULL DEFAULT ''"),
-        ("service_tier", "TEXT NOT NULL DEFAULT ''"),
-        ("iterations", "INTEGER NOT NULL DEFAULT 0"),
-    ];
-    for &(col, ddl) in need {
-        if !have.contains(col) {
-            conn.execute(
-                &format!("ALTER TABLE usage_records ADD COLUMN {col} {ddl}"),
-                [],
-            )?;
-        }
-    }
-
-    // uuid 单列 PRIMARY KEY → (uuid, device_id) 复合主键。旧库的 usage_records /
-    // turn_durations / ledger 以 uuid 为单列主键,把"同 uuid、不同设备"的记录折叠
-    // 成一条(后导入者被丢)——同一份 ~/.claude/projects 被两个 device_id 扫描,或
-    // opencode.db 被恢复到第二台机器,都会撞 uuid。重建为复合主键,各设备各自保留。
-    // 新库由 SCHEMA 直接建复合主键,这里检测后跳过。
-    migrate_to_composite_pk(conn)?;
-
-    Ok(())
-}
-
-/// 表存在、但 `device_id` 不在 PRIMARY KEY 里 ⇒ 旧的单列 uuid 主键 schema,需迁移。
-fn needs_composite_pk_migration(conn: &Connection, table: &str) -> AppResult<bool> {
-    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
-    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, i64>(5)?)))?;
-    let mut device_pk: Option<i64> = None;
-    for r in rows {
-        let (name, pk) = r?;
-        if name == "device_id" {
-            device_pk = Some(pk);
-        }
-    }
-    Ok(device_pk == Some(0))
-}
-
-/// SQLite 不能 ALTER 主键,只能重建:建新表(复合主键)→ 拷数据 → 删旧 → 改名。
-fn rebuild_table_pk(conn: &Connection, table: &str, new_ddl: &str, columns: &str) -> AppResult<()> {
-    let tmp = format!("{table}__migrate");
-    conn.execute(&format!("CREATE TABLE {tmp} ({new_ddl})"), [])?;
-    conn.execute(
-        &format!("INSERT INTO {tmp} ({columns}) SELECT {columns} FROM {table}"),
-        [],
-    )?;
-    conn.execute(&format!("DROP TABLE {table}"), [])?;
-    conn.execute(&format!("ALTER TABLE {tmp} RENAME TO {table}"), [])?;
-    Ok(())
-}
-
-fn migrate_to_composite_pk(conn: &Connection) -> AppResult<()> {
-    if needs_composite_pk_migration(conn, "usage_records")? {
-        rebuild_table_pk(
-            conn,
-            "usage_records",
-            schema::USAGE_RECORDS_COLS_DDL,
-            schema::USAGE_RECORDS_COLNAMES,
-        )?;
-        conn.execute_batch(schema::USAGE_RECORDS_INDEXES)?;
-    }
-    if needs_composite_pk_migration(conn, "turn_durations")? {
-        rebuild_table_pk(
-            conn,
-            "turn_durations",
-            schema::TURN_DURATIONS_COLS_DDL,
-            schema::TURN_DURATIONS_COLNAMES,
-        )?;
-        conn.execute_batch(schema::TURN_DURATIONS_INDEXES)?;
-    }
-    if needs_composite_pk_migration(conn, "ledger")? {
-        rebuild_table_pk(
-            conn,
-            "ledger",
-            schema::LEDGER_COLS_DDL,
-            schema::LEDGER_COLNAMES,
-        )?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::ServerToolUse;
-    use crate::pricing;
     use std::path::Path;
 
     fn mem() -> Store {
@@ -960,7 +860,7 @@ mod tests {
             timestamp: format!("{day}T10:00:00.000Z"),
             day: day.into(),
             model: model.into(),
-            pricing_model: pricing::normalize_key(model),
+            pricing_model: crate::model::normalize_pricing_key(model),
             source: "claude_code".into(),
             device_id: device.into(),
             tokens: TokenCounts {
@@ -989,55 +889,6 @@ mod tests {
         let entries = s.list_pricing().unwrap();
         assert!(!entries.is_empty());
         assert!(entries.iter().any(|e| e.model_key == "glm-5.2"));
-    }
-
-    #[test]
-    fn migrate_upgrades_legacy_usage_records() {
-        // Reproduce a pre-scorched-rebuild Local Store: usage_records without
-        // the per-call stop_reason / service_tier / iterations columns.
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE usage_records (
-                uuid TEXT PRIMARY KEY, timestamp TEXT NOT NULL, day TEXT NOT NULL,
-                model TEXT NOT NULL, pricing_model TEXT NOT NULL, source TEXT NOT NULL,
-                device_id TEXT NOT NULL,
-                input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
-                cache_creation_tokens INTEGER NOT NULL, cache_read_tokens INTEGER NOT NULL,
-                server_tool_use TEXT NOT NULL DEFAULT '{}',
-                input_cost_usd TEXT NOT NULL, output_cost_usd TEXT NOT NULL,
-                cache_read_cost_usd TEXT NOT NULL, cache_creation_cost_usd TEXT NOT NULL,
-                total_cost_usd TEXT NOT NULL
-            );",
-        )
-        .unwrap();
-        // Legacy table lacks the new columns.
-        assert!(conn
-            .prepare("SELECT stop_reason FROM usage_records")
-            .is_err());
-
-        migrate_schema(&conn).unwrap();
-
-        // Columns now present; an insert that omits them gets the defaults.
-        conn.execute(
-            "INSERT INTO usage_records (uuid, timestamp, day, model, pricing_model, source,
-                device_id, input_tokens, output_tokens, cache_creation_tokens,
-                cache_read_tokens, server_tool_use, input_cost_usd, output_cost_usd,
-                cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd)
-             VALUES ('u1','2026-07-21T00:00:00Z','2026-07-21','glm-5.2','glm-5.2',
-                'claude_code','dev1',1,2,3,4,'{}','0','0','0','0','0')",
-            [],
-        )
-        .unwrap();
-        let (stop, tier, iters): (String, String, i64) = conn
-            .query_row(
-                "SELECT stop_reason, service_tier, iterations FROM usage_records WHERE uuid='u1'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(stop, "");
-        assert_eq!(tier, "");
-        assert_eq!(iters, 0);
     }
 
     #[test]
@@ -1118,82 +969,6 @@ mod tests {
 
         // Re-ingesting the SAME (uuid, device) is still idempotent (re-pull dedup).
         assert_eq!(s.ingest(std::slice::from_ref(&a)).unwrap().len(), 0);
-    }
-
-    /// Regression: an existing Local Store on the old single-column uuid PK
-    /// schema is migrated in place to (uuid, device_id), and the migrated store
-    /// then keeps same-uuid-across-devices rows.
-    #[test]
-    fn migrate_upgrades_uuid_pk_to_composite() {
-        let conn = Connection::open_in_memory().unwrap();
-        // Old schema: uuid is the sole PRIMARY KEY.
-        conn.execute_batch(
-            "CREATE TABLE usage_records (
-                uuid TEXT PRIMARY KEY, timestamp TEXT NOT NULL, day TEXT NOT NULL,
-                model TEXT NOT NULL, pricing_model TEXT NOT NULL, source TEXT NOT NULL,
-                device_id TEXT NOT NULL,
-                input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
-                cache_creation_tokens INTEGER NOT NULL, cache_read_tokens INTEGER NOT NULL,
-                server_tool_use TEXT NOT NULL DEFAULT '{}', stop_reason TEXT NOT NULL DEFAULT '',
-                service_tier TEXT NOT NULL DEFAULT '', iterations INTEGER NOT NULL DEFAULT 0,
-                input_cost_usd TEXT NOT NULL, output_cost_usd TEXT NOT NULL,
-                cache_read_cost_usd TEXT NOT NULL, cache_creation_cost_usd TEXT NOT NULL,
-                total_cost_usd TEXT NOT NULL
-            );
-            CREATE TABLE turn_durations (
-                uuid TEXT PRIMARY KEY, timestamp TEXT NOT NULL, day TEXT NOT NULL,
-                device_id TEXT NOT NULL, duration_ms INTEGER NOT NULL
-            );
-            CREATE TABLE ledger (
-                uuid TEXT PRIMARY KEY, source TEXT NOT NULL, device_id TEXT NOT NULL,
-                ingested_at TEXT NOT NULL
-            );",
-        )
-        .unwrap();
-        migrate_schema(&conn).unwrap();
-
-        // device_id is now part of the PK on all three tables.
-        let pk: Vec<(String, i64)> = conn
-            .prepare("PRAGMA table_info(usage_records)")
-            .unwrap()
-            .query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, i64>(5)?)))
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|(n, _)| n == "uuid" || n == "device_id")
-            .collect();
-        assert!(pk.iter().all(|(_, p)| *p > 0), "uuid+device_id both in PK");
-
-        // A same-uuid/different-device pair now coexists.
-        conn.execute(
-            "INSERT INTO usage_records (uuid, timestamp, day, model, pricing_model, source,
-                device_id, input_tokens, output_tokens, cache_creation_tokens,
-                cache_read_tokens, server_tool_use, stop_reason, service_tier, iterations,
-                input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd,
-                total_cost_usd)
-             VALUES ('u1','2026-07-30T00:00:00Z','2026-07-30','glm-5.2','glm-5.2','claude_code',
-                'aaaaaa000001',1,2,3,4,'{}','','',0,'0','0','0','0','0')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO usage_records (uuid, timestamp, day, model, pricing_model, source,
-                device_id, input_tokens, output_tokens, cache_creation_tokens,
-                cache_read_tokens, server_tool_use, stop_reason, service_tier, iterations,
-                input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd,
-                total_cost_usd)
-             VALUES ('u1','2026-07-30T00:00:00Z','2026-07-30','glm-5.2','glm-5.2','claude_code',
-                'bbbbbb000002',1,2,3,4,'{}','','',0,'0','0','0','0','0')",
-            [],
-        )
-        .unwrap();
-        let n: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM usage_records WHERE uuid='u1'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(n, 2, "both devices kept after migration");
     }
 
     #[test]

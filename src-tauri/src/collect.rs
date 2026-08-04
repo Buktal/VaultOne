@@ -121,6 +121,41 @@ pub(crate) fn sync_round(store: &Store, config: &ConfigStore) -> SyncRoundOutcom
     out
 }
 
+/// Bounded retry over a sync round, factored out of [`align`] so the
+/// retry-aggregation logic is unit-testable without real git IO or real time.
+///
+/// `round` produces one [`SyncRoundOutcome`] per call; `sleep` backs off
+/// between attempts (production passes [`std::thread::sleep`]; tests inject a
+/// no-op so the 3-attempt retry is instant). Stops early once a round returns
+/// no errors; otherwise runs `max_attempts` times.
+///
+/// `imported` is SUMMED across retries: pull is uuid-deduped, so a row pulled
+/// on attempt 1 (then lost to a push failure) reads 0 on attempt 2 — taking
+/// only the last round's imported would report "0 imported" despite real new
+/// rows. The returned outcome carries the sum in `imported`, plus the final
+/// round's `pushed` / `errors`.
+fn retry_rounds<R, S>(mut round: R, max_attempts: u32, mut sleep: S) -> SyncRoundOutcome
+where
+    R: FnMut() -> SyncRoundOutcome,
+    S: FnMut(Duration),
+{
+    let mut last = SyncRoundOutcome::default();
+    let mut imported = 0u32;
+    for attempt in 0u32..max_attempts {
+        last = round();
+        imported += last.imported;
+        if last.errors.is_empty() {
+            break;
+        }
+        // Back off before the next attempt (1 s, 2 s); skip after the last.
+        if attempt + 1 < max_attempts {
+            sleep(Duration::from_secs(1u64 << attempt));
+        }
+    }
+    last.imported = imported;
+    last
+}
+
 /// Full manual「同步 / 采集」: collect locally, then (Synced only) run
 /// [`sync_round`] with a bounded retry — up to 3 attempts with a short backoff
 /// (1 s, 2 s). Retry covers only the network steps (pull/push); collect runs
@@ -137,25 +172,104 @@ pub fn align(store: &Store, config: &ConfigStore) -> AlignReport {
         Err(e) => report.errors.push(format!("collect: {e}")),
     }
     if config.get().is_synced() {
-        let mut last = SyncRoundOutcome::default();
-        // Sum imported across retries: pull is uuid-deduped, so a row pulled on
-        // attempt 1 (then lost to a push failure) reads 0 on attempt 2 — taking
-        // only `last.imported` would report "0 imported" despite real new rows.
-        let mut imported = 0u32;
-        for attempt in 0u32..3 {
-            last = sync_round(store, config);
-            imported += last.imported;
-            if last.errors.is_empty() {
-                break;
-            }
-            // Back off before the next attempt (1 s, 2 s); skip after the last.
-            if attempt + 1 < 3 {
-                std::thread::sleep(Duration::from_secs(1 << attempt));
-            }
-        }
-        report.imported = imported;
-        report.pushed = last.pushed;
-        report.errors.extend(last.errors);
+        // The retry loop + backoff lives in `retry_rounds` (testable with a
+        // no-op sleeper); production passes the real `sync_round` + sleep.
+        let outcome = retry_rounds(|| sync_round(store, config), 3, std::thread::sleep);
+        report.imported = outcome.imported;
+        report.pushed = outcome.pushed;
+        report.errors.extend(outcome.errors);
     }
     report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{retry_rounds, SyncRoundOutcome};
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    // Scripted always-errors round; `imported = n` makes aggregation observable.
+    fn err_round(n: u32) -> SyncRoundOutcome {
+        SyncRoundOutcome {
+            imported: n,
+            pushed: false,
+            errors: vec!["e".to_string()],
+        }
+    }
+
+    /// On the first clean round we stop, having aggregated imported across the
+    /// retries that ran — and we only slept between attempts that actually
+    /// happened (1→2), not after the terminating clean round.
+    #[test]
+    fn retry_rounds_breaks_on_clean_round_and_aggregates_imported() {
+        let script = [
+            SyncRoundOutcome {
+                imported: 5,
+                pushed: false,
+                errors: vec!["pull: x".to_string()],
+            },
+            SyncRoundOutcome {
+                imported: 0,
+                pushed: true,
+                errors: vec![],
+            },
+        ];
+        let idx = Cell::new(0usize);
+        let sleeps = Cell::new(0u32);
+        let out = retry_rounds(
+            || {
+                let i = idx.get();
+                idx.set(i + 1);
+                script[i].clone()
+            },
+            3,
+            |_| sleeps.set(sleeps.get() + 1),
+        );
+        assert_eq!(idx.get(), 2, "stopped after the clean 2nd round, no 3rd");
+        assert_eq!(sleeps.get(), 1, "slept once between attempts 1→2 only");
+        assert_eq!(out.imported, 5, "imported aggregated across retries");
+        assert!(out.pushed, "final round's pushed carried through");
+        assert!(
+            out.errors.is_empty(),
+            "final round's clean errors carried through"
+        );
+    }
+
+    /// When every round errors we exhaust all attempts, sleeping only between
+    /// them (not after the last), and imported accumulates from every attempt.
+    #[test]
+    fn retry_rounds_exhausts_attempts_when_always_errors() {
+        let calls = Cell::new(0u32);
+        let sleeps = Cell::new(0u32);
+        let out = retry_rounds(
+            || {
+                calls.set(calls.get() + 1);
+                err_round(1)
+            },
+            3,
+            |_| sleeps.set(sleeps.get() + 1),
+        );
+        assert_eq!(calls.get(), 3, "all 3 attempts used");
+        assert_eq!(
+            sleeps.get(),
+            2,
+            "slept between attempts only, not after the last"
+        );
+        assert_eq!(out.imported, 3, "1 imported per attempt × 3");
+        assert_eq!(out.errors, vec!["e".to_string()]);
+    }
+
+    /// The backoff doubles (1 s, 2 s) and never fires after the final attempt.
+    #[test]
+    fn retry_rounds_backoff_is_1s_then_2s() {
+        let sleeps: Rc<RefCell<Vec<Duration>>> = Rc::new(RefCell::new(Vec::new()));
+        let cap = sleeps.clone();
+        let _out = retry_rounds(|| err_round(0), 3, move |d| cap.borrow_mut().push(d));
+        assert_eq!(
+            *sleeps.borrow(),
+            vec![Duration::from_secs(1), Duration::from_secs(2)],
+            "backoff doubles (1s, 2s); nothing after the last attempt"
+        );
+    }
 }

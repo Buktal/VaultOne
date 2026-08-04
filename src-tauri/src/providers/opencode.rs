@@ -204,6 +204,8 @@ fn open_opencode_readonly(db_path: &Path) -> AppResult<rusqlite::Connection> {
 }
 
 /// All sessions' completed assistant messages (full scan, no watermark gate).
+/// Reached only from `Provider::parse` — the test/diagnostic full-scan path.
+#[allow(dead_code)] // production runs collect_incremental (per-session, watermarked); this is parse-only
 fn collect_all_messages(conn: &rusqlite::Connection) -> AppResult<Vec<RawUsage>> {
     let sessions = query_sessions(conn)?;
     let mut events = Vec::new();

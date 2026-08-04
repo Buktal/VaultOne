@@ -337,6 +337,98 @@ pub enum RunMode {
     Synced,
 }
 
+// ---- Model-key normalization (single source of truth) ----
+//
+// One neutral home for the "normalized model key" concept, built from
+// orthogonal sub-steps that callers compose to match their semantics. This
+// replaces the two former divergent implementations (`pricing::normalize_key`
+// and `codex::normalize_codex_model`) so the rules can no longer silently
+// drift apart — architecture review #11.
+//
+// Two ready-made combinations are exposed:
+//   - [`normalize_model_key`]: the superset (prefix + brackets + ISO date +
+//     compact date). Used by providers whose raw model names carry provider
+//     prefixes and date stamps (e.g. Codex).
+//   - [`normalize_pricing_key`]: the pricing "basic set" (brackets + compact
+//     date). Used by the pricing book and the ingest rebill key, preserving
+//     the former `pricing::normalize_key` lookup behavior exactly.
+
+/// Strip a `provider/` prefix: keep the tail after the last `/`. No-op when the
+/// name has no `/`. e.g. `openai/gpt-5.4` → `gpt-5.4`.
+pub(crate) fn strip_provider_prefix(name: &str) -> &str {
+    match name.rfind('/') {
+        Some(pos) => &name[pos + 1..],
+        None => name,
+    }
+}
+
+/// Strip a `[...]` bracketed suffix such as the `[1m]` context-window tag.
+/// Returns the part before the first `[`, trailing whitespace trimmed. No-op
+/// when the name has no `[`. e.g. `glm-5.2[1m]` → `glm-5.2`.
+pub(crate) fn strip_brackets(name: &str) -> &str {
+    match name.find('[') {
+        Some(pos) => name[..pos].trim_end(),
+        None => name,
+    }
+}
+
+/// Strip a trailing ISO date `-YYYY-MM-DD` (11 chars). No-op when absent.
+pub(crate) fn strip_iso_date_suffix(name: &str) -> &str {
+    let bytes = name.as_bytes();
+    if bytes.len() > 11 && name.is_char_boundary(bytes.len() - 11) {
+        let tail = &name[bytes.len() - 11..];
+        if tail.is_ascii()
+            && tail.as_bytes()[0] == b'-'
+            && tail[1..5].bytes().all(|b| b.is_ascii_digit())
+            && tail.as_bytes()[5] == b'-'
+            && tail[6..8].bytes().all(|b| b.is_ascii_digit())
+            && tail.as_bytes()[8] == b'-'
+            && tail[9..11].bytes().all(|b| b.is_ascii_digit())
+        {
+            return &name[..bytes.len() - 11];
+        }
+    }
+    name
+}
+
+/// Strip a trailing compact date `-YYYYMMDD` (a `-` followed by exactly 8
+/// digits, 9 chars total). No-op when absent.
+pub(crate) fn strip_compact_date_suffix(name: &str) -> &str {
+    let bytes = name.as_bytes();
+    if bytes.len() >= 9 && name.is_char_boundary(bytes.len() - 9) {
+        let tail = &name[bytes.len() - 9..];
+        if tail.starts_with('-') && tail[1..].bytes().all(|b| b.is_ascii_digit()) {
+            return &name[..bytes.len() - 9];
+        }
+    }
+    name
+}
+
+/// Canonical model-key normalization — the superset: ASCII-lowercase, strip a
+/// `provider/` prefix, strip `[...]` brackets, then strip trailing ISO
+/// (`-YYYY-MM-DD`) and compact (`-YYYYMMDD`) date suffixes. Used by providers
+/// whose raw model names carry prefixes/date stamps. Every sub-step is a no-op
+/// when its pattern is absent, so this never changes a name that did not carry
+/// that pattern.
+pub(crate) fn normalize_model_key(model: &str) -> String {
+    let lower = model.to_ascii_lowercase();
+    let after_prefix = strip_provider_prefix(&lower);
+    let after_brackets = strip_brackets(after_prefix);
+    let after_iso = strip_iso_date_suffix(after_brackets);
+    strip_compact_date_suffix(after_iso).to_string()
+}
+
+/// Pricing-table key normalization — the "basic set": ASCII-lowercase, strip
+/// `[...]` brackets and a trailing compact (`-YYYYMMDD`) date. Preserves the
+/// former `pricing::normalize_key` verbatim, so pricing keys stay stable and
+/// lookups + rebill keys are unchanged. Deliberately omits prefix and ISO-date
+/// stripping; see [`normalize_model_key`] for the superset.
+pub(crate) fn normalize_pricing_key(model: &str) -> String {
+    let lower = model.to_ascii_lowercase();
+    let after_brackets = strip_brackets(&lower);
+    strip_compact_date_suffix(after_brackets).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,5 +527,105 @@ mod tests {
         let json = serde_json::to_string(&td).unwrap();
         let back: TurnDuration = serde_json::from_str(&json).unwrap();
         assert_eq!(back, td);
+    }
+
+    // ---- Model-key normalization sub-steps ----
+
+    #[test]
+    fn strip_provider_prefix_keeps_tail_after_last_slash() {
+        assert_eq!(strip_provider_prefix("openai/gpt-5.4"), "gpt-5.4");
+        assert_eq!(strip_provider_prefix("a/b/c"), "c");
+        // No slash → unchanged.
+        assert_eq!(strip_provider_prefix("gpt-5.4"), "gpt-5.4");
+    }
+
+    #[test]
+    fn strip_brackets_drops_context_window_tag() {
+        assert_eq!(strip_brackets("glm-5.2[1m]"), "glm-5.2");
+        // Trailing whitespace before the bracket is trimmed.
+        assert_eq!(strip_brackets("glm-5.2 [1m]"), "glm-5.2");
+        // No bracket → unchanged.
+        assert_eq!(strip_brackets("gpt-5.4"), "gpt-5.4");
+    }
+
+    #[test]
+    fn strip_iso_date_suffix_matches_only_dashed_iso_form() {
+        assert_eq!(strip_iso_date_suffix("gpt-5.4-2026-03-05"), "gpt-5.4");
+        assert_eq!(
+            strip_iso_date_suffix("gpt-5.4-pro-2026-03-05"),
+            "gpt-5.4-pro"
+        );
+        // Compact 8-digit form is NOT the ISO step's concern.
+        assert_eq!(
+            strip_iso_date_suffix("gpt-5.4-20260305"),
+            "gpt-5.4-20260305"
+        );
+        // Non-date tail → unchanged.
+        assert_eq!(strip_iso_date_suffix("gpt-5.2-codex"), "gpt-5.2-codex");
+    }
+
+    #[test]
+    fn strip_compact_date_suffix_matches_only_eight_digit_form() {
+        assert_eq!(
+            strip_compact_date_suffix("claude-3-5-haiku-20241022"),
+            "claude-3-5-haiku"
+        );
+        assert_eq!(strip_compact_date_suffix("gpt-5.4-20260305"), "gpt-5.4");
+        // ISO form (dashes inside) is NOT the compact step's concern.
+        assert_eq!(
+            strip_compact_date_suffix("gpt-5.4-2026-03-05"),
+            "gpt-5.4-2026-03-05"
+        );
+        // Non-date tail → unchanged.
+        assert_eq!(strip_compact_date_suffix("gpt-5.2-codex"), "gpt-5.2-codex");
+    }
+
+    // ---- Model-key normalization entry points ----
+
+    #[test]
+    fn normalize_model_key_applies_the_full_superset() {
+        // Lowercase + prefix + ISO date.
+        assert_eq!(normalize_model_key("OPENAI/GPT-5.4-2026-03-05"), "gpt-5.4");
+        // Lowercase + prefix + compact date.
+        assert_eq!(normalize_model_key("openai/gpt-5.4-20260305"), "gpt-5.4");
+        // Lowercase only.
+        assert_eq!(normalize_model_key("GLM-4.6"), "glm-4.6");
+        // ISO date with a version token before it.
+        assert_eq!(normalize_model_key("gpt-5.4-pro-2026-03-05"), "gpt-5.4-pro");
+        // Compact date after a versioned name.
+        assert_eq!(
+            normalize_model_key("claude-opus-4-6-20260206"),
+            "claude-opus-4-6"
+        );
+        // No prefix/date/brackets → only lowercased.
+        assert_eq!(normalize_model_key("gpt-5.2-codex"), "gpt-5.2-codex");
+        assert_eq!(normalize_model_key("o3"), "o3");
+        // Brackets are stripped too: a no-op for Codex today, but the superset
+        // keeps the rule so a future bracketed Codex name still matches.
+        assert_eq!(normalize_model_key("openai/gpt-5.4[1m]"), "gpt-5.4");
+    }
+
+    #[test]
+    fn normalize_pricing_key_preserves_the_basic_set() {
+        // Bracket strip + lowercase (the [1m] transit-model case).
+        assert_eq!(normalize_pricing_key("glm-5.2[1m]"), "glm-5.2");
+        // Lowercase + compact date strip (Anthropic-style date stamp).
+        assert_eq!(
+            normalize_pricing_key("Claude-3-5-Haiku-20241022"),
+            "claude-3-5-haiku"
+        );
+        assert_eq!(normalize_pricing_key("GPT-4o"), "gpt-4o");
+        // No bracket/date → only lowercased.
+        assert_eq!(
+            normalize_pricing_key("claude-3-5-sonnet"),
+            "claude-3-5-sonnet"
+        );
+        // The basic set deliberately does NOT strip prefixes or ISO dates —
+        // pinning the former pricing::normalize_key behavior (the divergence
+        // is intentional and currently harmless; see architecture review #11).
+        assert_eq!(
+            normalize_pricing_key("openai/gpt-5.4-2026-03-05"),
+            "openai/gpt-5.4-2026-03-05"
+        );
     }
 }
