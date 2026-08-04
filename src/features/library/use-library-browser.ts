@@ -95,7 +95,7 @@ export function useLibraryBrowser() {
 
   const breadcrumb = useMemo(
     () =>
-      buildBreadcrumb(subpath, deviceOptions).map((c) => ({
+      buildBreadcrumb(deviceScope, subpath, deviceOptions).map((c) => ({
         key: c.key,
         label: c.label,
         onClick: () => {
@@ -103,7 +103,7 @@ export function useLibraryBrowser() {
           setSubpath(c.subpath)
         },
       })),
-    [subpath, deviceOptions],
+    [deviceScope, subpath, deviceOptions],
   )
 
   function drill(entry: LibraryEntry) {
@@ -113,9 +113,7 @@ export function useLibraryBrowser() {
   }
 
   function goUp() {
-    const target = upFromSubpath(subpath)
-    if (target.deviceScope !== undefined) setDeviceScope(target.deviceScope)
-    setSubpath(target.subpath)
+    setSubpath(upFromSubpath(subpath))
   }
 
   async function onAddFiles() {

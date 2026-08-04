@@ -35,48 +35,45 @@ export function splitEntryPath(relPath: string): {
 }
 
 /**
- * Resolve a "go up" click on the current subpath into its navigation target.
- * Returns `deviceScope: undefined` when the up-click leaves deviceScope
- * untouched (subpath has at most one segment — subpath just clears back to the
- * device root); otherwise the device id to restore. The first segment of
- * `subpath` carries the device id under the existing breadcrumb/up semantics.
+ * Resolve a "go up" click: drop the last segment of `subpath`. `deviceScope` is
+ * independent of `subpath` — the scan query takes them as separate args, and
+ * `drill` sets deviceScope + a subpath that does NOT contain the device id — so
+ * going up never touches deviceScope (only the scope picker returns to "all
+ * devices"). Returns the new subpath.
  */
-export function upFromSubpath(subpath: string): {
-  deviceScope: string | undefined
-  subpath: string
-} {
+export function upFromSubpath(subpath: string): string {
   const parts = subpath.split("/").filter(Boolean)
-  if (parts.length <= 1) return { deviceScope: undefined, subpath: "" }
-  return {
-    deviceScope: parts[0],
-    subpath: parts.slice(1, -1).join("/"),
-  }
+  return parts.slice(0, -1).join("/")
 }
 
 /**
- * Build the breadcrumb trail for the current subpath as pure data (labels +
- * navigation targets, no callbacks). The first segment of `subpath` carries
- * the device id; its label is resolved against `deviceOptions`, falling back
- * to the raw id. Returns an empty list when subpath is empty.
+ * Build the breadcrumb trail as pure data (labels + navigation targets, no
+ * callbacks). The device crumb is labelled from `deviceScope` (passed in —
+ * `subpath` never carries the device id, matching how `drill` and the scan
+ * query treat them as separate values); each following crumb adds one more
+ * `subpath` segment. Every crumb keeps the same `deviceScope` — clicking one
+ * navigates within the current device, only `subpath` changes. Returns an empty
+ * list when subpath is empty (the scope picker, not the breadcrumb, handles
+ * leaving the device).
  */
 export function buildBreadcrumb(
+  deviceScope: string,
   subpath: string,
   deviceOptions: DeviceOption[],
 ): BreadcrumbCrumb[] {
   if (!subpath) return []
-  const parts = subpath.split("/").filter(Boolean)
-  const deviceId = parts[0]
   const deviceLabel =
-    deviceOptions.find((o) => o.id === deviceId)?.label ?? deviceId
+    deviceOptions.find((o) => o.id === deviceScope)?.label ?? deviceScope
+  const parts = subpath.split("/").filter(Boolean)
   const crumbs: BreadcrumbCrumb[] = [
-    { key: deviceId, label: deviceLabel, deviceScope: deviceId, subpath: "" },
+    { key: deviceScope, label: deviceLabel, deviceScope, subpath: "" },
   ]
-  for (let i = 1; i < parts.length; i++) {
-    const sub = parts.slice(1, i + 1).join("/")
+  for (let i = 0; i < parts.length; i++) {
+    const sub = parts.slice(0, i + 1).join("/")
     crumbs.push({
-      key: `${deviceId}/${sub}`,
+      key: `${deviceScope}/${sub}`,
       label: parts[i],
-      deviceScope: deviceId,
+      deviceScope,
       subpath: sub,
     })
   }

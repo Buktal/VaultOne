@@ -31,29 +31,24 @@ describe("splitEntryPath", () => {
 })
 
 describe("upFromSubpath", () => {
-  it("clears subpath at the root (empty input) without touching deviceScope", () => {
-    expect(upFromSubpath("")).toEqual({ deviceScope: undefined, subpath: "" })
+  // subpath never carries the device id (drill + the scan query treat
+  // deviceScope and subpath as separate values), so going up only ever drops
+  // the last subpath segment — deviceScope is untouched.
+
+  it("clears to the device root for a single segment", () => {
+    expect(upFromSubpath("projects")).toBe("")
   })
 
-  it("clears subpath for a single segment without touching deviceScope", () => {
-    expect(upFromSubpath("projects")).toEqual({
-      deviceScope: undefined,
-      subpath: "",
-    })
-  })
-
-  it("restores the first segment as deviceScope and clears subpath for two segments", () => {
-    expect(upFromSubpath("dev1/projects")).toEqual({
-      deviceScope: "dev1",
-      subpath: "",
-    })
+  it("drops only the last segment for two segments", () => {
+    expect(upFromSubpath("projects/foo")).toBe("projects")
   })
 
   it("drops only the last segment for three or more segments", () => {
-    expect(upFromSubpath("dev1/projects/foo")).toEqual({
-      deviceScope: "dev1",
-      subpath: "projects",
-    })
+    expect(upFromSubpath("a/b/c")).toBe("a/b")
+  })
+
+  it("clears for empty input (defensive — goUp is hidden at root)", () => {
+    expect(upFromSubpath("")).toBe("")
   })
 })
 
@@ -64,23 +59,23 @@ describe("buildBreadcrumb", () => {
   ]
 
   it("returns no crumbs at the root (empty subpath)", () => {
-    expect(buildBreadcrumb("", deviceOptions)).toEqual([])
+    expect(buildBreadcrumb("dev1", "", deviceOptions)).toEqual([])
   })
 
-  it("resolves the first segment against deviceOptions into a single device crumb", () => {
-    expect(buildBreadcrumb("dev1", deviceOptions)).toEqual([
+  it("labels the device crumb from deviceScope, with one crumb per subpath segment", () => {
+    expect(buildBreadcrumb("dev1", "projects", deviceOptions)).toEqual([
       { key: "dev1", label: "Device One", deviceScope: "dev1", subpath: "" },
+      {
+        key: "dev1/projects",
+        label: "projects",
+        deviceScope: "dev1",
+        subpath: "projects",
+      },
     ])
   })
 
-  it("falls back to the raw id when the device is not in deviceOptions", () => {
-    expect(buildBreadcrumb("ghost", deviceOptions)).toEqual([
-      { key: "ghost", label: "ghost", deviceScope: "ghost", subpath: "" },
-    ])
-  })
-
-  it("emits one crumb per segment with nested navigation targets", () => {
-    expect(buildBreadcrumb("dev1/projects/foo", deviceOptions)).toEqual([
+  it("keeps deviceScope constant across every crumb in a deep trail", () => {
+    expect(buildBreadcrumb("dev1", "projects/foo", deviceOptions)).toEqual([
       { key: "dev1", label: "Device One", deviceScope: "dev1", subpath: "" },
       {
         key: "dev1/projects",
@@ -94,6 +89,13 @@ describe("buildBreadcrumb", () => {
         deviceScope: "dev1",
         subpath: "projects/foo",
       },
+    ])
+  })
+
+  it("falls back to the raw id when the device is not in deviceOptions", () => {
+    expect(buildBreadcrumb("ghost", "x", deviceOptions)).toEqual([
+      { key: "ghost", label: "ghost", deviceScope: "ghost", subpath: "" },
+      { key: "ghost/x", label: "x", deviceScope: "ghost", subpath: "x" },
     ])
   })
 })
