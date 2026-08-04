@@ -420,7 +420,10 @@ pub fn run() {
             let state: tauri::State<AppState> = app_handle.state::<AppState>();
             let cfg = state.config.get();
             let paths = state.config.paths();
-            crate::sync::commit_and_push_best_effort(&paths, &cfg, "vaultone: usage sync");
+            // Materialize any un-pushed days from the store, then push — covers
+            // the close-A / open-B device switch (collect now writes the store,
+            // not the Artifact, so the flush must recompute before pushing).
+            crate::sync::push_usage_best_effort(&state.store, &paths, &cfg);
         }
     });
 }

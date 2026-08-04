@@ -661,6 +661,52 @@ pub fn commit_and_push_best_effort(paths: &crate::config::Paths, cfg: &ConfigDat
     }
 }
 
+/// Usage sync: materialize this device's un-pushed days from the store, then
+/// commit + push, clearing those days from `dirty_days` only once the push
+/// lands. This is the push-side counterpart to collect's store-only writes:
+/// collect flags days dirty; this recomputes each dirty day's per-day Artifact
+/// from the store (`recompute_usage_day` / `recompute_turns_day`), commits the
+/// rewritten files, pushes, and on success clears the days (a failed push
+/// leaves them dirty for the next retry). Synced-only; a no-op (`false`) when
+/// there is nothing dirty to recompute and nothing else to push.
+///
+/// Library sync does NOT call this — it has no store/dirty-day concern and uses
+/// [`commit_and_push`] directly.
+pub fn push_usage(
+    store: &crate::db::Store,
+    paths: &crate::config::Paths,
+    cfg: &ConfigData,
+) -> AppResult<bool> {
+    let dirty = store.dirty_days()?;
+    for day in &dirty {
+        crate::ingest::recompute_usage_day(store, paths, &cfg.device_id, day)?;
+        crate::ingest::recompute_turns_day(store, paths, &cfg.device_id, day)?;
+    }
+    let pushed = commit_and_push(paths, cfg, "vaultone: usage sync")?;
+    if pushed {
+        // Push landed ⇒ the recomputed days are on the remote; drop them so the
+        // next push only touches days with fresh local changes. A push failure
+        // returns early via `?` above, leaving the days dirty for the retry.
+        store.clear_dirty_days(&dirty)?;
+    }
+    Ok(pushed)
+}
+
+/// Best-effort [`push_usage`] for the exit flush. Standalone is a no-op; a push
+/// failure is logged, never propagated.
+pub fn push_usage_best_effort(
+    store: &crate::db::Store,
+    paths: &crate::config::Paths,
+    cfg: &ConfigData,
+) {
+    if !cfg.is_synced() {
+        return;
+    }
+    if let Err(e) = push_usage(store, paths, cfg) {
+        eprintln!("[vaultone] usage push failed: {e}");
+    }
+}
+
 /// Seed a bare "remote" with one initial commit so it has a cloneable HEAD.
 /// Module-level (not inside `mod tests`) and `pub(crate)` so the sibling test
 /// module `sync::remote_probe::tests` can build a `file://` remote without
@@ -1222,71 +1268,85 @@ mod tests {
         );
     }
 
-    /// Regression: pull's fast-forward force-checkout used to discard this
-    /// device's uncommitted JSONL appends — rows a collect wrote between pushes —
-    /// so they never reached the remote and peers never saw them. pull_and_import
-    /// now snapshots/restores this device's data/ around the pull.
+    /// New semantic (ticket 02): a row collect writes to the store — but NOT to a
+    /// file, and NOT yet pushed — survives a pull that force-checks-out the
+    /// worktree, because it lives in the store (pull only ADDS to the store). The
+    /// next push recomputes the dirty day from the store and ships it to git.
+    /// Replaces the old own-data-snapshot test: collect no longer appends files
+    /// between pushes, so there is no uncommitted file-append to protect.
     #[test]
-    fn pull_and_import_preserves_own_uncommitted_append() {
+    fn unpushed_collect_survives_pull_and_reaches_git_on_next_push() {
         let tmp = tempfile::tempdir().unwrap();
         let remote = tmp.path().join("remote.git");
         seed_remote(&remote);
         let url = remote.to_string_lossy().to_string();
         let dev_a = "aaaaaaaaaaaa";
 
-        // A clones, commits+pushes one row in its own data dir.
+        // A clones + collects one row into its store (dirty). No file, no push.
         let paths_a = crate::config::Paths::resolve(&tmp.path().join("a"));
-        let repo_a = open_or_clone_for_device(&url, &paths_a.repo, "", dev_a).unwrap();
-        let day_file = paths_a
-            .device_data_dir(dev_a)
-            .join("usage-2026-07-30.jsonl");
-        std::fs::create_dir_all(day_file.parent().unwrap()).unwrap();
-        std::fs::write(&day_file, "{\"uuid\":\"a-1\",\"source\":\"claude_code\"}\n").unwrap();
-        commit_all(&repo_a, "A baseline", "A", "a@devices.vaultone").unwrap();
-        push(&repo_a, "").unwrap();
-
-        // Background collect appends a second row, NOT yet committed.
-        std::fs::write(
-            &day_file,
-            "{\"uuid\":\"a-1\",\"source\":\"claude_code\"}\n{\"uuid\":\"a-2\",\"source\":\"claude_code\"}\n",
-        )
-        .unwrap();
-
-        // B advances the remote tip so A's pull fast-forwards + force-checks-out.
-        let paths_b = crate::config::Paths::resolve(&tmp.path().join("b"));
-        let repo_b = open_or_clone_for_device(&url, &paths_b.repo, "", "bbbbbbbbbbbb").unwrap();
-        let b_file = paths_b
-            .device_data_dir("bbbbbbbbbbbb")
-            .join("usage-2026-07-30.jsonl");
-        std::fs::create_dir_all(b_file.parent().unwrap()).unwrap();
-        std::fs::write(&b_file, "{\"uuid\":\"b-1\",\"source\":\"claude_code\"}\n").unwrap();
-        commit_all(&repo_b, "B new data", "B", "b@devices.vaultone").unwrap();
-        push(&repo_b, "").unwrap();
-
-        // A pulls — snapshot/restore must keep A's uncommitted a-2 row.
-        let store = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let _repo_a = open_or_clone_for_device(&url, &paths_a.repo, "", dev_a).unwrap();
         let cfg_a = ConfigData {
             repo_url: Some(url.clone()),
             github_token: Some("tok".into()),
             device_id: dev_a.into(),
             ..Default::default()
         };
-        pull_and_import(&store, &paths_a, &cfg_a).unwrap();
+        let store_a = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let book = crate::pricing::seed_book();
+        let rec = crate::ingest::recordify(&raw_usage("a-1"), dev_a, &book);
+        store_a
+            .ingest_marking_dirty(std::slice::from_ref(&rec))
+            .unwrap();
+        let day_file = paths_a
+            .device_data_dir(dev_a)
+            .join("usage-2026-07-13.jsonl");
+        assert!(!day_file.exists(), "collect wrote the store, not a file");
 
-        let text = std::fs::read_to_string(&day_file).unwrap();
+        // Peer B advances the remote tip so A's pull fast-forwards + force-checks-out
+        // (揉 the worktree). A's unpushed row is safe in the store.
+        let paths_b = crate::config::Paths::resolve(&tmp.path().join("b"));
+        let repo_b = open_or_clone_for_device(&url, &paths_b.repo, "", "bbbbbbbbbbbb").unwrap();
+        let b_file = paths_b
+            .device_data_dir("bbbbbbbbbbbb")
+            .join("usage-2026-07-30.jsonl");
+        std::fs::create_dir_all(b_file.parent().unwrap()).unwrap();
+        std::fs::write(&b_file, "{\"uuid\":\"b-1\"}\n").unwrap();
+        commit_all(&repo_b, "B new data", "B", "b@devices.vaultone").unwrap();
+        push(&repo_b, "").unwrap();
+
+        // A pulls (imports B; force-checkout揉s the worktree — A's row is untouched
+        // in the store, and still no file for it).
+        pull_and_import(&store_a, &paths_a, &cfg_a).unwrap();
         assert!(
-            text.contains("a-2"),
-            "A's uncommitted append must survive pull: {text}"
+            !day_file.exists(),
+            "pull does not write A's file either; the row lives in the store"
         );
 
-        // Peer B's data was also pulled in.
-        let b_text = std::fs::read_to_string(
-            paths_a
-                .device_data_dir("bbbbbbbbbbbb")
-                .join("usage-2026-07-30.jsonl"),
-        )
-        .unwrap();
-        assert!(b_text.contains("b-1"), "peer B's data must be pulled in");
+        // A pushes: recompute the dirty day from the store ⇒ file ⇒ commit ⇒ push,
+        // and the dirty day is cleared on success.
+        let pushed = push_usage(&store_a, &paths_a, &cfg_a).unwrap();
+        assert!(pushed, "A had its collected day to recompute + push");
+        assert!(
+            store_a.dirty_days().unwrap().is_empty(),
+            "successful push clears the dirty day"
+        );
+        assert!(day_file.exists(), "push materialized A's day file");
+
+        // A fresh clone + pull sees A's row on the remote.
+        let paths_c = crate::config::Paths::resolve(&tmp.path().join("c"));
+        let _repo_c = open_or_clone(&url, &paths_c.repo, "").unwrap();
+        let store_c = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
+        pull_and_import(&store_c, &paths_c, &synced_cfg(&url, "tok")).unwrap();
+        let stats_a = store_c
+            .query_stats(&crate::model::UsageFilter {
+                device_scope: Some(dev_a.into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            stats_a.request_count, 1,
+            "A's unpushed row reached the remote after the next push"
+        );
     }
 
     #[test]
@@ -1301,6 +1361,23 @@ mod tests {
         let _repo = open_or_clone(&url, &paths.repo, "").unwrap();
         let pushed = commit_and_push(&paths, &cfg, "vaultone: usage sync").unwrap();
         assert!(!pushed, "clean worktree ⇒ no commit/push");
+    }
+
+    /// push_usage with no dirty days and a clean worktree is a no-op: it does not
+    /// push, does not error, and (trivially) clears nothing.
+    #[test]
+    fn push_usage_is_noop_with_nothing_dirty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = tmp.path().join("remote.git");
+        seed_remote(&remote);
+        let url = remote.to_string_lossy().to_string();
+        let paths = crate::config::Paths::resolve(&tmp.path().join("dev"));
+        let cfg = synced_cfg(&url, "tok");
+        let _repo = open_or_clone(&url, &paths.repo, "").unwrap();
+        let store = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let pushed = push_usage(&store, &paths, &cfg).unwrap();
+        assert!(!pushed, "no dirty days + clean worktree ⇒ no push");
+        assert!(store.dirty_days().unwrap().is_empty());
     }
 
     #[test]

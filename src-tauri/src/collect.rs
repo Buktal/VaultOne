@@ -31,11 +31,6 @@ pub fn collect_into(store: &Store, config: &ConfigStore) -> AppResult<IngestRepo
     let providers = crate::providers::all_providers()?;
     let cfg = config.get();
     let paths = config.paths();
-    // Backfill any Artifact gaps left by a pre-1.5.1 append failure before
-    // loading the scan cursors: if the SQLite store holds rows the JSONL
-    // Artifact is missing, clear the cursors so this collect is a full rescan
-    // that re-appends them (idempotently). No-op when store and Artifact agree.
-    crate::ingest::reconcile_artifact_gaps(store, &paths, &cfg.device_id)?;
     let progress = store.load_scan_progress()?;
     store.upsert_device(&cfg.device_id, &cfg.display_name, true)?;
     let book = store.load_pricing_book()?;
@@ -45,7 +40,7 @@ pub fn collect_into(store: &Store, config: &ConfigStore) -> AppResult<IngestRepo
     let mut sources_with_rows: Vec<String> = Vec::new();
     for provider in &providers {
         let (result, delta) = provider.collect_incremental(&progress)?;
-        let report = ingest::ingest_collected(store, &paths, &cfg.device_id, &book, result)?;
+        let report = ingest::ingest_collected(store, &cfg.device_id, &book, result)?;
         if report.rows_inserted > 0 {
             sources_with_rows.push(report.source.clone());
         }
@@ -114,7 +109,7 @@ pub(crate) fn sync_round(store: &Store, config: &ConfigStore) -> SyncRoundOutcom
         Ok(n) => out.imported = n,
         Err(e) => out.errors.push(format!("pull: {e}")),
     }
-    match sync::commit_and_push(&paths, &cfg, "vaultone: usage sync") {
+    match sync::push_usage(store, &paths, &cfg) {
         Ok(p) => out.pushed = p,
         Err(e) => out.errors.push(format!("push: {e}")),
     }

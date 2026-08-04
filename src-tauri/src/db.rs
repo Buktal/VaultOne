@@ -366,54 +366,79 @@ impl Store {
         Ok(())
     }
 
-    /// Drop every scan cursor so the next collect re-parses all source lines
-    /// (a full scan). Used by the Artifact-gap reconcile to backfill rows that
-    /// reached SQLite but not the JSONL Artifact — a full rescan re-appends
-    /// them idempotently. Safe: the ledger dedups the SQLite side.
-    pub fn clear_scan_progress(&self) -> AppResult<()> {
+    // ---------------- Dirty days (sync recompute driver) ----------------
+
+    /// The day-buckets holding un-pushed local changes, in deterministic order
+    /// (sorted). Drives the push path's per-day Artifact recompute. Read-only —
+    /// it does NOT clear: clearing happens only after a push lands (see
+    /// [`Self::clear_dirty_days`]), so a failed push leaves the days dirty for
+    /// the next retry. Pure local state: this makes no claim about the git
+    /// worktree and never reads it.
+    pub fn dirty_days(&self) -> AppResult<Vec<String>> {
         let conn = self.conn.lock().expect("db mutex poisoned");
-        conn.execute("DELETE FROM scan_progress", [])?;
+        let mut stmt = conn.prepare("SELECT day FROM dirty_days ORDER BY day")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(AppError::from)
+    }
+
+    /// Clear the given days from `dirty_days` once their per-day Artifact has
+    /// been recomputed AND the push landed. Days not listed are left dirty
+    /// (a concurrent collect may have flagged a new one between read and push).
+    /// No-op for days already absent.
+    pub fn clear_dirty_days(&self, days: &[String]) -> AppResult<()> {
+        if days.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let placeholders = (0..days.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+        conn.execute(
+            &format!("DELETE FROM dirty_days WHERE day IN ({placeholders})"),
+            params_from_iter(days.iter()),
+        )?;
         Ok(())
     }
 
-    /// UUIDs of every usage row owned by `device_id`. Used by the Artifact-gap
-    /// reconcile to detect rows that reached SQLite but never the JSONL Artifact.
-    pub fn usage_uuids_for_device(
-        &self,
-        device_id: &str,
-    ) -> AppResult<std::collections::HashSet<String>> {
+    /// Every usage row for one (day, device), in uuid order — the source for the
+    /// push path's per-day Artifact recompute. `ORDER BY uuid` (not collect
+    /// order) is what makes the rewrite byte-stable across pushes: the same
+    /// store yields the same file bytes every time, so git sees no churn once a
+    /// day is settled.
+    pub fn usage_for_day_device(&self, day: &str, device_id: &str) -> AppResult<Vec<UsageRecord>> {
         let conn = self.conn.lock().expect("db mutex poisoned");
-        let mut stmt = conn.prepare("SELECT uuid FROM usage_records WHERE device_id = ?")?;
-        let rows = stmt.query_map(params![device_id], |r| r.get::<_, String>(0))?;
-        let mut set = std::collections::HashSet::new();
-        for r in rows {
-            set.insert(r?);
-        }
-        Ok(set)
+        let mut stmt = conn.prepare(
+            "SELECT uuid, timestamp, day, model, pricing_model, source, device_id,
+                    input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+                    server_tool_use, stop_reason, service_tier, iterations,
+                    input_cost_usd, output_cost_usd, cache_read_cost_usd,
+                    cache_creation_cost_usd, total_cost_usd
+             FROM usage_records WHERE day = ? AND device_id = ? ORDER BY uuid",
+        )?;
+        let rows = stmt.query_map(params![day, device_id], row_to_usage_record)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(AppError::from)
     }
 
-    // ---------------- Dirty days (sync recompute driver) ----------------
-    //
-    // The production reader (`dirty_days`) and clearer (`clear_dirty_days`) land
-    // with the push path that calls them — shipping them here would be dead code
-    // (this crate is a cdylib, so an uncalled `pub` method is flagged). The
-    // collect-side marking above is the load-bearing part of this ticket and has
-    // a production caller immediately; these read/clear helpers exist only so
-    // tests (including cross-module ones in `ingest`) can observe the marking.
-
-    /// Test-only view of the dirty day-buckets (sorted). Lets collect-side tests
-    /// assert that newly written rows flagged their days dirty. Replaced by the
-    /// real push-path reader in a later ticket.
-    #[cfg(test)]
-    pub(crate) fn dirty_days_for_test(&self) -> Vec<String> {
+    /// Every turn duration for one (day, device), in uuid order — the source for
+    /// the turns Artifact recompute. Same byte-stability rationale as
+    /// [`Self::usage_for_day_device`].
+    pub fn turns_for_day_device(&self, day: &str, device_id: &str) -> AppResult<Vec<TurnDuration>> {
         let conn = self.conn.lock().expect("db mutex poisoned");
-        let mut stmt = conn
-            .prepare("SELECT day FROM dirty_days ORDER BY day")
-            .expect("dirty_days prepared");
-        stmt.query_map([], |r| r.get::<_, String>(0))
-            .expect("dirty_days query")
-            .filter_map(Result::ok)
-            .collect()
+        let mut stmt = conn.prepare(
+            "SELECT uuid, timestamp, day, device_id, duration_ms
+             FROM turn_durations WHERE day = ? AND device_id = ? ORDER BY uuid",
+        )?;
+        let rows = stmt.query_map(params![day, device_id], |r| {
+            Ok(TurnDuration {
+                uuid: r.get(0)?,
+                timestamp: r.get(1)?,
+                day: r.get(2)?,
+                device_id: r.get(3)?,
+                duration_ms: r.get::<_, i64>(4)? as u32,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(AppError::from)
     }
 
     /// Rebill zero-cost rows whose model now has a price (freeze +
@@ -806,6 +831,43 @@ fn row_to_pricing(r: &rusqlite::Row<'_>) -> rusqlite::Result<ModelPricing> {
         cache_read: parse(r.get(4)?),
         cache_creation: parse(r.get(5)?),
         is_builtin: r.get::<_, i64>(6)? != 0,
+    })
+}
+
+/// Reconstruct a full [`UsageRecord`] (with nested token / cost structs) from a
+/// `usage_records` row — the inverse of `Store::ingest_impl`'s insert. Used by
+/// the push path's per-day recompute to serialize the day's full content.
+fn row_to_usage_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<UsageRecord> {
+    use std::str::FromStr;
+    let dec =
+        |s: String| rust_decimal::Decimal::from_str(&s).unwrap_or(rust_decimal::Decimal::ZERO);
+    let total = dec(r.get::<_, String>(19)?);
+    Ok(UsageRecord {
+        uuid: r.get(0)?,
+        timestamp: r.get(1)?,
+        day: r.get(2)?,
+        model: r.get(3)?,
+        pricing_model: r.get(4)?,
+        source: r.get(5)?,
+        device_id: r.get(6)?,
+        tokens: TokenCounts {
+            input: r.get::<_, i64>(7)? as u32,
+            output: r.get::<_, i64>(8)? as u32,
+            cache_creation: r.get::<_, i64>(9)? as u32,
+            cache_read: r.get::<_, i64>(10)? as u32,
+        },
+        server_tool_use: serde_json::from_str(&r.get::<_, String>(11)?)
+            .unwrap_or(crate::model::ServerToolUse::default()),
+        stop_reason: r.get(12)?,
+        service_tier: r.get(13)?,
+        iterations: r.get::<_, i64>(14)? as u32,
+        cost: crate::model::CostBreakdown {
+            input_usd: dec(r.get::<_, String>(15)?),
+            output_usd: dec(r.get::<_, String>(16)?),
+            cache_read_usd: dec(r.get::<_, String>(17)?),
+            cache_creation_usd: dec(r.get::<_, String>(18)?),
+            total_usd: total,
+        },
     })
 }
 
@@ -1298,17 +1360,6 @@ mod tests {
 
     // ---- dirty_days (sync recompute driver) ----
 
-    /// Wipe every dirty_days row — tests only (the production clearer lands with
-    /// the push path). db.rs tests can reach `conn` directly; cross-module tests
-    /// cannot, so they don't rely on clearing.
-    fn clear_dirty_days(s: &Store) {
-        s.conn
-            .lock()
-            .unwrap()
-            .execute("DELETE FROM dirty_days", [])
-            .unwrap();
-    }
-
     /// The local-collect ingest flags each newly inserted row's day dirty, in
     /// the same transaction as the write. A collect that ingests rows on D1 and
     /// D2 leaves exactly {D1, D2} dirty (deduped, sorted).
@@ -1322,7 +1373,7 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(
-            s.dirty_days_for_test(),
+            s.dirty_days().unwrap(),
             vec!["2026-07-13".to_string(), "2026-07-14".to_string()],
             "D1 (two rows) + D2, deduped and sorted"
         );
@@ -1337,7 +1388,7 @@ mod tests {
         s.ingest(&[rec("a", "2026-07-13", "glm-5.2", "dev1", 100, 50, 1.0)])
             .unwrap();
         assert!(
-            s.dirty_days_for_test().is_empty(),
+            s.dirty_days().unwrap().is_empty(),
             "pull-path ingest must not flag days dirty"
         );
     }
@@ -1350,10 +1401,10 @@ mod tests {
         let s = mem();
         let r = rec("a", "2026-07-13", "glm-5.2", "dev1", 100, 50, 1.0);
         s.ingest_marking_dirty(std::slice::from_ref(&r)).unwrap();
-        clear_dirty_days(&s);
+        s.clear_dirty_days(&["2026-07-13".to_string()]).unwrap();
         // Same uuid again ⇒ no new row ⇒ no dirty flag.
         s.ingest_marking_dirty(std::slice::from_ref(&r)).unwrap();
-        assert!(s.dirty_days_for_test().is_empty());
+        assert!(s.dirty_days().unwrap().is_empty());
     }
 
     /// Turn ingest marks its days dirty on the collect path too (one shared
@@ -1379,11 +1430,12 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(
-            s.dirty_days_for_test(),
+            s.dirty_days().unwrap(),
             vec!["2026-07-13".to_string(), "2026-07-14".to_string()]
         );
         // Pull-path turn ingest does not flag.
-        clear_dirty_days(&s);
+        s.clear_dirty_days(&["2026-07-13".into(), "2026-07-14".into()])
+            .unwrap();
         s.ingest_turn_durations(&[TurnDuration {
             uuid: "t3".into(),
             timestamp: "2026-07-15T10:00:00Z".into(),
@@ -1393,7 +1445,7 @@ mod tests {
         }])
         .unwrap();
         assert!(
-            s.dirty_days_for_test().is_empty(),
+            s.dirty_days().unwrap().is_empty(),
             "pull turn ingest no flag"
         );
     }
@@ -1408,7 +1460,7 @@ mod tests {
         s.ingest_marking_dirty(&[rec("b", "2026-07-14", "glm-5.2", "d", 1, 0, 0.0)])
             .unwrap();
         assert_eq!(
-            s.dirty_days_for_test(),
+            s.dirty_days().unwrap(),
             vec!["2026-07-13".to_string(), "2026-07-14".to_string()]
         );
     }
