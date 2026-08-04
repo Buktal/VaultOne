@@ -1,13 +1,13 @@
 //! Ingest pipeline: RawUsage → UsageRecord (cost computed) and RawTurnDuration
-//! → TurnDuration, each written to the SQLite Local Store + a per-day JSONL
-//! Artifact.
+//! → TurnDuration, written to the SQLite Local Store, with the rows' days
+//! flagged dirty for the push path.
 //!
 //! The provider emits raw per-call events + raw per-turn durations (no cost, no
 //! device). Here we attach the owning device_id, derive the day bucket and
-//! pricing_model, compute cost via the pure CostCalculator, write new rows to
-//! SQLite (ledger dedup), and append the same new rows to per-day JSONL
-//! Artifacts. SQLite is the query source of truth; JSONL is the human-readable
-//! backup / sync medium.
+//! pricing_model, compute cost via the pure CostCalculator, and write the new
+//! rows to SQLite (deduped by the `(uuid, device_id)` primary key). The JSONL
+//! Artifact is a derived snapshot the push path recomputes from the store —
+//! collect never touches it (see `recompute_usage_day` / `recompute_turns_day`).
 
 use std::path::Path;
 
@@ -450,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn ingest_collected_dedups_via_store_ledger() {
+    fn ingest_collected_dedups_via_store_pk() {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
         let book = seed_book();
         let result = CollectResult {

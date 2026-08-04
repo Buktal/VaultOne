@@ -84,31 +84,7 @@ pub(super) const TURN_DURATIONS_INDEXES: &str = "\
     CREATE INDEX IF NOT EXISTS idx_turndur_day ON turn_durations(day); \
     CREATE INDEX IF NOT EXISTS idx_turndur_device ON turn_durations(device_id);";
 
-/// `ledger` — dedup ledger: canonical "have we imported this (uuid, device_id)"
-/// set + provenance. `(uuid, device_id)` = dedup key.
-pub(super) const LEDGER_COLS_DDL: &str = "\
-    uuid TEXT NOT NULL, \
-    source TEXT NOT NULL, \
-    device_id TEXT NOT NULL, \
-    ingested_at TEXT NOT NULL, \
-    PRIMARY KEY (uuid, device_id)";
-
-pub(super) const LEDGER_COLNAMES: &str = "uuid, source, device_id, ingested_at";
-
 // ---- Tables created by SCHEMA only (never rebuilt — no uuid-only history) ----
-
-/// `daily_rollups` — derived cache (holds `total_cost_usd`). Per (day, model, device).
-pub(super) const DAILY_ROLLUPS_COLS_DDL: &str = "\
-    day TEXT NOT NULL, \
-    model TEXT NOT NULL, \
-    device_id TEXT NOT NULL, \
-    input_tokens INTEGER NOT NULL, \
-    output_tokens INTEGER NOT NULL, \
-    cache_creation_tokens INTEGER NOT NULL, \
-    cache_read_tokens INTEGER NOT NULL, \
-    request_count INTEGER NOT NULL, \
-    total_cost_usd TEXT NOT NULL, \
-    PRIMARY KEY (day, model, device_id)";
 
 /// `dirty_days` — day-buckets (`yyyy-mm-dd`) holding un-pushed local changes.
 /// The collect path flags a day dirty in the SAME transaction that writes new
@@ -140,9 +116,9 @@ pub(super) const DEVICE_COLS_DDL: &str = "\
     first_seen TEXT NOT NULL";
 
 /// `scan_progress` — incremental scan cursor. Replaceable cache: a lost/truncated
-/// row only triggers a full rescan of that file on the next collect — the dedup
-/// ledger (not this table) is the source of truth. NOT part of the JSONL
-/// Artifact; local parse-progress state, not authoritative data.
+/// row only triggers a full rescan of that file on the next collect — the store's
+/// `(uuid, device_id)` dedup (not this table) is the source of truth. NOT part
+/// of the JSONL Artifact; local parse-progress state, not authoritative data.
 pub(super) const SCAN_PROGRESS_COLS_DDL: &str = "\
     file_path TEXT PRIMARY KEY, \
     last_modified INTEGER NOT NULL, \
@@ -159,8 +135,6 @@ pub(super) fn schema_sql() -> String {
         USAGE_RECORDS_INDEXES.to_string(),
         create_table("turn_durations", TURN_DURATIONS_COLS_DDL),
         TURN_DURATIONS_INDEXES.to_string(),
-        create_table("ledger", LEDGER_COLS_DDL),
-        create_table("daily_rollups", DAILY_ROLLUPS_COLS_DDL),
         create_table("dirty_days", DIRTY_DAYS_COLS_DDL),
         create_table("model_pricing", MODEL_PRICING_COLS_DDL),
         create_table("device", DEVICE_COLS_DDL),
@@ -190,7 +164,7 @@ mod tests {
             .collect()
     }
 
-    /// The three rebuildable tables must keep their `COLS_DDL` and `COLNAMES` in
+    /// The rebuildable tables must keep their `COLS_DDL` and `COLNAMES` in
     /// lockstep — otherwise `rebuild_table_pk`'s `INSERT...SELECT` would drop or
     /// misalign columns. This is the single-source invariant the old dual
     /// (`db_schema.sql` + migration literals) setup made fragile.
@@ -207,7 +181,6 @@ mod tests {
                 TURN_DURATIONS_COLS_DDL,
                 TURN_DURATIONS_COLNAMES,
             ),
-            ("ledger", LEDGER_COLS_DDL, LEDGER_COLNAMES),
         ] {
             let from_ddl = ddl_column_names(cols_ddl);
             let from_names: Vec<&str> = colnames.split(',').map(str::trim).collect();
@@ -235,8 +208,6 @@ mod tests {
         for expected in [
             "usage_records",
             "turn_durations",
-            "ledger",
-            "daily_rollups",
             "dirty_days",
             "model_pricing",
             "device",

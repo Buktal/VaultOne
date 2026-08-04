@@ -26,7 +26,8 @@ use crate::sync;
 /// and shared (keys are file paths, disjoint across providers); each provider's
 /// cursor advances are merged and persisted AFTER all ingests — so a failed
 /// ingest leaves cursors untouched (next collect re-parses the same lines; the
-/// ledger dedups). First run / empty table ⇒ full scan.
+/// store's primary-key dedup absorbs the re-read). First run / empty table ⇒
+/// full scan.
 pub fn collect_into(store: &Store, config: &ConfigStore) -> AppResult<IngestReport> {
     let providers = crate::providers::all_providers()?;
     let cfg = config.get();

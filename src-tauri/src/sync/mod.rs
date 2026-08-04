@@ -115,33 +115,12 @@ macro_rules! push_options_with_proxy {
 const DEFAULT_BRANCH: &str = "main";
 
 /// Open the local repo at `local`, or clone it from `repo_url` on first use.
-/// Idempotent: once `.git` exists, reopens instead of re-cloning. Device-unaware
-/// (no `data/` preservation on the in-place bootstrap) — tests / legacy paths.
-#[cfg(test)]
+/// Idempotent: once `.git` exists, reopens instead of re-cloning.
 pub fn open_or_clone(repo_url: &str, local: &Path, token: &str) -> AppResult<Repository> {
-    open_or_clone_impl(repo_url, local, token, None)
+    open_or_clone_impl(repo_url, local, token)
 }
 
-/// Like `open_or_clone` but knows this device's id. On the in-place bootstrap
-/// (Standalone→Synced / unbind→re-bind) it snapshots `data/<device_id>/` before
-/// the force checkout and restores it after, so this device's own JSONL — and
-/// thus what gets pushed to git — can never be overwritten by a staler remote
-/// copy. Production paths pass `cfg.device_id`.
-pub fn open_or_clone_for_device(
-    repo_url: &str,
-    local: &Path,
-    token: &str,
-    device_id: &str,
-) -> AppResult<Repository> {
-    open_or_clone_impl(repo_url, local, token, Some(device_id))
-}
-
-fn open_or_clone_impl(
-    repo_url: &str,
-    local: &Path,
-    token: &str,
-    device_id: Option<&str>,
-) -> AppResult<Repository> {
+fn open_or_clone_impl(repo_url: &str, local: &Path, token: &str) -> AppResult<Repository> {
     if local.join(".git").exists() {
         return Ok(Repository::open(local)?);
     }
@@ -155,7 +134,7 @@ fn open_or_clone_impl(
         .map(|mut it| it.next().is_some())
         .unwrap_or(false);
     if dir_has_entries {
-        return init_with_remote(repo_url, local, token, device_id);
+        return init_with_remote(repo_url, local, token);
     }
     fetch_options_with_proxy!(fo, token);
     let mut builder = RepoBuilder::new();
@@ -190,95 +169,15 @@ pub fn reset_local_git(repo: &Path) {
     }
 }
 
-/// RAII snapshot of a flat directory — this device's `data/<deviceId>/`. Copies
-/// the files to an OS-temp dir before a force checkout, restores on demand, and
-/// removes the temp dir on drop. Guards this device's JSONL against a force
-/// checkout overwriting it with the remote's (possibly staler) copy.
-struct DirSnapshot(std::path::PathBuf);
-impl DirSnapshot {
-    /// Copy every file under `src` into a fresh temp dir.
-    fn take(src: &Path) -> std::io::Result<Self> {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let dst =
-            std::env::temp_dir().join(format!("vaultone-snap-{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&dst)?;
-        if src.exists() {
-            for entry in std::fs::read_dir(src)? {
-                let entry = entry?;
-                let p = entry.path();
-                if p.is_file() {
-                    std::fs::copy(&p, dst.join(entry.file_name()))?;
-                }
-            }
-        }
-        Ok(DirSnapshot(dst))
-    }
-
-    /// Overwrite `dst` with the snapshot (this device's local truth). Existing
-    /// files are removed first so a staler remote copy from the checkout is gone.
-    fn restore(&self, dst: &Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(dst)?;
-        for entry in std::fs::read_dir(dst)? {
-            let p = entry?.path();
-            if p.is_file() {
-                let _ = std::fs::remove_file(&p);
-            }
-        }
-        for entry in std::fs::read_dir(&self.0)? {
-            let p = entry?.path();
-            if p.is_file() {
-                std::fs::copy(&p, dst.join(p.file_name().unwrap()))?;
-            }
-        }
-        Ok(())
-    }
-}
-impl Drop for DirSnapshot {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-/// Snapshot this device's own `data/` before a destructive git op (force
-/// checkout / pull's fast-forward checkout), restore it after on success. The
-/// local `data/<deviceId>/` may be newer than the remote's copy — rows appended
-/// locally while unbound, or collected between pushes (dirty worktree) — and a
-/// force checkout would silently overwrite it, dropping those rows so they never
-/// reach the remote. On op failure the snapshot is NOT restored, matching the
-/// prior inline `op()?; restore` shape at both call sites: the worktree is left
-/// as the failed op left it, and the snapshot's temp dir is cleaned by `Drop`.
-/// Single point of truth for the take/restore invariant.
-fn with_own_data_protected<R>(
-    own_dir: Option<&Path>,
-    op: impl FnOnce() -> AppResult<R>,
-) -> AppResult<R> {
-    let snap = own_dir
-        .filter(|p| p.exists())
-        .and_then(|p| DirSnapshot::take(p).ok());
-    let r = op();
-    if r.is_ok() {
-        if let (Some(s), Some(dir)) = (snap, own_dir.filter(|p| p.exists())) {
-            let _ = s.restore(dir);
-        }
-    }
-    r
-}
-
 /// Bootstrap a sync repo inside an already-populated `local` — the Standalone →
 /// Synced switch, or the unbind→re-bind case. `clone` refuses a non-empty target,
-/// so init in place, fetch the remote, and force-checkout the remote tip. Because
-/// force would overwrite this device's locally-collected `data/<deviceId>/`
-/// (possibly newer than the remote copy — rows appended while unbound), we
-/// snapshot it first and restore it after the checkout when `device_id` is known.
-fn init_with_remote(
-    repo_url: &str,
-    local: &Path,
-    token: &str,
-    device_id: Option<&str>,
-) -> AppResult<Repository> {
+/// so init in place, fetch the remote, and force-checkout the remote tip. Force
+/// is safe even though it may overwrite this device's own `data/<deviceId>/`
+/// files: collect writes the store, not the Artifact, so unpushed rows live in
+/// SQLite (flagged in `dirty_days`) and the next push recomputes this device's
+/// files from the store. No snapshot/restore is needed — the store is the
+/// source of truth.
+fn init_with_remote(repo_url: &str, local: &Path, token: &str) -> AppResult<Repository> {
     let repo = Repository::init(local)?;
     repo.config()?.set_str("core.autocrlf", "false")?;
     {
@@ -293,27 +192,18 @@ fn init_with_remote(
     // Point HEAD at the remote's default branch and force-checkout its tree. If
     // the remote is unborn (empty repo) there is nothing to check out — pin HEAD
     // at our `main` (unborn) so the first commit+push creates `main`, not
-    // libgit2's hardcoded `master`. This device's `data/` is snapshotted inside
-    // `with_own_data_protected` immediately before the checkout (only when our
-    // device id is known — production; tests pass None) and restored after, so a
-    // force checkout can't drop locally-collected rows.
+    // libgit2's hardcoded `master`. Force: the worktree may already hold files
+    // the remote also carries (the unbind→re-bind case — `.git` was dropped but
+    // `data/` remains, so those files are now untracked and a SAFE checkout
+    // rejects them as conflicts). Overwriting this device's own (possibly
+    // staler) files is fine — see the doc comment above: push recomputes them.
     if let Some((branch, tip)) = pick_origin_branch(&repo)? {
-        let own = device_id.map(|d| local.join("data").join(d));
-        with_own_data_protected(own.as_deref(), || {
-            let commit = repo.find_commit(tip)?;
-            repo.branch(&branch, &commit, true)?;
-            repo.set_head(&format!("refs/heads/{branch}"))?;
-            let mut co = CheckoutBuilder::new();
-            // Force: the worktree may already hold files the remote also carries
-            // (the unbind→re-bind case — `.git` was dropped but `data/` remains,
-            // so those files are now untracked and a SAFE checkout rejects them
-            // as conflicts). This device's data/ is restored from the snapshot
-            // taken inside `with_own_data_protected`, so force is safe; other
-            // devices' data + README land at the remote tip.
-            co.force();
-            repo.checkout_head(Some(&mut co))?;
-            Ok(())
-        })?;
+        let commit = repo.find_commit(tip)?;
+        repo.branch(&branch, &commit, true)?;
+        repo.set_head(&format!("refs/heads/{branch}"))?;
+        let mut co = CheckoutBuilder::new();
+        co.force();
+        repo.checkout_head(Some(&mut co))?;
     } else {
         // Empty remote: libgit2's init default (`master`) would otherwise win.
         // Pin to our `main` as an unborn HEAD; the first commit lands on it.
@@ -423,13 +313,12 @@ pub fn pull<'a>(repo: &'a Repository, token: &str) -> AppResult<PullOutcome<'a>>
 
 /// Rebase this branch's local-only commits onto `upstream` and push. The
 /// explicit diverge step [`pull`] declines to do — [`pull_and_import`]
-/// invokes it when [`pull`] returns [`PullOutcome::Diverged`], keeping the
-/// rebase+push inside the own-data snapshot so a hard-reset here can't drop
-/// uncommitted local rows.
+/// invokes it when [`pull`] returns [`PullOutcome::Diverged`].
 ///
-/// `git rebase` needs a clean worktree. Callers snapshot their dirty files and
-/// restore them after this returns, so any in-worktree change here is
-/// regenerable — we hard-reset it away before rebasing. Device isolation
+/// `git rebase` needs a clean worktree, so any in-worktree change here is
+/// hard-reset away before rebasing. That is safe: usage rows live in the store
+/// (not the worktree Artifacts), and the next push recomputes this device's
+/// files from it — the worktree is always regenerable. Device isolation
 /// (`data/<deviceId>/`) guarantees the rebase applies without conflict. A
 /// commit whose diff is already on the upstream tip (e.g. a device-cleanup a
 /// peer pushed first) is dropped as already-applied; any other failure is a
@@ -582,41 +471,34 @@ pub(crate) fn has_changes(repo: &Repository) -> AppResult<bool> {
 }
 
 /// Pull the remote and import every device's JSONL Artifact into the Local
-/// Store (uuid-deduped via the ledger). Synced-only.
+/// Store (deduped by the store's `(uuid, device_id)` primary key). Synced-only.
+///
+/// A fast-forward force-checkout (or a diverge rebase's hard reset) may rewrite
+/// this device's own `data/<deviceId>/` files — fine: collect writes the store,
+/// not the Artifact, so unpushed rows live in SQLite (flagged in `dirty_days`)
+/// and the next push recomputes this device's files from the store. The old
+/// snapshot/restore mechanism existed only to protect collect appends.
 pub fn pull_and_import(
     store: &crate::db::Store,
     paths: &crate::config::Paths,
     cfg: &ConfigData,
 ) -> AppResult<u32> {
     let (url, token) = require_synced(cfg)?;
-    let repo = open_or_clone_for_device(&url, &paths.repo, &token, &cfg.device_id)?;
+    let repo = open_or_clone(&url, &paths.repo, &token)?;
     // Two-step sync: pull (fetch + fast-forward), then — only on diverge —
-    // rebase local-only commits onto the remote tip and push. Both steps run
-    // inside the own-data snapshot. pull's fast-forward force-checkout AND
-    // rebase_and_push's hard-reset-if-dirty would otherwise revert this
-    // device's uncommitted JSONL appends (rows the collector writes to
-    // data/<deviceId>/*.jsonl between pushes — dirty worktree), silently
-    // dropping them so they never reach the remote and peers never see them.
-    // `with_own_data_protected` snapshots before the closure and restores after
-    // it succeeds, so the local truth (including not-yet-pushed rows) survives
-    // both a ff checkout and a diverge rebase. Restored before
-    // `read_all_artifacts` below, matching the original ordering.
-    let own_dir = paths.device_data_dir(&cfg.device_id);
-    with_own_data_protected(Some(&own_dir), || -> AppResult<()> {
-        match pull(&repo, &token)? {
-            PullOutcome::Diverged(upstream) => {
-                rebase_and_push(
-                    &repo,
-                    &upstream,
-                    &token,
-                    &cfg.display_name,
-                    &author_email(cfg),
-                )?;
-            }
-            PullOutcome::UpToDate | PullOutcome::FastForwarded => {}
+    // rebase local-only commits onto the remote tip and push.
+    match pull(&repo, &token)? {
+        PullOutcome::Diverged(upstream) => {
+            rebase_and_push(
+                &repo,
+                &upstream,
+                &token,
+                &cfg.display_name,
+                &author_email(cfg),
+            )?;
         }
-        Ok(())
-    })?;
+        PullOutcome::UpToDate | PullOutcome::FastForwarded => {}
+    }
     let records = crate::ingest::read_all_artifacts(paths)?;
     let inserted = store.ingest(&records)?;
     // Per-turn durations (separate grain, uuid-deduped).
@@ -638,7 +520,7 @@ pub fn commit_and_push(
     message: &str,
 ) -> AppResult<bool> {
     let (url, token) = require_synced(cfg)?;
-    let repo = open_or_clone_for_device(&url, &paths.repo, &token, &cfg.device_id)?;
+    let repo = open_or_clone(&url, &paths.repo, &token)?;
     if !has_changes(&repo)? {
         return Ok(false);
     }
@@ -834,7 +716,7 @@ mod tests {
         )
         .unwrap();
 
-        let repo = init_with_remote(&url, &local, "", None).unwrap();
+        let repo = init_with_remote(&url, &local, "").unwrap();
         assert!(local.join(".git").exists());
         // Local artifact survives the SAFE checkout (untracked, not clobbered).
         assert!(local_data.join("usage-2026-07-22.jsonl").exists());
@@ -857,7 +739,7 @@ mod tests {
 
         // No branches on the remote ⇒ no checkout, but local data survives + repo
         // is init'd (first commit+push will create the branch).
-        let repo = init_with_remote(&url, &local, "", None).unwrap();
+        let repo = init_with_remote(&url, &local, "").unwrap();
         assert!(local.join(".git").exists());
         assert!(local_data.join("usage.jsonl").exists());
         drop(repo);
@@ -872,7 +754,7 @@ mod tests {
         Repository::init_bare(&remote).unwrap();
         let url = remote.to_string_lossy().to_string();
         let local = tmp.path().join("dev");
-        let repo = init_with_remote(&url, &local, "", None).unwrap();
+        let repo = init_with_remote(&url, &local, "").unwrap();
         assert!(
             matches!(pull(&repo, "").unwrap(), PullOutcome::UpToDate),
             "unborn HEAD must short-circuit as UpToDate"
@@ -985,47 +867,6 @@ mod tests {
         assert!(check.join("data/localdev/usage-2026-07-23.jsonl").exists());
     }
 
-    /// Narrow edge: a same-day JSONL appended across the unbound window. Without
-    /// the device snapshot, the re-bind's force checkout would overwrite the
-    /// locally-appended rows with the remote's staler copy — and they'd never
-    /// reach git (incremental collect won't re-read cursor-advanced lines). The
-    /// snapshot must preserve the local truth.
-    #[test]
-    fn rebind_preserves_locally_appended_rows_via_device_snapshot() {
-        let tmp = tempfile::tempdir().unwrap();
-        let remote = tmp.path().join("remote.git");
-        seed_remote(&remote);
-        let url = remote.to_string_lossy().to_string();
-        let dev = "localdev";
-        let local = tmp.path().join("device");
-        let own = local.join("data").join(dev);
-
-        // Bind, collect one day-1 row, push (remote now has usage-07-22 = 1 row).
-        let repo = open_or_clone_for_device(&url, &local, "", dev).unwrap();
-        std::fs::create_dir_all(&own).unwrap();
-        std::fs::write(own.join("usage-2026-07-22.jsonl"), "{\"uuid\":\"a\"}\n").unwrap();
-        commit_all(&repo, "first", "Dev", "d@devices.vaultone").unwrap();
-        push(&repo, "").unwrap();
-        drop(repo);
-
-        // Unbind, then append a second row to the SAME day locally (remote: still 1).
-        reset_local_git(&local);
-        std::fs::write(
-            own.join("usage-2026-07-22.jsonl"),
-            "{\"uuid\":\"a\"}\n{\"uuid\":\"b\"}\n",
-        )
-        .unwrap();
-
-        // Re-bind a repo that already carries the 1-row version: the force
-        // checkout would clobber the local 2-row file. The snapshot keeps both.
-        let _repo2 = open_or_clone_for_device(&url, &local, "", dev).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(own.join("usage-2026-07-22.jsonl")).unwrap(),
-            "{\"uuid\":\"a\"}\n{\"uuid\":\"b\"}\n",
-            "locally-appended rows must survive the re-bind force checkout"
-        );
-    }
-
     #[test]
     fn two_devices_sync_via_push_and_pull() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1115,9 +956,9 @@ mod tests {
             .unwrap();
         assert_eq!(stats.request_count, 1);
 
-        // Re-pulling is a no-op (uuid already in the ledger).
+        // Re-pulling is a no-op (uuid already in the store).
         let n2 = pull_and_import(&store, &paths_b, &cfg_b).unwrap();
-        assert_eq!(n2, 0, "re-pull dedups via ledger");
+        assert_eq!(n2, 0, "re-pull dedups via the store's primary key");
     }
 
     /// Regression: `pull` used to be fast-forward-only and errored on divergent
@@ -1284,7 +1125,7 @@ mod tests {
 
         // A clones + collects one row into its store (dirty). No file, no push.
         let paths_a = crate::config::Paths::resolve(&tmp.path().join("a"));
-        let _repo_a = open_or_clone_for_device(&url, &paths_a.repo, "", dev_a).unwrap();
+        let _repo_a = open_or_clone(&url, &paths_a.repo, "").unwrap();
         let cfg_a = ConfigData {
             repo_url: Some(url.clone()),
             github_token: Some("tok".into()),
@@ -1305,7 +1146,7 @@ mod tests {
         // Peer B advances the remote tip so A's pull fast-forwards + force-checks-out
         // (揉 the worktree). A's unpushed row is safe in the store.
         let paths_b = crate::config::Paths::resolve(&tmp.path().join("b"));
-        let repo_b = open_or_clone_for_device(&url, &paths_b.repo, "", "bbbbbbbbbbbb").unwrap();
+        let repo_b = open_or_clone(&url, &paths_b.repo, "").unwrap();
         let b_file = paths_b
             .device_data_dir("bbbbbbbbbbbb")
             .join("usage-2026-07-30.jsonl");

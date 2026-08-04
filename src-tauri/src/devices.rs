@@ -158,7 +158,7 @@ fn present_device_ids(paths: &Paths, cfg: &ConfigData) -> HashSet<String> {
 
 /// Purge local device rows Git no longer backs. Git is the source of truth for
 /// which devices exist, so a device with NO git presence is residue and is
-/// forgotten locally (row + usage + rollups). "Present" = this device ∪ devices
+/// forgotten locally (row + usage). "Present" = this device ∪ devices
 /// with a registry file (`config/devices_<id>.json`) ∪ devices with a data dir
 /// under `repo/data/<id>/`. The local repo filesystem is always available (even
 /// Standalone), so this runs on both the sync and collect paths — a stale
@@ -306,7 +306,7 @@ fn remove_device_artifact_file(paths: &Paths, device_id: &str) {
 }
 
 /// Locally forget a peer device: drop its registry row + all its local usage
-/// data (records, rollups, turn durations, ledger), clear any local alias,
+/// data (records, turn durations), clear any local alias,
 /// delete its Artifact dir and published name artifact, and apply
 /// [`LibraryForgetAction`] to its library subtree. The Store + alias removals
 /// are hard errors (a half-forgotten device would leave the registry

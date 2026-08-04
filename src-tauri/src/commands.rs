@@ -183,12 +183,12 @@ pub fn set_device_display_name(
 }
 
 /// Locally forget a peer device: drop its registry row + all its local usage
-/// data (records, rollups, turn durations, ledger) + its local artifact dir,
-/// and clear any local alias. `library_action` decides the fate of the peer's
-/// library subtree (`repo/library/<id>/`): migrated into this device's library
-/// or deleted. Nothing is pushed to Git — a peer still in the repo reappears on
-/// the next sync (registry + data artifacts are re-imported). This device
-/// (`is_self`) is not forgettable; rename it instead.
+/// data (records, turn durations) + its local artifact dir, and clear any local
+/// alias. `library_action` decides the fate of the peer's library subtree
+/// (`repo/library/<id>/`): migrated into this device's library or deleted.
+/// Nothing is pushed to Git — a peer still in the repo reappears on the next
+/// sync (registry + data artifacts are re-imported). This device (`is_self`) is
+/// not forgettable; rename it instead.
 #[tauri::command]
 #[specta::specta]
 pub fn forget_device(

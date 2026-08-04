@@ -54,8 +54,8 @@ pub(super) fn migrate_schema(conn: &Connection) -> AppResult<()> {
     }
 
     // uuid 单列 PRIMARY KEY → (uuid, device_id) 复合主键。旧库的 usage_records /
-    // turn_durations / ledger 以 uuid 为单列主键,把"同 uuid、不同设备"的记录折叠
-    // 成一条(后导入者被丢)——同一份 ~/.claude/projects 被两个 device_id 扫描,或
+    // turn_durations 以 uuid 为单列主键,把"同 uuid、不同设备"的记录折叠成一条
+    // (后导入者被丢)——同一份 ~/.claude/projects 被两个 device_id 扫描,或
     // opencode.db 被恢复到第二台机器,都会撞 uuid。重建为复合主键,各设备各自保留。
     // 新库由 SCHEMA 直接建复合主键,这里检测后跳过。
     migrate_to_composite_pk(conn)?;
@@ -108,14 +108,6 @@ fn migrate_to_composite_pk(conn: &Connection) -> AppResult<()> {
             schema::TURN_DURATIONS_COLNAMES,
         )?;
         conn.execute_batch(schema::TURN_DURATIONS_INDEXES)?;
-    }
-    if needs_composite_pk_migration(conn, "ledger")? {
-        rebuild_table_pk(
-            conn,
-            "ledger",
-            schema::LEDGER_COLS_DDL,
-            schema::LEDGER_COLNAMES,
-        )?;
     }
     Ok(())
 }
@@ -196,16 +188,12 @@ mod tests {
             CREATE TABLE turn_durations (
                 uuid TEXT PRIMARY KEY, timestamp TEXT NOT NULL, day TEXT NOT NULL,
                 device_id TEXT NOT NULL, duration_ms INTEGER NOT NULL
-            );
-            CREATE TABLE ledger (
-                uuid TEXT PRIMARY KEY, source TEXT NOT NULL, device_id TEXT NOT NULL,
-                ingested_at TEXT NOT NULL
             );",
         )
         .unwrap();
         migrate_schema(&conn).unwrap();
 
-        // device_id is now part of the PK on all three tables.
+        // device_id is now part of the PK on both tables.
         let pk: Vec<(String, i64)> = conn
             .prepare("PRAGMA table_info(usage_records)")
             .unwrap()

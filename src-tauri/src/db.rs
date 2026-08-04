@@ -1,9 +1,9 @@
 //! SQLite Local Store.
 //!
-//! Owns the schema, the dedup ledger, daily rollups cache, pricing table and
-//! device registry. Exposes typed read methods (stats / trend / logs / models)
-//! and write methods (ingest, pricing CRUD, rebill) — the JS layer never sees
-//! SQL (typed command boundary).
+//! Owns the schema (usage / turns / pricing / device / scan cursors / dirty
+//! days), pricing table and device registry. Exposes typed read methods (stats
+//! / trend / logs / models) and write methods (ingest, pricing CRUD, rebill) —
+//! the JS layer never sees SQL (typed command boundary).
 //!
 //! Cost columns are `rust_decimal::Decimal` stored as TEXT; sums over
 //! them read back as REAL for display (f64 is display-only — JS never recomputes
@@ -162,10 +162,11 @@ impl Store {
 
     // ---------------- Ingest ----------------
 
-    /// Insert a batch of records, deduping by uuid via the ledger.
-    /// Returns the newly imported rows (in order). Recomputes affected rollups.
-    /// The pull path: imported rows are already on git, so their days are NOT
-    /// flagged dirty. The local-collect path uses [`Store::ingest_marking_dirty`].
+    /// Insert a batch of records, deduping by the `(uuid, device_id)` primary
+    /// key (`ON CONFLICT DO NOTHING`). Returns the newly imported rows (in
+    /// order). The pull path: imported rows are already on git, so their days
+    /// are NOT flagged dirty. The local-collect path uses
+    /// [`Store::ingest_marking_dirty`].
     pub fn ingest(&self, records: &[UsageRecord]) -> AppResult<Vec<UsageRecord>> {
         self.ingest_impl(records, false)
     }
@@ -194,69 +195,52 @@ impl Store {
         let mut conn = self.conn.lock().expect("db mutex poisoned");
         let tx = conn.transaction()?;
 
-        // Batch existence check: which (uuid, device_id) pairs are already in the
-        // ledger? Dedup is scoped by device — the same source event replayed on two
-        // devices must be counted per device, never collapsed into one row.
-        let uuids: Vec<String> = records.iter().map(|r| r.uuid.clone()).collect();
-        let placeholders = (0..uuids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!("SELECT uuid, device_id FROM ledger WHERE uuid IN ({placeholders})");
-        let known: std::collections::HashSet<(String, String)> = {
-            let mut stmt = tx.prepare(&sql)?;
-            let rows = stmt.query_map(params_from_iter(uuids.iter()), |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })?;
-            rows.filter_map(Result::ok).collect()
-        };
-
-        let now = crate::time::now_iso();
-        let mut new_days: std::collections::HashSet<(String, String, String)> = Default::default();
+        // Dedup is the `(uuid, device_id)` primary key itself: ON CONFLICT DO
+        // NOTHING, and RETURNING tells us exactly which rows actually landed (so
+        // `rows_inserted` and the dirty-day set reflect real new rows, not a
+        // pre-check that can drift from the table). Device-scoped — the same
+        // source event replayed on two devices must be counted per device.
         let mut inserted: Vec<UsageRecord> = Vec::new();
         for r in records {
-            if known.contains(&(r.uuid.clone(), r.device_id.clone())) {
-                continue;
+            let landed: Option<String> = tx
+                .query_row(
+                    "INSERT INTO usage_records
+                     (uuid, timestamp, day, model, pricing_model, source, device_id,
+                      input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+                      server_tool_use, stop_reason, service_tier, iterations,
+                      input_cost_usd, output_cost_usd, cache_read_cost_usd,
+                      cache_creation_cost_usd, total_cost_usd)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)
+                     ON CONFLICT (uuid, device_id) DO NOTHING
+                     RETURNING uuid",
+                    params![
+                        r.uuid,
+                        r.timestamp,
+                        r.day,
+                        r.model,
+                        r.pricing_model,
+                        r.source,
+                        r.device_id,
+                        r.tokens.input as i64,
+                        r.tokens.output as i64,
+                        r.tokens.cache_creation as i64,
+                        r.tokens.cache_read as i64,
+                        serde_json::to_string(&r.server_tool_use).unwrap_or_else(|_| "{}".into()),
+                        r.stop_reason,
+                        r.service_tier,
+                        r.iterations as i64,
+                        r.cost.input_usd.to_string(),
+                        r.cost.output_usd.to_string(),
+                        r.cost.cache_read_usd.to_string(),
+                        r.cost.cache_creation_usd.to_string(),
+                        r.cost.total_usd.to_string(),
+                    ],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            if landed.is_some() {
+                inserted.push(r.clone());
             }
-            tx.execute(
-                "INSERT OR IGNORE INTO usage_records
-                 (uuid, timestamp, day, model, pricing_model, source, device_id,
-                  input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-                  server_tool_use, stop_reason, service_tier, iterations,
-                  input_cost_usd, output_cost_usd, cache_read_cost_usd,
-                  cache_creation_cost_usd, total_cost_usd)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
-                params![
-                    r.uuid,
-                    r.timestamp,
-                    r.day,
-                    r.model,
-                    r.pricing_model,
-                    r.source,
-                    r.device_id,
-                    r.tokens.input as i64,
-                    r.tokens.output as i64,
-                    r.tokens.cache_creation as i64,
-                    r.tokens.cache_read as i64,
-                    serde_json::to_string(&r.server_tool_use).unwrap_or_else(|_| "{}".into()),
-                    r.stop_reason,
-                    r.service_tier,
-                    r.iterations as i64,
-                    r.cost.input_usd.to_string(),
-                    r.cost.output_usd.to_string(),
-                    r.cost.cache_read_usd.to_string(),
-                    r.cost.cache_creation_usd.to_string(),
-                    r.cost.total_usd.to_string(),
-                ],
-            )?;
-            tx.execute(
-                "INSERT OR IGNORE INTO ledger (uuid, source, device_id, ingested_at) VALUES (?1,?2,?3,?4)",
-                params![r.uuid, r.source, r.device_id, now],
-            )?;
-            new_days.insert((r.day.clone(), r.model.clone(), r.device_id.clone()));
-            inserted.push(r.clone());
-        }
-
-        // Recompute rollups only for affected (day, model, device) buckets.
-        for (day, model, device) in &new_days {
-            recompute_rollup(&tx, day, model, device)?;
         }
 
         if mark_dirty {
@@ -324,7 +308,7 @@ impl Store {
     }
 
     /// Load all incremental scan cursors. Empty on a fresh/cleared
-    /// DB ⇒ the next collect is a full scan (safe fallback — the ledger dedups).
+    /// DB ⇒ the next collect is a full scan (safe fallback — the store dedups).
     pub fn load_scan_progress(&self) -> AppResult<ScanProgress> {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let mut stmt =
@@ -471,7 +455,6 @@ impl Store {
         drop(stmt);
 
         let mut rebilled = 0usize;
-        let mut affected: std::collections::HashSet<(String, String, String)> = Default::default();
         for (uuid, device, model, tokens) in candidates {
             let Some(rate) = book.resolve(&model) else {
                 continue;
@@ -480,12 +463,7 @@ impl Store {
             if cost.total_usd <= rust_decimal::Decimal::ZERO {
                 continue;
             }
-            // uuid is no longer unique across devices, so scope the lookup/update by both.
-            let day: String = tx.query_row(
-                "SELECT day FROM usage_records WHERE uuid = ?1 AND device_id = ?2",
-                params![uuid, device],
-                |r| r.get(0),
-            )?;
+            // uuid is no longer unique across devices, so scope the update by both.
             tx.execute(
                 "UPDATE usage_records SET
                    input_cost_usd=?1, output_cost_usd=?2, cache_read_cost_usd=?3,
@@ -501,11 +479,7 @@ impl Store {
                     device,
                 ],
             )?;
-            affected.insert((day, model, device));
             rebilled += 1;
-        }
-        for (day, model, device) in &affected {
-            recompute_rollup(&tx, day, model, device)?;
         }
         tx.commit()?;
         Ok(rebilled)
@@ -598,10 +572,10 @@ impl Store {
     }
 
     /// Locally forget a device: drop its registry row and ALL its usage data
-    /// (usage_records, daily_rollups, turn_durations, ledger). No Git effect —
-    /// a peer still in the repo reappears on the next pull, which re-imports
-    /// its registry entry and data artifacts. The caller MUST guard `is_self`
-    /// (this device is never forgettable). Returns the total rows removed.
+    /// (usage_records, turn_durations). No Git effect — a peer still in the repo
+    /// reappears on the next pull, which re-imports its registry entry and data
+    /// artifacts. The caller MUST guard `is_self` (this device is never
+    /// forgettable). Returns the total rows removed.
     pub fn forget_device_local(&self, device_id: &str) -> AppResult<usize> {
         let mut conn = self.conn.lock().expect("db mutex poisoned");
         let tx = conn.transaction()?;
@@ -611,15 +585,7 @@ impl Store {
             params![device_id],
         )?;
         deleted += tx.execute(
-            "DELETE FROM daily_rollups WHERE device_id = ?1",
-            params![device_id],
-        )?;
-        deleted += tx.execute(
             "DELETE FROM turn_durations WHERE device_id = ?1",
-            params![device_id],
-        )?;
-        deleted += tx.execute(
-            "DELETE FROM ledger WHERE device_id = ?1",
             params![device_id],
         )?;
         deleted += tx.execute(
@@ -889,61 +855,6 @@ fn mark_days_dirty(
     Ok(())
 }
 
-/// Recompute one (day, model, device) rollup bucket from usage_records.
-fn recompute_rollup(
-    tx: &rusqlite::Transaction,
-    day: &str,
-    model: &str,
-    device: &str,
-) -> AppResult<()> {
-    let agg: Option<(i64, i64, i64, i64, i64, f64)> = tx
-        .query_row(
-            "SELECT COUNT(*),
-                    COALESCE(SUM(input_tokens),0),
-                    COALESCE(SUM(output_tokens),0),
-                    COALESCE(SUM(cache_creation_tokens),0),
-                    COALESCE(SUM(cache_read_tokens),0),
-                    COALESCE(SUM(CAST(total_cost_usd AS REAL)),0)
-             FROM usage_records WHERE day=?1 AND model=?2 AND device_id=?3",
-            params![day, model, device],
-            |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                ))
-            },
-        )
-        .optional()?;
-
-    // Store the rollup total as a TEXT decimal reconstructed from the REAL sum
-    // (display-grade precision only; rollups are a derived cache).
-    let total_text = match agg {
-        Some((_, _, _, _, _, cost)) if cost > 0.0 => format!("{cost:.6}"),
-        _ => "0".to_string(),
-    };
-    if let Some((cnt, inp, out, cc, cr, _)) = agg {
-        tx.execute(
-            "INSERT INTO daily_rollups
-             (day, model, device_id, input_tokens, output_tokens, cache_creation_tokens,
-              cache_read_tokens, request_count, total_cost_usd)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
-             ON CONFLICT(day, model, device_id) DO UPDATE SET
-               input_tokens=excluded.input_tokens,
-               output_tokens=excluded.output_tokens,
-               cache_creation_tokens=excluded.cache_creation_tokens,
-               cache_read_tokens=excluded.cache_read_tokens,
-               request_count=excluded.request_count,
-               total_cost_usd=excluded.total_cost_usd",
-            params![day, model, device, inp, out, cc, cr, cnt, total_text],
-        )?;
-    }
-    Ok(())
-}
-
 /// Build a `WHERE` clause + bound params for a `UsageFilter` (timestamp range,
 /// model, source, device scope). The range filters on `timestamp` (UTC), not
 /// `day` — see `UsageFilter` for why. Returns `("WHERE ...", vec![...])` or
@@ -1084,10 +995,11 @@ mod tests {
     }
 
     /// Regression: the same uuid on two DIFFERENT devices must both be kept —
-    /// dedup is scoped by (uuid, device_id), not uuid alone. The old uuid-only
-    /// ledger dropped the peer device's row, so a source event replayed under two
-    /// device ids (one ~/.claude/projects scanned twice, a restored opencode.db)
-    /// silently erased one device. Both devices must be visible afterwards.
+    /// dedup is scoped by the (uuid, device_id) primary key, not uuid alone. An
+    /// old uuid-only PK dropped the peer device's row, so a source event replayed
+    /// under two device ids (one ~/.claude/projects scanned twice, a restored
+    /// opencode.db) silently erased one device. Both devices must be visible
+    /// afterwards.
     #[test]
     fn ingest_keeps_same_uuid_across_devices() {
         let s = mem();
@@ -1212,28 +1124,6 @@ mod tests {
     }
 
     #[test]
-    fn ingest_recomputes_daily_rollup() {
-        let s = mem();
-        s.ingest(&[
-            rec("a", "2026-07-13", "glm-5.2", "dev1", 100, 50, 1.0),
-            rec("b", "2026-07-13", "glm-5.2", "dev1", 200, 100, 2.0),
-        ])
-        .unwrap();
-        // Rollup cache for the (day, model, device) bucket must reflect both rows.
-        // (Lock taken AFTER ingest returns — ingest takes the same lock.)
-        let conn = s.conn.lock().unwrap();
-        let (cnt, tokens): (i64, i64) = conn.query_row(
-            "SELECT request_count, input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens
-             FROM daily_rollups WHERE day=?1 AND model=?2 AND device_id=?3",
-            params!("2026-07-13", "glm-5.2", "dev1"),
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        ).unwrap();
-        drop(conn);
-        assert_eq!(cnt, 2);
-        assert_eq!(tokens, 450);
-    }
-
-    #[test]
     fn rebill_top_ups_zero_cost_rows() {
         let s = mem();
         // Zero-cost row for a model the seed book knows.
@@ -1267,8 +1157,8 @@ mod tests {
         .unwrap();
 
         let deleted = s.forget_device_local("aaaaaaaaaaaa").unwrap();
-        // device row + usage_records + ledger (+ rollup recompute leaves none).
-        assert!(deleted >= 3, "expected several rows deleted, got {deleted}");
+        // device row + usage_records.
+        assert!(deleted >= 2, "expected several rows deleted, got {deleted}");
 
         let ids = s.list_device_ids().unwrap();
         assert!(
