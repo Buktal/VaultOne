@@ -3,9 +3,11 @@
 // at every depth — drag-in, export, single-file download all work inside);
 // preview a file in the webview; export to a path you choose. VaultOne never
 // writes into an AI tool's own config dir.
+//
+// Pure rendering only — all state, queries, mutations and navigation live in
+// useLibraryBrowser (./use-library-browser). This component owns JSX, styles,
+// i18n, and the pure display helpers (kindIcon / formatSize).
 
-import { getCurrentWebview } from "@tauri-apps/api/webview"
-import { open } from "@tauri-apps/plugin-dialog"
 import dayjs from "dayjs"
 import relativeTime from "dayjs/plugin/relativeTime"
 import {
@@ -24,15 +26,7 @@ import {
   Trash2,
   X,
 } from "lucide-react"
-import { useEffect, useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
-import {
-  useDeleteFromLibraryMutation,
-  useDevicesQuery,
-  useExportFromLibraryMutation,
-  useRenameInLibraryMutation,
-  useScanLibraryQuery,
-} from "@/app/store/api"
 import { EmptyState } from "@/components/empty-state"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -57,15 +51,12 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { useMutateWithToast } from "@/hooks/use-toast-mutation"
 import { cn } from "@/lib/utils"
-import type { LibraryEntry } from "@/types/generated/bindings"
+import { ALL, useLibraryBrowser } from "../use-library-browser"
 import { PreviewSheet } from "./preview-sheet"
 import { UploadDialog } from "./upload-dialog"
 
 dayjs.extend(relativeTime)
-
-const ALL = "__all__"
 
 function kindIcon(name: string, isDir: boolean) {
   if (isDir) return Folder
@@ -89,178 +80,34 @@ function formatSize(bytes: number | null): string {
 
 export function LibraryView() {
   const { t } = useTranslation()
-  const [deviceScope, setDeviceScope] = useState<string>(ALL)
-  const [subpath, setSubpath] = useState("")
-  const [dragging, setDragging] = useState(false)
-  const [pendingPaths, setPendingPaths] = useState<string[] | null>(null)
-  const [preview, setPreview] = useState<LibraryEntry | null>(null)
-  const [renaming, setRenaming] = useState<string | null>(null)
-  const [renameVal, setRenameVal] = useState("")
-  const [busyRelPath, setBusyRelPath] = useState<string | null>(null)
-
-  const atRoot = subpath === ""
-  const scope = deviceScope === ALL ? "all" : deviceScope
-  const { data: entries = [], isLoading } = useScanLibraryQuery({
-    deviceScope: scope,
+  const {
+    entries,
+    isLoading,
+    deviceOptions,
+    deviceScope,
+    setDeviceScope,
     subpath,
-  })
-  // Same source as the logs/dashboard device picker (listDevices), but NOT
-  // filtered down to ≤1 — Library always lists every known device, even this
-  // machine alone, so the picker is never empty.
-  const { data: devices = [] } = useDevicesQuery()
-  const [exportMut] = useExportFromLibraryMutation()
-  const [deleteMut] = useDeleteFromLibraryMutation()
-  const [renameMut] = useRenameInLibraryMutation()
-  const runWithToast = useMutateWithToast()
-
-  // Webview-level file drag-drop → collect dropped paths into the pending
-  // upload dialog. (HTML5 drop events don't expose local file paths under
-  // Tauri; onDragDropEvent is the supported path.)
-  useEffect(() => {
-    let active = true
-    let unlisten: (() => void) | undefined
-    void getCurrentWebview()
-      .onDragDropEvent((event) => {
-        const p = event.payload
-        if (p.type === "enter" || p.type === "over") setDragging(true)
-        else if (p.type === "leave") setDragging(false)
-        else if (p.type === "drop") {
-          setDragging(false)
-          if (p.paths.length > 0) setPendingPaths(p.paths)
-        }
-      })
-      .then((un) => {
-        if (active) unlisten = un
-        else un()
-      })
-    return () => {
-      active = false
-      unlisten?.()
-    }
-  }, [])
-
-  const deviceOptions = useMemo(
-    () =>
-      devices.map((d) => ({
-        id: d.device_id,
-        label: d.is_self
-          ? t("devices.thisDevice")
-          : d.display_name || t("common.unnamed"),
-      })),
-    [devices, t],
-  )
-
-  const breadcrumb = useMemo(() => {
-    if (atRoot)
-      return [] as Array<{ key: string; label: string; onClick: () => void }>
-    const parts = subpath.split("/").filter(Boolean)
-    const deviceId = parts[0]
-    const deviceLabel =
-      deviceOptions.find((o) => o.id === deviceId)?.label ?? deviceId
-    const crumbs: Array<{ key: string; label: string; onClick: () => void }> = [
-      {
-        key: deviceId,
-        label: deviceLabel,
-        onClick: () => {
-          setDeviceScope(deviceId)
-          setSubpath("")
-        },
-      },
-    ]
-    for (let i = 1; i < parts.length; i++) {
-      const sub = parts.slice(1, i + 1).join("/")
-      crumbs.push({
-        key: `${deviceId}/${sub}`,
-        label: parts[i],
-        onClick: () => {
-          setDeviceScope(deviceId)
-          setSubpath(sub)
-        },
-      })
-    }
-    return crumbs
-  }, [subpath, atRoot, deviceOptions])
-
-  const showDevice = scope === "all"
-
-  function drill(entry: LibraryEntry) {
-    const [deviceId, ...rest] = entry.rel_path.split("/")
-    setDeviceScope(deviceId)
-    setSubpath(rest.join("/"))
-  }
-
-  function goUp() {
-    const parts = subpath.split("/").filter(Boolean)
-    if (parts.length <= 1) {
-      setSubpath("")
-    } else {
-      setDeviceScope(parts[0])
-      setSubpath(parts.slice(1, -1).join("/"))
-    }
-  }
-
-  async function onAddFiles() {
-    const selected = await open({ multiple: true, directory: false })
-    if (!selected) return
-    const paths = Array.isArray(selected) ? selected : [selected]
-    if (paths.length > 0) setPendingPaths(paths)
-  }
-
-  async function onExport(entry: LibraryEntry) {
-    const dir = await open({ directory: true })
-    if (!dir) return
-    setBusyRelPath(entry.rel_path)
-    try {
-      await runWithToast(
-        exportMut,
-        { relPath: entry.rel_path, targetDir: dir },
-        {
-          success: { key: "library.toast.exported" },
-          failed: { key: "library.toast.failed" },
-        },
-      )
-    } finally {
-      setBusyRelPath(null)
-    }
-  }
-
-  async function onDelete(entry: LibraryEntry) {
-    setBusyRelPath(entry.rel_path)
-    try {
-      await runWithToast(deleteMut, entry.rel_path, {
-        success: { key: "library.toast.deleted" },
-        failed: { key: "library.toast.failed" },
-      })
-    } finally {
-      setBusyRelPath(null)
-    }
-  }
-
-  function startRename(entry: LibraryEntry) {
-    setRenaming(entry.rel_path)
-    setRenameVal(entry.name)
-  }
-  async function commitRename(entry: LibraryEntry) {
-    const name = renameVal.trim()
-    if (!name || name === entry.name) {
-      setRenaming(null)
-      return
-    }
-    setBusyRelPath(entry.rel_path)
-    try {
-      const ok = await runWithToast(
-        renameMut,
-        { relPath: entry.rel_path, newName: name },
-        {
-          success: { key: "library.toast.renamed" },
-          failed: { key: "library.toast.failed" },
-        },
-      )
-      if (ok) setRenaming(null)
-    } finally {
-      setBusyRelPath(null)
-    }
-  }
+    atRoot,
+    showDevice,
+    breadcrumb,
+    dragging,
+    pendingPaths,
+    clearPendingPaths,
+    onAddFiles,
+    renaming,
+    renameVal,
+    setRenameVal,
+    cancelRename,
+    busyRelPath,
+    drill,
+    goUp,
+    onExport,
+    onDelete,
+    startRename,
+    commitRename,
+    preview,
+    setPreview,
+  } = useLibraryBrowser()
 
   return (
     <div className="flex flex-1 flex-col gap-4">
@@ -400,7 +247,7 @@ export function LibraryView() {
                               className="h-7 w-44"
                               onKeyDown={(ev) => {
                                 if (ev.key === "Enter") commitRename(e)
-                                if (ev.key === "Escape") setRenaming(null)
+                                if (ev.key === "Escape") cancelRename()
                               }}
                               autoFocus
                             />
@@ -419,7 +266,7 @@ export function LibraryView() {
                             <Button
                               variant="ghost"
                               size="icon-sm"
-                              onClick={() => setRenaming(null)}
+                              onClick={cancelRename}
                             >
                               <X />
                             </Button>
@@ -545,7 +392,7 @@ export function LibraryView() {
         <UploadDialog
           paths={pendingPaths}
           subpath={subpath}
-          onClose={() => setPendingPaths(null)}
+          onClose={clearPendingPaths}
         />
       ) : null}
 
