@@ -9,6 +9,7 @@ import { useAppSelector } from "@/app/store/hooks"
 import type { ViewId } from "@/app/store/slices/viewSlice"
 import { LibraryView } from "@/features/library/components/library-view"
 import { PricingView } from "@/features/pricing/components/pricing-view"
+import { SessionsView } from "@/features/sessions/components/sessions-view"
 import { SettingsView } from "@/features/settings/components/settings-view"
 import { DashboardView } from "@/features/usage/components/dashboard-view"
 import { LightweightCard } from "@/features/usage/components/lightweight-card"
@@ -22,6 +23,7 @@ const VIEWS: Record<ViewId, ComponentType> = {
   logs: LogsView,
   pricing: PricingView,
   library: LibraryView,
+  sessions: SessionsView,
   settings: SettingsView,
 }
 

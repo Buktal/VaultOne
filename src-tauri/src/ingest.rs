@@ -14,7 +14,7 @@ use std::path::Path;
 use crate::config::Paths;
 use crate::db::Store;
 use crate::error::AppResult;
-use crate::model::{TurnDuration, UsageRecord};
+use crate::model::{RawSession, SessionMessage, TurnDuration, UsageRecord};
 use crate::pricing::{CostCalculator, PricingBook};
 use crate::providers::{CollectResult, RawTurnDuration, RawUsage};
 
@@ -43,6 +43,7 @@ pub fn recordify(raw: &RawUsage, device_id: &str, book: &PricingBook) -> UsageRe
         model: raw.model.clone(),
         pricing_model,
         source: raw.source.clone(),
+        session_id: raw.session_id.clone(),
         device_id: device_id.to_string(),
         tokens: raw.tokens,
         server_tool_use: raw.server_tool_use,
@@ -66,14 +67,18 @@ pub fn turn_durationify(raw: &RawTurnDuration, device_id: &str) -> TurnDuration 
 
 /// Ingest a provider's collect result: compute cost + day, then write the rows
 /// to the SQLite Local Store, flagging each new row's day dirty in the same
-/// transaction. The JSONL Artifact is NOT touched here — it is now a derived
-/// snapshot the push path recomputes from the store per dirty day (see
+/// transaction. The usage/turn JSONL Artifact is NOT touched here — it is now a
+/// derived snapshot the push path recomputes from the store per dirty day (see
 /// [`recompute_usage_day`] / [`recompute_turns_day`]). SQLite is the single
 /// source of truth; the scan cursor advances only after the ingest commits, so
 /// a failed ingest re-parses the same source lines next collect (store dedup).
+/// Session transcripts are the ONE file-system write: favorited sessions'
+/// message 原文 land in per-session files (`data/<dev>/sessions/<id>.jsonl`,
+/// local data, not a derived Artifact) — hence `paths`.
 /// Returns a summary.
 pub fn ingest_collected(
     store: &Store,
+    paths: &Paths,
     device_id: &str,
     book: &PricingBook,
     result: CollectResult,
@@ -97,6 +102,12 @@ pub fn ingest_collected(
         .map(|t| turn_durationify(t, device_id))
         .collect();
     let turns_inserted = store.ingest_turn_durations_marking_dirty(&turns)?;
+
+    // Sessions (Claude only in this phase; empty for other sources). Refreshes
+    // the sessions table (system data; user data preserved by UPSERT) and
+    // appends transcripts for favorited sessions — local-only for now; the
+    // per-session sync shape lands with the session phase.
+    ingest_sessions(store, paths, device_id, &result.sessions, &result.messages)?;
 
     Ok(IngestReport {
         source,
@@ -214,8 +225,8 @@ pub fn recompute_turns_day(
 // exercise pull/import without driving a full collect+push), so they are
 // `#[cfg(test)]`.
 
-/// Open once in append mode, serialize + writeln each row. Test fixture only.
-#[cfg(test)]
+/// Open once in append mode, serialize + writeln each row. Used by the
+/// session-transcript append (production) and the test fixtures above.
 fn write_jsonl_day<T: serde::Serialize>(path: &Path, rows: &[&T]) -> std::io::Result<()> {
     use std::fs::OpenOptions;
     use std::io::Write;
@@ -350,6 +361,182 @@ pub fn read_all_turn_artifacts(paths: &Paths) -> AppResult<Vec<TurnDuration>> {
 // artifact. The per-call/per-turn JSONL Artifact machinery above
 // (`ArtifactGrain`) is a separate concern and stays here.
 
+// ---------------- Sessions (local session data + transcript) ----------------
+//
+// Sessions are LOCAL data in this phase: the `sessions` SQLite table (system
+// data refreshed by re-extract, user data preserved by UPSERT) + favorited
+// sessions' transcripts, one file per SESSION (`sessions/<id>.jsonl`) — a
+// conversation spans days, so per-day files would shatter it. The cross-device
+// sync shape (per-session files, favorites-only) lands with the session phase;
+// the old per-day `session-meta` grain is gone.
+
+/// Per-session transcript soft cap (5 MiB). Exceeded ⇒ log warning only; not
+/// enforced (the main strategy is "favorites only"; this is an observability
+/// backstop).
+const TRANSCRIPT_SOFT_CAP_BYTES: u64 = 5 * 1024 * 1024;
+
+/// `<device_data_dir>/sessions/<session_id>.jsonl` — one file per session.
+fn transcript_path(paths: &Paths, device_id: &str, session_id: &str) -> std::path::PathBuf {
+    paths
+        .device_data_dir(device_id)
+        .join("sessions")
+        .join(format!("{session_id}.jsonl"))
+}
+
+/// Append transcript messages to `sessions/<id>.jsonl`, deduping by message
+/// `uuid` (idempotent re-collect writes no duplicate). The caller MUST ensure
+/// the session is favorited — the invariant "原文仅 favorited 才采集" is
+/// asserted at the ingest layer (`ingest_sessions` checks before calling).
+/// Soft cap (5 MiB) warns but does not truncate.
+pub fn append_session_transcript(
+    paths: &Paths,
+    device_id: &str,
+    session_id: &str,
+    messages: &[SessionMessage],
+) -> AppResult<()> {
+    if messages.is_empty() {
+        return Ok(());
+    }
+    let path = transcript_path(paths, device_id, session_id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let existing: std::collections::HashSet<String> = read_jsonl_file_of::<SessionMessage>(&path)
+        .unwrap_or_default()
+        .iter()
+        .map(|m| m.uuid.clone())
+        .collect();
+    let missing: Vec<&SessionMessage> = messages
+        .iter()
+        .filter(|m| !existing.contains(&m.uuid))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    write_jsonl_day(&path, &missing)?;
+    // Soft-cap observability: warn (don't truncate) when a transcript file
+    // crosses 5 MiB — the favorites-only policy is the real cap.
+    if let Ok(meta) = std::fs::metadata(&path) {
+        if meta.len() > TRANSCRIPT_SOFT_CAP_BYTES {
+            eprintln!(
+                "[vaultone] session {session_id} transcript exceeds 5 MiB soft cap ({} bytes)",
+                meta.len()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Read one device's transcript for a session. A missing file (a non-favorited
+/// session, or one never synced here) returns an empty Vec — the transcript's
+/// absence is a normal state, not an error.
+pub fn read_session_transcript(
+    paths: &Paths,
+    device_id: &str,
+    session_id: &str,
+) -> AppResult<Vec<SessionMessage>> {
+    let path = transcript_path(paths, device_id, session_id);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            let mut out = Vec::new();
+            for line in text.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                if let Ok(m) = serde_json::from_str::<SessionMessage>(line) {
+                    out.push(m);
+                }
+            }
+            Ok(out)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Read every device's transcript for a session and merge by message uuid (the
+/// `get_session_transcript` command's read path: own device first, then peers'
+/// pulled-in files). Dedup keeps the first occurrence per uuid (own device
+/// wins on conflict — it is the source of truth for a session it collected).
+pub fn read_all_transcripts(paths: &Paths, session_id: &str) -> Vec<SessionMessage> {
+    let mut out: Vec<SessionMessage> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let root = &paths.repo_data;
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return out;
+    };
+    // Own device first so its messages win dedup; then peers in stable order.
+    let mut device_ids: Vec<String> = Vec::new();
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        if let Some(name) = entry.file_name().to_str() {
+            if crate::config::is_valid_device_id(name) {
+                device_ids.push(name.to_string());
+            }
+        }
+    }
+    device_ids.sort();
+    for did in device_ids {
+        if let Ok(msgs) = read_session_transcript(paths, &did, session_id) {
+            for m in msgs {
+                if seen.insert(m.uuid.clone()) {
+                    out.push(m);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Ingest a provider's session output: refresh system data in the SQLite table
+/// (UPSERT preserves user data) and append transcripts for favorited sessions
+/// only. Local-only in this phase — the cross-device sync shape (per-session
+/// files, favorites-only) lands with the session phase.
+pub fn ingest_sessions(
+    store: &Store,
+    paths: &Paths,
+    device_id: &str,
+    sessions: &[RawSession],
+    messages: &[SessionMessage],
+) -> AppResult<()> {
+    if sessions.is_empty() && messages.is_empty() {
+        return Ok(());
+    }
+
+    // SQLite: refresh system data only (UPSERT preserves user data) — the
+    // "re-extract never overwrites user data" invariant, encoded in SQL.
+    for s in sessions {
+        store.upsert_session(device_id, s)?;
+    }
+
+    // Transcripts: group messages by session, append ONLY for favorited ones.
+    // The invariant "原文仅 favorited 才采集" is enforced here — a session must
+    // be favorited in the DB (just refreshed above with preserved user data)
+    // before its messages land in `sessions/<id>.jsonl`.
+    if !messages.is_empty() {
+        let mut by_session: std::collections::HashMap<String, Vec<SessionMessage>> =
+            std::collections::HashMap::new();
+        for m in messages {
+            by_session
+                .entry(m.session_id.clone())
+                .or_default()
+                .push(m.clone());
+        }
+        for (sid, msgs) in by_session {
+            let favorited = store
+                .get_session_favorited(device_id, &sid)?
+                .unwrap_or(false);
+            if favorited {
+                append_session_transcript(paths, device_id, &sid, &msgs)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,6 +550,7 @@ mod tests {
             timestamp: "2026-07-13T16:55:22.467Z".into(),
             model: model.into(),
             source: "claude_code".into(),
+            session_id: String::new(),
             tokens: TokenCounts {
                 input: 1000,
                 output: 500,
@@ -436,8 +624,10 @@ mod tests {
             turn_durations: vec![raw_turn("td1")],
             files_scanned: 1,
             lines_skipped: 0,
+            sessions: vec![],
+            messages: vec![],
         };
-        ingest_collected(&store, dev, &book, result).unwrap();
+        ingest_collected(&store, &paths, dev, &book, result).unwrap();
         assert_eq!(
             store.dirty_days().unwrap(),
             vec!["2026-07-13".to_string(), "2026-07-14".to_string()],
@@ -455,6 +645,8 @@ mod tests {
 
     #[test]
     fn ingest_collected_dedups_via_store_pk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
         let book = seed_book();
         let result = CollectResult {
@@ -463,14 +655,16 @@ mod tests {
             turn_durations: vec![raw_turn("td1")],
             files_scanned: 1,
             lines_skipped: 0,
+            sessions: vec![],
+            messages: vec![],
         };
-        let rep1 = ingest_collected(&store, "0123456789ab", &book, result.clone()).unwrap();
+        let rep1 = ingest_collected(&store, &paths, "0123456789ab", &book, result.clone()).unwrap();
         assert_eq!(rep1.rows_inserted, 1);
         assert_eq!(rep1.events_collected, 1);
         assert_eq!(rep1.turn_durations_collected, 1);
         assert_eq!(rep1.turn_durations_inserted, 1);
         // Same uuids again ⇒ fully deduped.
-        let rep2 = ingest_collected(&store, "0123456789ab", &book, result).unwrap();
+        let rep2 = ingest_collected(&store, &paths, "0123456789ab", &book, result).unwrap();
         assert_eq!(rep2.rows_inserted, 0);
         assert_eq!(rep2.turn_durations_inserted, 0);
     }
@@ -492,8 +686,10 @@ mod tests {
             turn_durations: vec![],
             files_scanned: 1,
             lines_skipped: 0,
+            sessions: vec![],
+            messages: vec![],
         };
-        ingest_collected(&store, dev, &book, result).unwrap();
+        ingest_collected(&store, &paths, dev, &book, result).unwrap();
         let day_file = paths.device_data_dir(dev).join("usage-2026-07-13.jsonl");
 
         recompute_usage_day(&store, &paths, dev, "2026-07-13").unwrap();
@@ -526,8 +722,10 @@ mod tests {
             turn_durations: vec![],
             files_scanned: 1,
             lines_skipped: 0,
+            sessions: vec![],
+            messages: vec![],
         };
-        ingest_collected(&store, dev, &book, result).unwrap();
+        ingest_collected(&store, &paths, dev, &book, result).unwrap();
         let day_file = paths.device_data_dir(dev).join("usage-2026-07-13.jsonl");
         assert!(!day_file.exists(), "collect does not write the Artifact");
         recompute_usage_day(&store, &paths, dev, "2026-07-13").unwrap();
@@ -551,8 +749,10 @@ mod tests {
             turn_durations: vec![raw_turn("td1"), raw_turn("td2")],
             files_scanned: 1,
             lines_skipped: 0,
+            sessions: vec![],
+            messages: vec![],
         };
-        ingest_collected(&store, dev, &book, result).unwrap();
+        ingest_collected(&store, &paths, dev, &book, result).unwrap();
         recompute_usage_day(&store, &paths, dev, "2026-07-13").unwrap();
         recompute_turns_day(&store, &paths, dev, "2026-07-13").unwrap();
         let usage = read_device_artifacts_of::<UsageGrain>(&paths, dev).unwrap();
@@ -575,5 +775,108 @@ mod tests {
         // No rows in the store for this day/device ⇒ recompute clears the file.
         recompute_usage_day(&store, &paths, dev, "2026-07-13").unwrap();
         assert!(!day_file.exists(), "empty day ⇒ stale file removed");
+    }
+
+    // ---- session invariants (encoded in code + pinned by tests) ----
+
+    fn sys_session(id: &str, last_active_at: &str) -> RawSession {
+        RawSession {
+            id: id.into(),
+            source: "claude_code".into(),
+            project_dir: "/proj".into(),
+            title_orig: "orig-title".into(),
+            started_at: "2026-08-01T00:00:00.000Z".into(),
+            last_active_at: last_active_at.into(),
+        }
+    }
+
+    fn msg(uuid: &str, session_id: &str, content: &str) -> SessionMessage {
+        SessionMessage {
+            uuid: uuid.into(),
+            session_id: session_id.into(),
+            role: crate::model::SessionMessageRole::User,
+            ts: "2026-08-01T00:00:00.000Z".into(),
+            model: None,
+            name: None,
+            content: content.into(),
+        }
+    }
+
+    /// Invariant (SQLite side): `upsert_session` refreshes only the system-data
+    /// columns on conflict; user-data columns set by the user must survive a
+    /// re-extract. Regression test for the ON CONFLICT clause.
+    #[test]
+    fn upsert_session_does_not_overwrite_user_data_on_reextract() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let dev = "0123456789ab";
+        // First collect: creates the row with default user data.
+        store
+            .upsert_session(dev, &sys_session("s1", "2026-08-01T01:00:00.000Z"))
+            .unwrap();
+        // User edits: custom_title, favorited, local_group_id, synced_group_id.
+        store
+            .set_session_custom_title(dev, "s1", Some("Renamed"))
+            .unwrap();
+        store.set_session_favorited(dev, "s1", true).unwrap();
+        store
+            .set_session_local_group(dev, "s1", Some("lg1"))
+            .unwrap();
+        store
+            .set_session_synced_group(dev, "s1", Some("sg1"))
+            .unwrap();
+        // Re-extract (next collect): system data refresh, must NOT clobber edits.
+        store
+            .upsert_session(dev, &sys_session("s1", "2026-08-02T09:00:00.000Z"))
+            .unwrap();
+        let rows = store.query_sessions(None).unwrap();
+        let m = rows.iter().find(|r| r.id == "s1").unwrap();
+        assert_eq!(
+            m.last_active_at, "2026-08-02T09:00:00.000Z",
+            "system refreshed"
+        );
+        assert_eq!(
+            m.title, "Renamed",
+            "custom_title preserved (title = custom_title)"
+        );
+        assert!(m.favorited, "favorited preserved");
+        assert_eq!(m.synced_group_id, "sg1", "synced_group_id preserved");
+        assert_eq!(m.local_group_id, "lg1", "local_group_id preserved");
+    }
+
+    /// Invariant: transcripts are written ONLY for favorited sessions.
+    /// `ingest_sessions` checks favorited in the DB before appending.
+    #[test]
+    fn ingest_sessions_writes_transcript_only_when_favorited() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let dev = "0123456789ab";
+
+        // Two sessions, both collected; messages for both.
+        let fav = sys_session("fav", "2026-08-01T01:00:00.000Z");
+        let plain = sys_session("plain", "2026-08-01T01:00:00.000Z");
+        ingest_sessions(&store, &paths, dev, &[fav.clone(), plain.clone()], &[]).unwrap();
+        // Favorite only `fav`.
+        store.set_session_favorited(dev, "fav", true).unwrap();
+        // Next collect: messages for both arrive.
+        ingest_sessions(
+            &store,
+            &paths,
+            dev,
+            &[fav, plain],
+            &[msg("m1", "fav", "hello"), msg("m2", "plain", "world")],
+        )
+        .unwrap();
+        // `fav` transcript exists; `plain` does not.
+        assert!(
+            read_session_transcript(&paths, dev, "fav").unwrap().len() == 1,
+            "favorited session's transcript was written"
+        );
+        assert!(
+            read_session_transcript(&paths, dev, "plain")
+                .unwrap()
+                .is_empty(),
+            "non-favorited session collected NO transcript"
+        );
     }
 }

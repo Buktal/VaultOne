@@ -19,8 +19,6 @@ import type { ReactNode } from "react"
 import { useTranslation } from "react-i18next"
 import { DataFreshness } from "@/app/shell/data-freshness"
 import {
-  useAppInfoQuery,
-  useCollectMutation,
   useDistinctModelsQuery,
   useDistinctSourcesQuery,
 } from "@/app/store/api"
@@ -50,8 +48,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { useFreshness } from "@/hooks/use-freshness"
-import { useMutateWithToast } from "@/hooks/use-toast-mutation"
+import { useCollectAction } from "@/hooks/use-collect-action"
 import { usePersistedState } from "@/lib/persistence"
 import { cn } from "@/lib/utils"
 import { sourceLabel } from "../source-labels"
@@ -72,37 +69,6 @@ const PRESETS: Array<{ value: SelectablePreset; key: string }> = [
   { value: "30d", key: "usage.control.last30d" },
   { value: "all", key: "usage.control.all" },
 ]
-
-/** 主动作 (collectNow = align: Standalone ⇒ collect; Synced ⇒ collect + sync).
- *  触发 → 失效缓存 → 刷新新鲜度 → toast. 文案/反馈按模式自适应. */
-function useCollectAction(multiDevice: boolean) {
-  const { t } = useTranslation()
-  const { markCollected, markSynced } = useFreshness()
-  // `collectNow` runs `align`: Standalone ⇒ local collect only; Synced ⇒
-  // collect + pull + push. So a push actually happened iff the run mode is
-  // Synced — gate the "synced" freshness stamp on that, not on the device
-  // count (you can be Standalone with several discovered devices).
-  const { data: info } = useAppInfoQuery(undefined, { pollingInterval: 0 })
-  const synced = info?.mode === "synced"
-  const [collect, { isLoading: collecting }] = useCollectMutation()
-  const runWithToast = useMutateWithToast()
-  async function onCollect() {
-    const ok = await runWithToast(collect, undefined, {
-      success: {
-        message: (data) =>
-          t(multiDevice ? "usage.collect.doneSync" : "usage.collect.done", {
-            rows: data.collected.rows_inserted ?? 0,
-            files: data.collected.files_scanned ?? 0,
-          }),
-      },
-      failed: { key: "usage.collect.failed" },
-    })
-    if (!ok) return
-    markCollected()
-    if (synced) markSynced()
-  }
-  return { onCollect, collecting }
-}
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (

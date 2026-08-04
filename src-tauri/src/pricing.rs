@@ -169,7 +169,7 @@ fn normalization_candidates(model: &str) -> Vec<String> {
 /// edit in the Pricing UI; treat values as approximate.
 ///
 /// `glm-5.2` is included because it is the transit model used via CC-Switch in
-/// the session-log sample (`docs/research/claude-code-session-fields.md`).
+/// the Claude Code session-log sample.
 pub fn builtin_seed() -> Vec<ModelPricing> {
     let row = |key: &str, name: &str, i: &str, o: &str, cr: &str, cc: &str| ModelPricing {
         model_key: key.to_string(),

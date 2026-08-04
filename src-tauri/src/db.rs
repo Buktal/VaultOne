@@ -18,8 +18,9 @@ use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection, O
 
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    LogsQuery, ModelStatsRow, PricingEntry, TokenCounts, TrendBucket, TrendPoint, TurnDuration,
-    UsageFilter, UsageLogRow, UsageRecord, UsageStats,
+    LocalGroup, LogsQuery, ModelStatsRow, PricingEntry, SessionFilter, SessionRow,
+    SessionSystemData, TokenCounts, TrendBucket, TrendPoint, TurnDuration, UsageFilter,
+    UsageLogRow, UsageRecord, UsageStats,
 };
 use crate::pricing::{ModelPricing, PricingBook};
 use crate::providers::{FileCursor, ScanProgress, ScanProgressDelta};
@@ -34,8 +35,14 @@ impl Store {
     pub fn open(path: &std::path::Path) -> AppResult<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
-        conn.execute_batch(&schema::schema_sql())?;
+        // Tables → migrate → indexes, in that order. A legacy DB's usage_records
+        // predates the session_id column, so idx_usage_session must not run until
+        // migrate_schema has ALTERed the column on — building it first panics on
+        // upgrade ("no such column: session_id"). The fresh-DB path is unaffected:
+        // schema_tables_sql creates every table at its final column set already.
+        conn.execute_batch(&schema::schema_tables_sql())?;
         migrate::migrate_schema(&conn)?;
+        conn.execute_batch(&schema::schema_indexes_sql())?;
         let store = Self {
             conn: Mutex::new(conn),
         };
@@ -226,6 +233,7 @@ impl Store {
                         r.model,
                         r.pricing_model,
                         r.source,
+                        r.session_id,
                         r.device_id,
                         r.tokens.input as i64,
                         r.tokens.output as i64,
@@ -632,6 +640,251 @@ impl Store {
         Ok(deleted)
     }
 
+    // ---------------- Sessions ----------------
+
+    /// Refresh a session's SYSTEM-data columns only. On conflict (same id +
+    /// device_id), the ON CONFLICT clause updates exactly the refreshable
+    /// columns (source / project_dir / title_orig / started_at / last_active_at)
+    /// — it MUST NOT touch `custom_title` / `favorited` / `synced_group_id` /
+    /// `local_group_id`. This is the SQLite-side encoding of the "re-extract
+    /// never overwrites user data" invariant. A regression test pins it.
+    pub fn upsert_session(&self, device_id: &str, system: &SessionSystemData) -> AppResult<()> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        conn.execute(
+            "INSERT INTO sessions
+             (id, device_id, source, project_dir, title_orig, started_at, last_active_at,
+              custom_title, favorited, synced_group_id, local_group_id)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+             ON CONFLICT(id, device_id) DO UPDATE SET
+               source=excluded.source,
+               project_dir=excluded.project_dir,
+               title_orig=excluded.title_orig,
+               started_at=excluded.started_at,
+               last_active_at=excluded.last_active_at",
+            params![
+                system.id,
+                device_id,
+                system.source,
+                system.project_dir,
+                system.title_orig,
+                system.started_at,
+                system.last_active_at,
+                "", // custom_title — empty on insert; never updated here
+                0,  // favorited — false on insert; never updated here
+                "", // synced_group_id — empty on insert; never updated here
+                "", // local_group_id — empty on insert; never updated here
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Read a session's favorited flag. `None` when the session is not yet in
+    /// the table — the caller treats that as not-favorited. Used by
+    /// `ingest_sessions` to gate transcript collection ("原文仅 favorited 才采集").
+    pub fn get_session_favorited(
+        &self,
+        device_id: &str,
+        session_id: &str,
+    ) -> AppResult<Option<bool>> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let fav = conn
+            .query_row(
+                "SELECT favorited FROM sessions WHERE id = ?1 AND device_id = ?2",
+                params![session_id, device_id],
+                |r| r.get::<_, i64>(0).map(|v| v != 0),
+            )
+            .optional()?;
+        Ok(fav)
+    }
+
+    /// Set a session's favorited flag (user action). Only mutates the column;
+    /// the transcript is collected on the next collect pass, not here.
+    pub fn set_session_favorited(
+        &self,
+        device_id: &str,
+        session_id: &str,
+        favorited: bool,
+    ) -> AppResult<()> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        conn.execute(
+            "UPDATE sessions SET favorited = ?3 WHERE id = ?1 AND device_id = ?2",
+            params![session_id, device_id, favorited as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Set/clear a session's custom title. `None` or empty clears it (reverts to
+    /// `title_orig` for display).
+    pub fn set_session_custom_title(
+        &self,
+        device_id: &str,
+        session_id: &str,
+        title: Option<&str>,
+    ) -> AppResult<()> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let t = title.unwrap_or("").trim();
+        conn.execute(
+            "UPDATE sessions SET custom_title = ?3 WHERE id = ?1 AND device_id = ?2",
+            params![session_id, device_id, t],
+        )?;
+        Ok(())
+    }
+
+    /// Set/clear a session's local group (device-private).
+    pub fn set_session_local_group(
+        &self,
+        device_id: &str,
+        session_id: &str,
+        group_id: Option<&str>,
+    ) -> AppResult<()> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let g = group_id.unwrap_or("");
+        conn.execute(
+            "UPDATE sessions SET local_group_id = ?3 WHERE id = ?1 AND device_id = ?2",
+            params![session_id, device_id, g],
+        )?;
+        Ok(())
+    }
+
+    /// Set/clear a session's synced group (cross-device via grain).
+    pub fn set_session_synced_group(
+        &self,
+        device_id: &str,
+        session_id: &str,
+        group_id: Option<&str>,
+    ) -> AppResult<()> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let g = group_id.unwrap_or("");
+        conn.execute(
+            "UPDATE sessions SET synced_group_id = ?3 WHERE id = ?1 AND device_id = ?2",
+            params![session_id, device_id, g],
+        )?;
+        Ok(())
+    }
+
+    /// List sessions for the UI, joined live with `usage_records` to compute
+    /// per-session request_count / total_tokens / total_cost_usd (the usage
+    /// table is the single source of token truth). Title = `custom_title` when
+    /// set, else `title_orig`. `filter` is optional; `None` lists every session.
+    pub fn query_sessions(&self, filter: Option<&SessionFilter>) -> AppResult<Vec<SessionRow>> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let (clause, params_vec) = build_session_where(filter);
+        let sql = format!(
+            "SELECT s.id, s.device_id, s.source, s.project_dir,
+                    COALESCE(NULLIF(s.custom_title,''), s.title_orig) AS title,
+                    s.favorited, s.local_group_id, s.synced_group_id,
+                    s.started_at, s.last_active_at,
+                    COALESCE(agg.request_count, 0),
+                    COALESCE(agg.total_tokens, 0),
+                    COALESCE(agg.total_cost_usd, 0.0)
+             FROM sessions s
+             LEFT JOIN (
+                SELECT session_id, device_id,
+                       COUNT(*) AS request_count,
+                       COALESCE(SUM(input_tokens+output_tokens+cache_creation_tokens+cache_read_tokens),0) AS total_tokens,
+                       COALESCE(SUM(CAST(total_cost_usd AS REAL)),0) AS total_cost_usd
+                FROM usage_records GROUP BY session_id, device_id
+             ) agg ON agg.session_id = s.id AND agg.device_id = s.device_id
+             {clause}
+             ORDER BY s.last_active_at DESC"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(params_vec.iter()), |r| {
+            Ok(SessionRow {
+                id: r.get(0)?,
+                device_id: r.get(1)?,
+                source: r.get(2)?,
+                project_dir: r.get(3)?,
+                title: r.get(4)?,
+                favorited: r.get::<_, i64>(5)? != 0,
+                local_group_id: r.get(6)?,
+                synced_group_id: r.get(7)?,
+                started_at: r.get(8)?,
+                last_active_at: r.get(9)?,
+                request_count: r.get::<_, i64>(10)? as u32,
+                total_tokens: r.get::<_, i64>(11)? as u32,
+                total_cost_usd: r.get(12)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(AppError::from)
+    }
+
+    /// Per-session usage aggregate (request_count, total_tokens, total_cost) for
+    /// the transcript / detail view. Public API for a future command; not yet
+    /// wired to one (kept here so the live-aggregate read path is in place next
+    /// to `query_sessions`).
+    #[allow(dead_code)]
+    pub fn query_session_usage(&self, session_id: &str) -> AppResult<(u32, u32, f64)> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let row = conn.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(input_tokens+output_tokens+cache_creation_tokens+cache_read_tokens),0),
+                    COALESCE(SUM(CAST(total_cost_usd AS REAL)),0)
+             FROM usage_records WHERE session_id = ?1",
+            params![session_id],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)? as u32,
+                    r.get::<_, i64>(1)? as u32,
+                    r.get::<_, f64>(2)?,
+                ))
+            },
+        ).optional()?;
+        Ok(row.unwrap_or_default())
+    }
+
+    // ---------------- Local groups (SQLite, device-private) ----------------
+
+    pub fn list_local_groups(&self) -> AppResult<Vec<LocalGroup>> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt =
+            conn.prepare("SELECT id, name, created_at FROM local_groups ORDER BY name")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(LocalGroup {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                created_at: r.get(2)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(AppError::from)
+    }
+
+    pub fn create_local_group(&self, id: &str, name: &str, created_at: &str) -> AppResult<()> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        conn.execute(
+            "INSERT INTO local_groups (id, name, created_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name",
+            params![id, name, created_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn rename_local_group(&self, id: &str, name: &str) -> AppResult<()> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        conn.execute(
+            "UPDATE local_groups SET name = ?2 WHERE id = ?1",
+            params![id, name],
+        )?;
+        Ok(())
+    }
+
+    /// Delete a local group AND clear it off every session that carried it
+    /// (sessions stay, just ungrouped). One transaction so the cleanup never
+    /// leaves dangling group_id references.
+    pub fn delete_local_group(&self, id: &str) -> AppResult<()> {
+        let mut conn = self.conn.lock().expect("db mutex poisoned");
+        let tx = conn.transaction()?;
+        tx.execute(
+            "UPDATE sessions SET local_group_id = '' WHERE local_group_id = ?1",
+            params![id],
+        )?;
+        tx.execute("DELETE FROM local_groups WHERE id = ?1", params![id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     // ---------------- Reads (dashboard) ----------------
 
     /// Aggregate stats over a filter (BLUEPRINT 使用统计).
@@ -843,7 +1096,7 @@ fn row_to_usage_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<UsageRecord> {
     use std::str::FromStr;
     let dec =
         |s: String| rust_decimal::Decimal::from_str(&s).unwrap_or(rust_decimal::Decimal::ZERO);
-    let total = dec(r.get::<_, String>(19)?);
+    let total = dec(r.get::<_, String>(20)?);
     Ok(UsageRecord {
         uuid: r.get(0)?,
         timestamp: r.get(1)?,
@@ -851,23 +1104,24 @@ fn row_to_usage_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<UsageRecord> {
         model: r.get(3)?,
         pricing_model: r.get(4)?,
         source: r.get(5)?,
-        device_id: r.get(6)?,
+        session_id: r.get(6)?,
+        device_id: r.get(7)?,
         tokens: TokenCounts {
-            input: r.get::<_, i64>(7)? as u32,
-            output: r.get::<_, i64>(8)? as u32,
-            cache_creation: r.get::<_, i64>(9)? as u32,
-            cache_read: r.get::<_, i64>(10)? as u32,
+            input: r.get::<_, i64>(8)? as u32,
+            output: r.get::<_, i64>(9)? as u32,
+            cache_creation: r.get::<_, i64>(10)? as u32,
+            cache_read: r.get::<_, i64>(11)? as u32,
         },
-        server_tool_use: serde_json::from_str(&r.get::<_, String>(11)?)
+        server_tool_use: serde_json::from_str(&r.get::<_, String>(12)?)
             .unwrap_or(crate::model::ServerToolUse::default()),
-        stop_reason: r.get(12)?,
-        service_tier: r.get(13)?,
-        iterations: r.get::<_, i64>(14)? as u32,
+        stop_reason: r.get(13)?,
+        service_tier: r.get(14)?,
+        iterations: r.get::<_, i64>(15)? as u32,
         cost: crate::model::CostBreakdown {
-            input_usd: dec(r.get::<_, String>(15)?),
-            output_usd: dec(r.get::<_, String>(16)?),
-            cache_read_usd: dec(r.get::<_, String>(17)?),
-            cache_creation_usd: dec(r.get::<_, String>(18)?),
+            input_usd: dec(r.get::<_, String>(16)?),
+            output_usd: dec(r.get::<_, String>(17)?),
+            cache_read_usd: dec(r.get::<_, String>(18)?),
+            cache_creation_usd: dec(r.get::<_, String>(19)?),
             total_usd: total,
         },
     })
@@ -938,6 +1192,59 @@ fn build_where(filter: &UsageFilter, include_model_source: bool) -> (String, Vec
     (clause, params)
 }
 
+/// Build a WHERE clause over the `sessions` table for a [`SessionFilter`]. The
+/// clause prefixes every column with `s.` so it composes with the
+/// `usage_records` subquery JOIN in [`Store::query_sessions`]. Empty filter ⇒
+/// `("", [])`.
+fn build_session_where(filter: Option<&SessionFilter>) -> (String, Vec<SqlValue>) {
+    let mut conds: Vec<String> = Vec::new();
+    let mut params: Vec<SqlValue> = Vec::new();
+    let Some(f) = filter else {
+        return (String::new(), params);
+    };
+    if let Some(d) = &f.device_scope {
+        if !d.is_empty() {
+            conds.push("s.device_id = ?".into());
+            params.push(SqlValue::Text(d.clone()));
+        }
+    }
+    if let Some(s) = &f.source {
+        if !s.is_empty() {
+            conds.push("s.source = ?".into());
+            params.push(SqlValue::Text(s.clone()));
+        }
+    }
+    if let Some(fav) = f.favorited {
+        conds.push(format!("s.favorited = {}", fav as i64));
+    }
+    if let Some(g) = &f.local_group_id {
+        conds.push("s.local_group_id = ?".into());
+        params.push(SqlValue::Text(g.clone()));
+    }
+    if let Some(g) = &f.synced_group_id {
+        conds.push("s.synced_group_id = ?".into());
+        params.push(SqlValue::Text(g.clone()));
+    }
+    if let Some(ts) = &f.from_ts {
+        if !ts.is_empty() {
+            conds.push("s.last_active_at >= ?".into());
+            params.push(SqlValue::Text(ts.clone()));
+        }
+    }
+    if let Some(ts) = &f.to_ts {
+        if !ts.is_empty() {
+            conds.push("s.last_active_at <= ?".into());
+            params.push(SqlValue::Text(ts.clone()));
+        }
+    }
+    let clause = if conds.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conds.join(" AND "))
+    };
+    (clause, params)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -967,6 +1274,7 @@ mod tests {
             model: model.into(),
             pricing_model: crate::model::normalize_pricing_key(model),
             source: "claude_code".into(),
+            session_id: String::new(),
             device_id: device.into(),
             tokens: TokenCounts {
                 input,
@@ -1214,6 +1522,7 @@ mod tests {
             model: "model-sentinel".into(),
             pricing_model: "pricing-sentinel".into(),
             source: "source-sentinel".into(),
+            session_id: "session-sentinel".into(),
             device_id: "dev-sentinel".into(),
             tokens: TokenCounts {
                 input: 123,
@@ -1575,5 +1884,70 @@ mod tests {
         let delta = ScanProgressDelta::new();
         s.save_scan_progress(&delta).unwrap();
         assert!(s.load_scan_progress().unwrap().is_empty());
+    }
+
+    /// Helper: insert one session row with a given last_active_at.
+    fn seed_session(store: &Store, id: &str, device: &str, last_active: &str) {
+        store
+            .upsert_session(
+                device,
+                &SessionSystemData {
+                    id: id.into(),
+                    source: "claude_code".into(),
+                    project_dir: "/proj".into(),
+                    title_orig: "Title".into(),
+                    started_at: "2026-08-01T00:00:00.000Z".into(),
+                    last_active_at: last_active.into(),
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn query_sessions_time_range_filters_last_active_at() {
+        let s = mem();
+        seed_session(&s, "old", "dev", "2026-08-01T10:00:00.000Z");
+        seed_session(&s, "mid", "dev", "2026-08-15T10:00:00.000Z");
+        seed_session(&s, "new", "dev", "2026-08-31T10:00:00.000Z");
+
+        // from_ts narrows to sessions at or after Aug 10.
+        let from = SessionFilter {
+            from_ts: Some("2026-08-10T00:00:00.000Z".into()),
+            ..Default::default()
+        };
+        let ids: Vec<String> = s
+            .query_sessions(Some(&from))
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(ids, ["new", "mid"], "from_ts excludes early sessions");
+
+        // to_ts narrows to sessions at or before Aug 20.
+        let to = SessionFilter {
+            to_ts: Some("2026-08-20T23:59:59.999Z".into()),
+            ..Default::default()
+        };
+        let ids: Vec<String> = s
+            .query_sessions(Some(&to))
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(ids, ["mid", "old"], "to_ts excludes late sessions");
+
+        // both bounds → only "mid".
+        let both = SessionFilter {
+            from_ts: Some("2026-08-10T00:00:00.000Z".into()),
+            to_ts: Some("2026-08-20T23:59:59.999Z".into()),
+            ..Default::default()
+        };
+        let ids: Vec<String> = s
+            .query_sessions(Some(&both))
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(ids, ["mid"], "from_ts + to_ts intersect to one session");
     }
 }

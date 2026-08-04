@@ -45,6 +45,19 @@ export function AppProviders({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  // Mirror of `usage_changed` for session writes (favorite / group / title /
+  // group CRUD). Backend emits `sessions_changed` after each write; invalidate
+  // the whole `Sessions` tag so every active session query (list + the open
+  // transcript) refetches.
+  useEffect(() => {
+    const off = listen("sessions_changed", () => {
+      store.dispatch(vaultApi.util.invalidateTags(["Sessions"]))
+    })
+    return () => {
+      off.then((unlisten) => unlisten())
+    }
+  }, [])
+
   // Tray left-click means "show the full dashboard". If the
   // window is in lightweight mode, morph back — setMode("full") is a no-op when
   // already full, and useWindowMode restores the window geometry on the change.

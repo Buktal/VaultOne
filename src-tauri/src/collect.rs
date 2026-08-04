@@ -41,7 +41,7 @@ pub fn collect_into(store: &Store, config: &ConfigStore) -> AppResult<IngestRepo
     let mut sources_with_rows: Vec<String> = Vec::new();
     for provider in &providers {
         let (result, delta) = provider.collect_incremental(&progress)?;
-        let report = ingest::ingest_collected(store, &cfg.device_id, &book, result)?;
+        let report = ingest::ingest_collected(store, &paths, &cfg.device_id, &book, result)?;
         if report.rows_inserted > 0 {
             sources_with_rows.push(report.source.clone());
         }

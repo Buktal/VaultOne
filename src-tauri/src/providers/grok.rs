@@ -1,30 +1,53 @@
 //! Grok CLI ("Grok Build") session-log provider.
+//!
+//! One Grok session = one directory under `~/.grok/{sessions,archived_sessions}/
+//! <enc-cwd>/<session-id>/`, holding up to three sibling files:
+//!   - `summary.json` — meta (`info.id`, `info.cwd`, `generated_title`,
+//!     `session_summary`, `created_at`, `last_active_at` / `updated_at`);
+//!   - `chat_history.jsonl` — transcript (one JSON line per message, `type` ∈
+//!     `user` / `assistant` / `tool` / `system`; `reasoning` is encrypted
+//!     internal state and skipped);
+//!   - `updates.jsonl` — per-turn usage (JSON-RPC `_x.ai/session/update`
+//!     notifications; only `turn_completed` carries billable usage).
+//!
+//! The directory name is the session id (UUID). Discovery collects every
+//! present sibling file; the shared incremental driver gives each its own
+//! mtime/line cursor, and [`parse_grok_file`] dispatches by filename:
+//!   - `summary.json` → one [`RawSession`] (whole-file re-read, title chain
+//!     `generated_title` → `session_summary` → first user message peeked from
+//!     `chat_history.jsonl`);
+//!   - `chat_history.jsonl` → [`SessionMessage`]s past the line cursor; emits a
+//!     degraded `RawSession` (id from the dir, rest empty) only when
+//!     `summary.json` is absent, so a session stays visible without its meta;
+//!   - `updates.jsonl` → per-model [`RawUsage`]es (each turn an independent
+//!     total, never diffed), each stamped with the session id (directory name).
+//!
+//! A missing sibling degrades gracefully: any one of the three may be absent
+//! and the remaining files still produce their stream; no parse panics.
 
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 use crate::error::{AppError, AppResult};
-use crate::model::{ServerToolUse, TokenCounts};
+use crate::model::{RawSession, ServerToolUse, SessionMessage, SessionMessageRole, TokenCounts};
 
 use super::{
-    collect_jsonl_incremental, normalize_cache_inclusive, CollectResult, FileParseOutcome,
-    Provider, RawUsage, ScanProgress, ScanProgressDelta,
+    collect_jsonl_incremental, normalize_cache_inclusive, truncate, CollectResult,
+    FileParseOutcome, Provider, RawUsage, ScanProgress, ScanProgressDelta, TITLE_MAX, TRIM_LIMIT,
 };
 
 /// Grok CLI ("Grok Build") session-log provider.
 ///
-/// Reads `~/.grok/{sessions,archived_sessions}/<enc-cwd>/<session-id>/updates.jsonl`.
-/// Each line is a JSON-RPC notification; only `_x.ai/session/update` whose
-/// `params.update.sessionUpdate` is `turn_completed` (absent ⇒ backward-
-/// compatible passthrough) carries usage. A turn's usage is an **independent
-/// per-turn total** — not a cumulative snapshot like Codex — so every event is
-/// recorded at face value and never diffed against its neighbor.
+/// Reads `~/.grok/{sessions,archived_sessions}/<enc-cwd>/<session-id>/{summary,
+/// chat_history, updates}`. See the module docs for the per-file breakdown.
 ///
-/// `inputTokens` is cache-inclusive (it contains `cachedReadTokens`), so it is
-/// normalized to fresh at parse; `outputTokens` already includes reasoning (do
-/// not add `reasoningTokens`); `cache_creation` is always 0 (Grok exposes no
-/// write bucket). One turn may span multiple models (`usage.modelUsage`), each
-/// emitted as its own record. The CLI's `costUsdTicks` / `apiDurationMs` are
-/// ignored — cost is recomputed from local pricing at ingest.
+/// `updates.jsonl` usage: `inputTokens` is cache-inclusive (it contains
+/// `cachedReadTokens`), so it is normalized to fresh at parse; `outputTokens`
+/// already includes reasoning (do not add `reasoningTokens`); `cache_creation`
+/// is always 0 (Grok exposes no write bucket). One turn may span multiple models
+/// (`usage.modelUsage`), each emitted as its own record. The CLI's
+/// `costUsdTicks` / `apiDurationMs` are ignored — cost is recomputed from local
+/// pricing at ingest.
 pub struct GrokProvider {
     grok_dir: PathBuf,
 }
@@ -45,15 +68,18 @@ impl GrokProvider {
         Self { grok_dir: dir }
     }
 
-    /// Recursively collect every `updates.jsonl` under `sessions/` and
+    /// Recursively collect every session sibling file (`summary.json`,
+    /// `chat_history.jsonl`, `updates.jsonl`) under `sessions/` and
     /// `archived_sessions/`. Layout depth varies (`<enc-cwd>/<session-id>/…`),
-    /// so discovery is by filename, mirroring Grok's session browser.
+    /// so discovery is by filename, mirroring Grok's session browser. Each file
+    /// becomes its own cursor entry (keyed by full path), so the three siblings
+    /// of one session are mtime/line-gated independently.
     fn discover_in(&self) -> Vec<PathBuf> {
         let mut files = Vec::new();
         for sub in ["sessions", "archived_sessions"] {
             let root = self.grok_dir.join(sub);
             if root.is_dir() {
-                collect_grok_updates(&root, &mut files, 0);
+                collect_grok_session_files(&root, &mut files, 0);
             }
         }
         files
@@ -73,9 +99,13 @@ impl Provider for GrokProvider {
     }
 
     fn parse(&self, files: &[PathBuf]) -> AppResult<CollectResult> {
-        // Full-parse path. Each turn is independent — no cross-line state to
-        // rebuild, unlike Codex's cumulative delta.
+        // Full-parse path (the semantic reference; production runs through
+        // `collect_incremental`). Delegates to the same `parse_grok_file`
+        // dispatcher so the test path exercises production logic — each
+        // sibling file routes to its own parser by filename.
         let mut events = Vec::new();
+        let mut sessions = Vec::new();
+        let mut messages = Vec::new();
         let mut skipped = 0u32;
         for file in files {
             let text = match std::fs::read_to_string(file) {
@@ -87,13 +117,18 @@ impl Provider for GrokProvider {
             };
             let outcome = parse_grok_file(file, &text, 0);
             events.extend(outcome.events);
+            sessions.extend(outcome.sessions);
+            messages.extend(outcome.messages);
             skipped += outcome.skipped;
         }
         events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
+        sessions.sort_by(|a, b| (&a.last_active_at, &a.id).cmp(&(&b.last_active_at, &b.id)));
         Ok(CollectResult {
             source: self.name().to_string(),
             events,
             turn_durations: Vec::new(),
+            sessions,
+            messages,
             files_scanned: files.len() as u32,
             lines_skipped: skipped,
         })
@@ -107,10 +142,11 @@ impl Provider for GrokProvider {
     }
 }
 
-/// Recursively collect every `updates.jsonl` under `root`. Symlinked dirs are
-/// not followed (file_type is non-following) and a depth cap guards against
+/// Recursively collect every Grok session sibling file under `root`
+/// (`summary.json` / `chat_history.jsonl` / `updates.jsonl`). Symlinked dirs
+/// are not followed (file_type is non-following) and a depth cap guards against
 /// pathological nesting.
-fn collect_grok_updates(root: &Path, files: &mut Vec<PathBuf>, depth: u32) {
+fn collect_grok_session_files(root: &Path, files: &mut Vec<PathBuf>, depth: u32) {
     if depth > 8 {
         return;
     }
@@ -121,22 +157,53 @@ fn collect_grok_updates(root: &Path, files: &mut Vec<PathBuf>, depth: u32) {
         let path = entry.path();
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
         if is_dir {
-            collect_grok_updates(&path, files, depth + 1);
-        } else if path.file_name().and_then(|n| n.to_str()) == Some("updates.jsonl") {
-            files.push(path);
+            collect_grok_session_files(&path, files, depth + 1);
+        } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if name == "summary.json" || name == "chat_history.jsonl" || name == "updates.jsonl" {
+                files.push(path);
+            }
         }
     }
 }
 
-/// Parse one Grok `updates.jsonl` file into per-call events, skipping lines at
-/// or before `start_line` (the incremental cursor). `session_id` is the session
-/// directory name — the stable scoping dimension for the per-turn dedup key.
+/// One-pass dispatcher: route a discovered file to its parser by filename. The
+/// shared incremental driver hands us the file text and the 1-based start line
+/// (already self-healed on truncation); each parser decides how to use them.
+/// `parse` (the full-scan test path) calls through here too, so test and
+/// production run identical logic (architecture review #10).
 fn parse_grok_file(file: &Path, text: &str, start_line: i64) -> FileParseOutcome {
-    let session_id = file
-        .parent()
+    match file.file_name().and_then(|n| n.to_str()) {
+        Some("updates.jsonl") => parse_grok_updates(file, text, start_line),
+        Some("chat_history.jsonl") => parse_grok_chat_history(file, text, start_line),
+        Some("summary.json") => parse_grok_summary(file, text),
+        _ => FileParseOutcome {
+            events: Vec::new(),
+            turn_durations: Vec::new(),
+            sessions: Vec::new(),
+            messages: Vec::new(),
+            skipped: 0,
+        },
+    }
+}
+
+/// The session-id scoping dimension: the immediate parent directory name of a
+/// sibling file. Falls back to `"unknown"` only when the path is malformed.
+fn session_id_of(file: &Path) -> String {
+    file.parent()
         .and_then(|dir| dir.file_name())
         .and_then(|n| n.to_str())
-        .unwrap_or("unknown");
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+// ---- updates.jsonl: per-turn usage (existing, now session-id-stamped) ----
+
+/// Parse one Grok `updates.jsonl` file into per-call events, skipping lines at
+/// or before `start_line` (the incremental cursor). `session_id` is the session
+/// directory name — the stable scoping dimension for the per-turn dedup key,
+/// and now stamped onto every emitted `RawUsage` (was an empty string).
+fn parse_grok_updates(file: &Path, text: &str, start_line: i64) -> FileParseOutcome {
+    let session_id = session_id_of(file);
     let mut events = Vec::new();
     let mut skipped = 0u32;
     for (idx, raw) in text.lines().enumerate() {
@@ -154,13 +221,15 @@ fn parse_grok_file(file: &Path, text: &str, start_line: i64) -> FileParseOutcome
         };
         // Non-qualifying lines (other notifications / mid-turn snapshots) are
         // normal noise, silently filtered — not counted as skipped.
-        if let Some(ev) = parse_grok_notification(&record, session_id, line_no) {
+        if let Some(ev) = parse_grok_notification(&record, &session_id, line_no) {
             events.extend(ev);
         }
     }
     FileParseOutcome {
         events,
         turn_durations: Vec::new(),
+        sessions: Vec::new(),
+        messages: Vec::new(),
         skipped,
     }
 }
@@ -232,6 +301,7 @@ fn parse_grok_notification(
             timestamp: timestamp.clone(),
             model,
             source: "grok_cli".to_string(),
+            session_id: session_id.to_string(),
             tokens: TokenCounts {
                 input: fresh_input,
                 output,
@@ -247,12 +317,250 @@ fn parse_grok_notification(
     Some(events)
 }
 
-/// Parse the notification's top-level `timestamp`. Grok writes epoch seconds as
-/// a number (defensively treating >1e11 as milliseconds); an RFC3339 string is
-/// accepted as a fallback. Returns `None` if absent or unparseable.
+// ---- summary.json: session meta (one RawSession per directory) ----
+
+/// Parse `summary.json` into one [`RawSession`]. Whole-file re-read each pass
+/// (meta is refreshable). Field fallbacks: id = `info.id` (else dir name);
+/// project_dir = `info.cwd`; title = `generated_title` → `session_summary` →
+/// first user message peeked from the sibling `chat_history.jsonl`; times =
+/// `created_at` / (`last_active_at` | `updated_at`), each ISO-or-epoch. Any
+/// malformed shape degrades to the directory-name id with empty fields — never
+/// panics, never counts as skipped (a half-written summary is re-read next pass).
+fn parse_grok_summary(file: &Path, text: &str) -> FileParseOutcome {
+    let session = raw_session_from_summary(file, text);
+    FileParseOutcome {
+        events: Vec::new(),
+        turn_durations: Vec::new(),
+        sessions: vec![session],
+        messages: Vec::new(),
+        skipped: 0,
+    }
+}
+
+/// Build the [`RawSession`] from `summary.json` text, with the full title chain
+/// and graceful degradation. Split out so the degraded title fallback (peek the
+/// sibling transcript) reads the file once instead of branching inline.
+fn raw_session_from_summary(file: &Path, text: &str) -> RawSession {
+    let dir_id = session_id_of(file);
+    let mut session = RawSession {
+        id: dir_id,
+        source: "grok_cli".to_string(),
+        project_dir: String::new(),
+        title_orig: String::new(),
+        started_at: String::new(),
+        last_active_at: String::new(),
+    };
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
+        // id: info.id wins when non-empty; otherwise the directory name stays.
+        if let Some(info_id) = v
+            .get("info")
+            .and_then(|i| i.get("id"))
+            .and_then(|i| i.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            session.id = info_id.to_string();
+        }
+        if let Some(cwd) = v
+            .get("info")
+            .and_then(|i| i.get("cwd"))
+            .and_then(|c| c.as_str())
+        {
+            session.project_dir = cwd.to_string();
+        }
+        // Title sources from summary.json only; first-user is the final fallback
+        // (peeked below) so generated_title > session_summary > first user.
+        let generated = v
+            .get("generated_title")
+            .and_then(|t| t.as_str())
+            .map(str::trim)
+            .unwrap_or("");
+        let summary_text = v
+            .get("session_summary")
+            .and_then(|t| t.as_str())
+            .map(str::trim)
+            .unwrap_or("");
+        let from_summary = if !generated.is_empty() {
+            generated
+        } else {
+            summary_text
+        };
+        session.title_orig = truncate(from_summary, TITLE_MAX);
+        session.started_at = parse_grok_timestamp(v.get("created_at")).unwrap_or_default();
+        session.last_active_at =
+            parse_grok_timestamp(v.get("last_active_at").or_else(|| v.get("updated_at")))
+                .unwrap_or_default();
+    }
+    // Final title fallback: peek the sibling chat_history.jsonl for the first
+    // real user message. Only when summary.json itself yielded no title.
+    if session.title_orig.is_empty() {
+        if let Some(parent) = file.parent() {
+            if let Some(first_user) = peek_first_user_message(&parent.join("chat_history.jsonl")) {
+                session.title_orig = truncate(&first_user, TITLE_MAX);
+            }
+        }
+    }
+    session
+}
+
+/// Scan `chat_history.jsonl` from disk until the first `user` line with
+/// non-empty text content, returning that text (un-truncated; caller caps it).
+/// Bounded by the location of the first user turn (typically line 1–3). Returns
+/// `None` on any open/parse miss — used only as the title fallback, so a missing
+/// or unparseable transcript simply leaves the title empty.
+fn peek_first_user_message(chat_path: &Path) -> Option<String> {
+    let file = std::fs::File::open(chat_path).ok()?;
+    let reader = std::io::BufReader::new(file);
+    for line in reader.lines() {
+        let Ok(line) = line else { break };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(record) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        if record.get("type").and_then(|t| t.as_str()) != Some("user") {
+            continue;
+        }
+        if let Some(content) = record.get("content") {
+            let text = extract_grok_content(content);
+            let text = text.trim();
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
+        }
+    }
+    None
+}
+
+// ---- chat_history.jsonl: transcript messages (line-incremental) ----
+
+/// Parse `chat_history.jsonl` into [`SessionMessage`]s past `start_line`. Role
+/// mapping: user/assistant/tool/system → the four UI roles; `reasoning` is
+/// dropped (encrypted/internal). Each line carries a stable line-based uuid
+/// (Grok lines have no id) so appends are idempotent across re-collects. When
+/// `summary.json` is ABSENT from the same directory, a degraded [`RawSession`]
+/// (id = dir name, all other fields empty) is emitted alongside the messages,
+/// so a transcript-only session stays visible in the session list.
+fn parse_grok_chat_history(file: &Path, text: &str, start_line: i64) -> FileParseOutcome {
+    let session_id = session_id_of(file);
+    let summary_present = file
+        .parent()
+        .map(|d| d.join("summary.json").exists())
+        .unwrap_or(false);
+    let mut messages = Vec::new();
+    let mut skipped = 0u32;
+    for (idx, raw) in text.lines().enumerate() {
+        let line_no = idx as i64 + 1; // 1-based, matching the cursor
+        if line_no <= start_line {
+            continue;
+        }
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else {
+            skipped += 1; // malformed JSON line — a genuine parse failure
+            continue;
+        };
+        let kind = record.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        // reasoning (and any unknown type) is skipped as noise, not a failure.
+        let role = match kind {
+            "user" => SessionMessageRole::User,
+            "assistant" => SessionMessageRole::Assistant,
+            "tool" => SessionMessageRole::Tool,
+            "system" => SessionMessageRole::System,
+            _ => continue,
+        };
+        let content = record
+            .get("content")
+            .map(extract_grok_content)
+            .unwrap_or_default();
+        let content = truncate(content.trim(), TRIM_LIMIT);
+        if content.is_empty() {
+            continue;
+        }
+        let ts = parse_grok_timestamp(record.get("timestamp").or_else(|| record.get("ts")))
+            .unwrap_or_default();
+        let name = if matches!(role, SessionMessageRole::Tool) {
+            record
+                .get("name")
+                .or_else(|| record.get("tool_name"))
+                .and_then(|n| n.as_str())
+                .map(str::to_string)
+        } else {
+            None
+        };
+        messages.push(SessionMessage {
+            uuid: format!("grok:msg:{session_id}:line{line_no}"),
+            session_id: session_id.clone(),
+            role,
+            ts,
+            model: None,
+            name,
+            content,
+        });
+    }
+    // Degraded session: only when summary.json is missing. Keeps the directory
+    // visible as a session (id = dir name) with empty meta per the spec; the
+    // ingest layer attaches the transcript + usage rows by session_id.
+    let sessions = if summary_present {
+        Vec::new()
+    } else {
+        vec![RawSession {
+            id: session_id,
+            source: "grok_cli".to_string(),
+            project_dir: String::new(),
+            title_orig: String::new(),
+            started_at: String::new(),
+            last_active_at: String::new(),
+        }]
+    };
+    FileParseOutcome {
+        events: Vec::new(),
+        turn_durations: Vec::new(),
+        sessions,
+        messages,
+        skipped,
+    }
+}
+
+/// Extract text from a Grok message `content` field: a plain string, or an
+/// array of `{type:"text", text:…}` blocks joined with `\n`. Other block shapes
+/// (and non-string/array values) yield empty — reasoning/internal blocks never
+/// reach here (their lines are filtered upstream by type).
+fn extract_grok_content(content: &serde_json::Value) -> String {
+    match content {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(items) => {
+            let parts: Vec<String> = items
+                .iter()
+                .filter_map(|item| {
+                    if item.get("type").and_then(|t| t.as_str()) == Some("text") {
+                        item.get("text")
+                            .and_then(|t| t.as_str())
+                            .map(str::to_string)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            parts.join("\n")
+        }
+        _ => String::new(),
+    }
+}
+
+// ---- shared timestamp parse (epoch sec / epoch ms / RFC3339) ----
+
+/// Parse a Grok timestamp value (epoch seconds, epoch milliseconds if large, or
+/// an RFC3339 string) into an ISO8601 UTC string. Returns `None` if absent or
+/// unparseable. Shared across updates.jsonl / summary.json / chat_history.jsonl
+/// so every Grok timestamp format funnels through one normalizer.
 fn parse_grok_timestamp(value: Option<&serde_json::Value>) -> Option<String> {
     let value = value?;
     if let Some(n) = value.as_i64() {
+        // >1e11 ⇒ milliseconds (defensive, mirrors CC-Switch's threshold).
         let secs = if n > 100_000_000_000 { n / 1000 } else { n };
         return Some(crate::time::epoch_to_iso(secs));
     }
@@ -286,6 +594,7 @@ mod tests {
         )
     }
 
+    /// Write only `updates.jsonl` into a session dir (legacy test fixture).
     fn write_grok_session(dir: &Path, session_id: &str, lines: &[String]) -> PathBuf {
         let session_dir = dir.join("sessions").join("enc-project").join(session_id);
         std::fs::create_dir_all(&session_dir).unwrap();
@@ -296,6 +605,37 @@ mod tests {
         }
         path
     }
+
+    /// Write a full Grok session directory with whichever siblings are given.
+    /// `summary` = None ⇒ no summary.json; empty `chat` / `updates` ⇒ skipped.
+    fn write_grok_full_session(
+        dir: &Path,
+        session_id: &str,
+        summary: Option<&str>,
+        chat: &[&str],
+        updates: &[String],
+    ) -> PathBuf {
+        let session_dir = dir.join("sessions").join("enc-project").join(session_id);
+        std::fs::create_dir_all(&session_dir).unwrap();
+        if let Some(s) = summary {
+            std::fs::write(session_dir.join("summary.json"), s).unwrap();
+        }
+        if !chat.is_empty() {
+            let mut f = fs::File::create(session_dir.join("chat_history.jsonl")).unwrap();
+            for l in chat {
+                writeln!(f, "{l}").unwrap();
+            }
+        }
+        if !updates.is_empty() {
+            let mut f = fs::File::create(session_dir.join("updates.jsonl")).unwrap();
+            for l in updates {
+                writeln!(f, "{l}").unwrap();
+            }
+        }
+        session_dir
+    }
+
+    // ============= existing updates.jsonl-only coverage =============
 
     #[test]
     fn grok_discover_missing_dir_returns_empty() {
@@ -485,5 +825,275 @@ mod tests {
         let (r2, _) = p.collect_incremental(&progress).unwrap();
         assert_eq!(r2.events.len(), 1);
         assert_eq!(r2.events[0].uuid, "grok:turn:s6:p2:grok-4.5-build");
+    }
+
+    // ============= session meta (summary.json) =============
+
+    /// summary.json yields one RawSession: generated_title wins over
+    /// session_summary, cwd → project_dir, epoch timestamps → ISO.
+    #[test]
+    fn grok_session_meta_from_summary_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let summary = r#"{"info":{"id":"s-meta","cwd":"/work/proj"},"generated_title":"My Title","session_summary":"summary text","created_at":1700000000,"last_active_at":1700000060}"#;
+        write_grok_full_session(dir.path(), "s-meta", Some(summary), &[], &[]);
+        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(result.sessions.len(), 1);
+        let s = &result.sessions[0];
+        assert_eq!(s.id, "s-meta");
+        assert_eq!(s.source, "grok_cli");
+        assert_eq!(s.project_dir, "/work/proj");
+        assert_eq!(
+            s.title_orig, "My Title",
+            "generated_title beats session_summary"
+        );
+        assert_eq!(s.started_at, "2023-11-14T22:13:20.000Z");
+        assert_eq!(s.last_active_at, "2023-11-14T22:14:20.000Z");
+    }
+
+    /// Without generated_title, session_summary is the title.
+    #[test]
+    fn grok_session_title_falls_back_to_session_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let summary = r#"{"info":{"id":"s-sum","cwd":"/p"},"session_summary":"Summary only"}"#;
+        write_grok_full_session(dir.path(), "s-sum", Some(summary), &[], &[]);
+        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(result.sessions[0].title_orig, "Summary only");
+    }
+
+    /// With neither generated_title nor session_summary, the title falls back to
+    /// the first user message peeked from the sibling chat_history.jsonl.
+    #[test]
+    fn grok_session_title_falls_back_to_first_user_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let summary = r#"{"info":{"id":"s-user","cwd":"/p"}}"#; // no title fields
+        let chat = [
+            r#"{"type":"assistant","content":"reply"}"#,
+            r#"{"type":"user","content":"First prompt here","timestamp":1700000000}"#,
+        ];
+        write_grok_full_session(dir.path(), "s-user", Some(summary), &chat, &[]);
+        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(result.sessions[0].title_orig, "First prompt here");
+    }
+
+    /// last_active_at falls back to updated_at when last_active_at is absent.
+    #[test]
+    fn grok_session_last_active_falls_back_to_updated_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let summary =
+            r#"{"info":{"id":"s-up","cwd":"/p"},"created_at":1700000000,"updated_at":1700000120}"#;
+        write_grok_full_session(dir.path(), "s-up", Some(summary), &[], &[]);
+        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(
+            result.sessions[0].last_active_at, "2023-11-14T22:15:20.000Z",
+            "updated_at used when last_active_at missing"
+        );
+    }
+
+    /// Timestamp fields accept epoch-seconds, epoch-millis, and RFC3339 strings.
+    #[test]
+    fn grok_timestamp_field_accepts_iso_epoch_seconds_and_millis() {
+        let dir = tempfile::tempdir().unwrap();
+        let enc = dir.path().join("sessions").join("enc");
+        let mk = |id: &str, ts: &str| {
+            let d = enc.join(id);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(
+                d.join("summary.json"),
+                format!(r#"{{"info":{{"id":"{id}","cwd":"/p"}},"created_at":{ts}}}"#),
+            )
+            .unwrap();
+        };
+        mk("ts-sec", "1700000000"); // epoch seconds
+        mk("ts-ms", "1700000000000"); // epoch milliseconds
+        mk("ts-iso", r#""2023-11-14T22:13:20Z""#); // RFC3339 string
+        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        let by_id: std::collections::HashMap<&str, &RawSession> =
+            result.sessions.iter().map(|s| (s.id.as_str(), s)).collect();
+        assert_eq!(by_id["ts-sec"].started_at, "2023-11-14T22:13:20.000Z");
+        assert_eq!(by_id["ts-ms"].started_at, "2023-11-14T22:13:20.000Z");
+        assert_eq!(by_id["ts-iso"].started_at, "2023-11-14T22:13:20.000Z");
+    }
+
+    /// Malformed summary.json degrades to a directory-name id with empty meta —
+    /// no panic, no skip count (a half-write re-reads next pass).
+    #[test]
+    fn grok_summary_malformed_degrades_to_dir_id() {
+        let dir = tempfile::tempdir().unwrap();
+        write_grok_full_session(dir.path(), "s-bad", Some("{not json"), &[], &[]);
+        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(result.sessions.len(), 1);
+        let s = &result.sessions[0];
+        assert_eq!(s.id, "s-bad", "directory name is the id fallback");
+        assert!(s.project_dir.is_empty());
+        assert!(s.title_orig.is_empty());
+        assert_eq!(
+            result.lines_skipped, 0,
+            "a malformed summary is re-read next pass, not counted as skipped"
+        );
+    }
+
+    // ============= transcript (chat_history.jsonl) =============
+
+    /// chat_history maps user/assistant/tool/system to SessionMessages;
+    /// reasoning is filtered; tool name is extracted; `ts` is an accepted alt
+    /// timestamp key; array content is joined.
+    #[test]
+    fn grok_chat_history_messages_and_reasoning_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let summary = r#"{"info":{"id":"s-chat","cwd":"/p"}}"#;
+        let chat = [
+            r#"{"type":"user","content":"hi","timestamp":1700000000}"#,
+            // reasoning carries encrypted/internal state — must be dropped.
+            r#"{"type":"reasoning","content":"secret internal"}"#,
+            r#"{"type":"assistant","content":[{"type":"text","text":"Sure"}],"timestamp":1700000060}"#,
+            // `ts` alt key + epoch + tool name extraction.
+            r#"{"type":"tool","name":"Read","content":"file contents","ts":1700000120}"#,
+        ];
+        write_grok_full_session(dir.path(), "s-chat", Some(summary), &chat, &[]);
+        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+
+        let roles: Vec<_> = result.messages.iter().map(|m| m.role).collect();
+        use crate::model::SessionMessageRole::*;
+        assert_eq!(roles, vec![User, Assistant, Tool], "reasoning filtered");
+        assert!(
+            !result.messages.iter().any(|m| m.content.contains("secret")),
+            "reasoning content never leaks"
+        );
+        // tool name carried through.
+        let tool = result.messages.iter().find(|m| m.role == Tool).unwrap();
+        assert_eq!(tool.name.as_deref(), Some("Read"));
+        // `ts` alt key + epoch → ISO.
+        assert_eq!(tool.ts, "2023-11-14T22:15:20.000Z");
+        assert_eq!(tool.session_id, "s-chat");
+        // assistant array content joined.
+        let asst = result
+            .messages
+            .iter()
+            .find(|m| m.role == Assistant)
+            .unwrap();
+        assert_eq!(asst.content, "Sure");
+        // user content + line-based stable uuid.
+        let user = result.messages.iter().find(|m| m.role == User).unwrap();
+        assert_eq!(user.content, "hi");
+        assert_eq!(user.uuid, "grok:msg:s-chat:line1");
+    }
+
+    /// summary.json ABSENT: chat_history still yields its messages AND a degraded
+    /// RawSession (id = dir, empty meta) so the session stays visible.
+    #[test]
+    fn grok_summary_missing_degrades_gracefully() {
+        let dir = tempfile::tempdir().unwrap();
+        let chat = [r#"{"type":"user","content":"Hello degraded","timestamp":1700000000}"#];
+        // No summary.json — only chat_history.
+        write_grok_full_session(dir.path(), "s-deg", None, &chat, &[]);
+        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(
+            result.sessions.len(),
+            1,
+            "session visible even without summary.json"
+        );
+        let s = &result.sessions[0];
+        assert_eq!(s.id, "s-deg", "directory name fallback id");
+        assert!(s.project_dir.is_empty(), "project_dir left empty");
+        assert!(s.title_orig.is_empty(), "title left empty");
+        // messages still extracted.
+        assert_eq!(result.messages.len(), 1);
+        assert_eq!(result.messages[0].content, "Hello degraded");
+        assert_eq!(result.messages[0].session_id, "s-deg");
+    }
+
+    // ============= session_id on RawUsage (was empty) =============
+
+    /// updates.jsonl usages now carry the session id (directory name), so they
+    /// attach to the session in the ingest layer.
+    #[test]
+    fn grok_usage_carries_session_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let updates = vec![grok_event_line(
+            1_700_000_000,
+            "p1",
+            &grok_model("grok-4.5-build", 100, 10, 0),
+        )];
+        write_grok_full_session(dir.path(), "s-usage", None, &[], &updates);
+        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(
+            result.events[0].session_id, "s-usage",
+            "RawUsage.session_id filled with the directory name"
+        );
+    }
+
+    // ============= three-file coordination =============
+
+    /// All three siblings present: exactly one RawSession (from summary.json),
+    /// messages from chat_history, usages from updates — no duplicates.
+    #[test]
+    fn grok_three_siblings_emit_one_session_messages_and_usages() {
+        let dir = tempfile::tempdir().unwrap();
+        let summary = r#"{"info":{"id":"s-full","cwd":"/proj"},"generated_title":"Full","created_at":1700000000,"last_active_at":1700000120}"#;
+        let chat = [
+            r#"{"type":"user","content":"hi","timestamp":1700000000}"#,
+            r#"{"type":"assistant","content":"bye","timestamp":1700000060}"#,
+        ];
+        let updates = vec![grok_event_line(
+            1_700_000_000,
+            "p1",
+            &grok_model("grok-4.5-build", 100, 10, 0),
+        )];
+        write_grok_full_session(dir.path(), "s-full", Some(summary), &chat, &updates);
+        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(
+            result.sessions.len(),
+            1,
+            "exactly one session (no duplicate)"
+        );
+        assert_eq!(result.sessions[0].id, "s-full");
+        assert_eq!(result.messages.len(), 2);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].session_id, "s-full");
+        assert!(
+            result.messages.iter().all(|m| m.session_id == "s-full"),
+            "every message carries the session id"
+        );
+    }
+
+    /// chat_history.jsonl incremental: only appended lines yield messages.
+    #[test]
+    fn grok_incremental_chat_history_emits_only_appended_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let summary = r#"{"info":{"id":"s-inc","cwd":"/p"}}"#;
+        let chat = [r#"{"type":"user","content":"first","timestamp":1700000000}"#];
+        let session_dir = write_grok_full_session(dir.path(), "s-inc", Some(summary), &chat, &[]);
+        let chat_path = session_dir.join("chat_history.jsonl");
+        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let (r1, delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
+        assert_eq!(r1.messages.len(), 1, "first pass: one message");
+        let progress: ScanProgress = delta;
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&chat_path)
+                .unwrap();
+            writeln!(
+                f,
+                r#"{{"type":"user","content":"second","timestamp":1700000060}}"#
+            )
+            .unwrap();
+        }
+        let (r2, _) = p.collect_incremental(&progress).unwrap();
+        assert_eq!(r2.messages.len(), 1, "only the appended line is emitted");
+        assert_eq!(r2.messages[0].content, "second");
     }
 }

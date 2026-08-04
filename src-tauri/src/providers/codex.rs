@@ -1,13 +1,29 @@
 //! Codex (`~/.codex`) session-log provider.
+//!
+//! Reads `<codex_dir>/sessions/**/*.jsonl` (depth ≤ 3, i.e. `YYYY/MM/DD`) and
+//! `<codex_dir>/archived_sessions/*.jsonl` (flat). Each line is one JSON event;
+//! the provider consumes:
+//!   - `session_meta` — session id + cwd (→ one [`RawSession`] per file);
+//!   - `turn_context` — current model;
+//!   - `event_msg` (subtype `token_count`) — cumulative usage → per-call delta;
+//!   - `response_item` — transcript messages (user/assistant text + tool calls).
+//!
+//! Codex's `total_token_usage` is **cumulative** and its `input_tokens` is
+//! cache-inclusive, so the provider computes per-call deltas and subtracts
+//! `cache_read` to yield a fresh `input` (parse-time fresh-input
+//! normalization). Sub-agent / fork logs replay the parent thread's history
+//! before their own usage; that replay only re-establishes the cumulative
+//! baseline and is never emitted, and such sessions produce no [`RawSession`] /
+//! transcript (they are not user-facing top-level sessions).
 
 use std::path::{Path, PathBuf};
 
 use crate::error::{AppError, AppResult};
-use crate::model::{ServerToolUse, TokenCounts};
+use crate::model::{RawSession, ServerToolUse, SessionMessage, SessionMessageRole, TokenCounts};
 
 use super::{
-    collect_jsonl_incremental, normalize_cache_inclusive, CollectResult, FileParseOutcome,
-    Provider, RawUsage, ScanProgress, ScanProgressDelta,
+    collect_jsonl_incremental, normalize_cache_inclusive, truncate, CollectResult,
+    FileParseOutcome, Provider, RawUsage, ScanProgress, ScanProgressDelta, TITLE_MAX, TRIM_LIMIT,
 };
 
 /// Codex (`~/.codex`) session-log provider.
@@ -77,6 +93,8 @@ impl Provider for CodexProvider {
 
     fn parse(&self, files: &[PathBuf]) -> AppResult<CollectResult> {
         let mut events = Vec::new();
+        let mut sessions = Vec::new();
+        let mut messages = Vec::new();
         let mut skipped = 0u32;
         for file in files {
             let text = match std::fs::read_to_string(file) {
@@ -86,16 +104,20 @@ impl Provider for CodexProvider {
                     continue;
                 }
             };
-            let (identity, boundary) = prescan_codex_text(&text);
-            let parsed = parse_codex_text(&text, identity, boundary, 0);
-            events.extend(parsed.events);
-            skipped += parsed.skipped;
+            let outcome = fold_codex_file(file, &text, 0);
+            events.extend(outcome.events);
+            sessions.extend(outcome.sessions);
+            messages.extend(outcome.messages);
+            skipped += outcome.skipped;
         }
         events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
+        sessions.sort_by(|a, b| (&a.last_active_at, &a.id).cmp(&(&b.last_active_at, &b.id)));
         Ok(CollectResult {
             source: self.name().to_string(),
             events,
             turn_durations: Vec::new(),
+            sessions,
+            messages,
             files_scanned: files.len() as u32,
             lines_skipped: skipped,
         })
@@ -103,24 +125,18 @@ impl Provider for CodexProvider {
 
     /// Incremental collect: mtime-gate unchanged files; for a changed file,
     /// re-parse it fully to rebuild the cumulative baseline + event_index, but
-    /// only EMIT events past the recorded cursor. The baseline cannot be cached
-    /// (it depends on every prior line), so old lines are still parsed — the
-    /// saving is skipping unchanged files entirely + not re-emitting seen rows.
+    /// only EMIT events/messages past the recorded cursor. Session meta is
+    /// rebuilt from the whole file every pass (refreshable system data). The
+    /// baseline cannot be cached (it depends on every prior line), so old lines
+    /// are still parsed — the saving is skipping unchanged files entirely + not
+    /// re-emitting seen rows. Both `parse` and this path share `fold_codex_file`,
+    /// so test and production run identical logic.
     fn collect_incremental(
         &self,
         progress: &ScanProgress,
     ) -> AppResult<(CollectResult, ScanProgressDelta)> {
-        collect_jsonl_incremental(self, progress, |_file: &Path, text, start_line| {
-            let (identity, boundary) = prescan_codex_text(text);
-            // `start_line` is the cursor (self-healed on truncation by the
-            // driver); parse_codex_text's `emit_after_line` has the same "skip
-            // lines at or before it" semantics.
-            let parsed = parse_codex_text(text, identity, boundary, start_line);
-            FileParseOutcome {
-                events: parsed.events,
-                turn_durations: Vec::new(),
-                skipped: parsed.skipped,
-            }
+        collect_jsonl_incremental(self, progress, |file: &Path, text, start_line| {
+            fold_codex_file(file, text, start_line)
         })
     }
 }
@@ -163,13 +179,6 @@ struct CodexFileState {
 struct CodexSessionIdentity {
     thread_id: String,
     carries_history_snapshot: bool,
-}
-
-/// Result of parsing one Codex file's text.
-struct CodexParsed {
-    events: Vec<RawUsage>,
-    /// History-replay snapshot events beyond the emit cursor (diagnostic).
-    skipped: u32,
 }
 
 /// One pre-scan pass over the file text: recover the session identity (first
@@ -219,15 +228,28 @@ fn prescan_codex_text(text: &str) -> (Option<CodexSessionIdentity>, Option<i64>)
     (identity, boundary)
 }
 
-/// Parse a file's text into raw events. `emit_after_line` is the 1-based cursor:
-/// events at or before it rebuild state but are not re-emitted (0 ⇒ emit all).
-fn parse_codex_text(
-    text: &str,
-    identity: Option<CodexSessionIdentity>,
-    history_replay_boundary: Option<i64>,
-    emit_after_line: i64,
-) -> CodexParsed {
-    let lines: Vec<&str> = text.lines().collect();
+/// Fold one Codex JSONL file's text into a per-file parse outcome. Mirrors
+/// claude's `fold_file`: three streams from a single forward pass —
+///   - per-call usages (cumulative → delta; only lines past `start_line`);
+///   - one [`RawSession`] covering the WHOLE file (system data is refreshable,
+///     so every pass re-reads first/last ts, cwd, and the title sources);
+///   - transcript [`SessionMessage`]s (only lines past `start_line` — incremental,
+///     so a re-collect appends only new lines).
+///
+/// `start_line` is the 1-based cursor: lines at or before it rebuild state but
+/// are not re-emitted as usages/messages (0 ⇒ emit all). Session meta is always
+/// rebuilt from the full file.
+///
+/// Sub-agent / fork sessions (`source.subagent` / `forked_from_id` / session id
+/// ≠ thread id) emit no [`RawSession`] and no transcript — only their own
+/// post-boundary usage (with an empty `session_id`, since they have no
+/// top-level session row to group under).
+fn fold_codex_file(file: &Path, text: &str, start_line: i64) -> FileParseOutcome {
+    let (identity, boundary) = prescan_codex_text(text);
+    let is_subagent = identity
+        .as_ref()
+        .is_some_and(|i| i.carries_history_snapshot);
+    let session_id = resolve_session_id(file, identity.as_ref());
 
     let mut state = CodexFileState {
         thread_id: identity.map(|i| i.thread_id),
@@ -235,22 +257,39 @@ fn parse_codex_text(
         prev_total: None,
         event_index: 0,
     };
+    // Sub-agent usage keeps an empty session_id — no top-level session exists.
+    let session_id_for_usage = if is_subagent {
+        String::new()
+    } else {
+        session_id.clone()
+    };
+
     let mut events = Vec::new();
+    let mut messages = Vec::new();
     let mut skipped = 0u32;
 
-    for (idx, line) in lines.iter().enumerate() {
-        let line_offset = idx as i64 + 1; // 1-based, matching the cursor
-        let line = line.trim();
+    // Session meta — tracked over the FULL file (refreshable system data).
+    let mut started_at = String::new();
+    let mut last_active_at = String::new();
+    let mut project_dir = String::new();
+    let mut first_user_text: Option<String> = None;
+    let mut saw_any_event = false;
+
+    for (idx, raw) in text.lines().enumerate() {
+        let line_no = idx as i64 + 1; // 1-based, matching the cursor
+        let line = raw.trim();
         if line.is_empty() {
             continue;
         }
-        // Fast filter before serde.
-        let is_event_msg = line.contains("\"event_msg\"");
-        let is_turn_context = line.contains("\"turn_context\"");
+        // Cheap substring gate before serde.
         let is_session_meta = line.contains("\"session_meta\"");
-        if !is_event_msg && !is_turn_context && !is_session_meta {
+        let is_turn_context = line.contains("\"turn_context\"");
+        let is_event_msg = line.contains("\"event_msg\"");
+        let is_response_item = line.contains("\"response_item\"");
+        if !is_session_meta && !is_turn_context && !is_event_msg && !is_response_item {
             continue;
         }
+        // event_msg: only token_count carries usage; other subtypes are noise.
         if is_event_msg && !line.contains("\"token_count\"") {
             continue;
         }
@@ -262,12 +301,50 @@ fn parse_codex_text(
             continue;
         };
 
+        // ---- session meta (full file, every pass) ----
+        let ts = value
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if !saw_any_event {
+            started_at = ts.to_string();
+            saw_any_event = true;
+        }
+        if !ts.is_empty() {
+            last_active_at = ts.to_string();
+        }
+        // Title candidate: first real user message (injection-noise-filtered).
+        // Skipped for sub-agents — they emit no session anyway.
+        if first_user_text.is_none() && is_response_item && !is_subagent {
+            if let Some(payload) = value.get("payload") {
+                if payload.get("type").and_then(|t| t.as_str()) == Some("message")
+                    && payload.get("role").and_then(|r| r.as_str()) == Some("user")
+                {
+                    if let Some(content) = payload.get("content") {
+                        let text = extract_codex_message_text(content);
+                        if let Some(candidate) = title_candidate_from_user_message(&text) {
+                            first_user_text = Some(candidate);
+                        }
+                    }
+                }
+            }
+        }
+
         match event_type {
-            "session_meta" if state.thread_id.is_none() => {
-                state.thread_id = value
-                    .get("payload")
-                    .and_then(parse_codex_session_identity)
-                    .map(|i| i.thread_id);
+            "session_meta" => {
+                if let Some(payload) = value.get("payload") {
+                    if state.thread_id.is_none() {
+                        state.thread_id =
+                            parse_codex_session_identity(payload).map(|i| i.thread_id);
+                    }
+                    if project_dir.is_empty() {
+                        if let Some(cwd) = payload.get("cwd").and_then(|v| v.as_str()) {
+                            if !cwd.is_empty() {
+                                project_dir = cwd.to_string();
+                            }
+                        }
+                    }
+                }
             }
             "turn_context" => {
                 if let Some(payload) = value.get("payload") {
@@ -334,14 +411,14 @@ fn parse_codex_text(
                 state.event_index += 1;
 
                 // History replay only re-establishes the baseline — never emit.
-                if is_history_snapshot_event(history_replay_boundary, line_offset) {
-                    if line_offset > emit_after_line {
+                if is_history_snapshot_event(boundary, line_no) {
+                    if line_no > start_line {
                         skipped += 1;
                     }
                     continue;
                 }
                 // Already-synced lines rebuild state but are not re-emitted.
-                if line_offset <= emit_after_line {
+                if line_no <= start_line {
                     continue;
                 }
 
@@ -359,6 +436,7 @@ fn parse_codex_text(
                     timestamp: timestamp.unwrap_or_else(crate::time::now_iso),
                     model: state.current_model.clone(),
                     source: "codex_cli".to_string(),
+                    session_id: session_id_for_usage.clone(),
                     tokens: TokenCounts {
                         input: fresh_input,
                         output: delta.output,
@@ -371,15 +449,295 @@ fn parse_codex_text(
                     iterations: 0,
                 });
             }
+            // Transcript messages — only past the cursor, only for top-level
+            // sessions (sub-agent transcripts are dropped). The guard collapses
+            // the cursor/sub-agent gate into the arm so already-synced and
+            // sub-agent response_items fall straight through to `_`.
+            "response_item" if line_no > start_line && !is_subagent => {
+                if let Some(payload) = value.get("payload") {
+                    messages.extend(extract_codex_messages(payload, &session_id, ts, line_no));
+                }
+            }
             _ => {}
         }
     }
 
-    CodexParsed { events, skipped }
+    let sessions = if !is_subagent && saw_any_event {
+        // Title priority: first real user message (noise-filtered) → cwd basename.
+        // TODO: state_5.sqlite `threads.title` is a richer title source (CC-Switch
+        // loads it via `load_thread_titles_from_db`), but locating/reading the
+        // Codex state DB needs its own discovery path; until that lands, the
+        // first real prompt is the best-effort title (cwd basename fallback).
+        let title_orig = first_user_text
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                Path::new(&project_dir)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .filter(|s| !s.is_empty())
+            });
+        let title_orig = truncate(title_orig.unwrap_or(""), TITLE_MAX);
+        vec![RawSession {
+            id: session_id,
+            source: "codex_cli".to_string(),
+            project_dir,
+            title_orig,
+            started_at,
+            last_active_at,
+        }]
+    } else {
+        Vec::new()
+    };
+
+    FileParseOutcome {
+        events,
+        turn_durations: Vec::new(),
+        sessions,
+        messages,
+        skipped,
+    }
 }
 
 fn is_history_snapshot_event(boundary: Option<i64>, line_offset: i64) -> bool {
     boundary.is_some_and(|b| line_offset < b)
+}
+
+// ---- Session id resolution (session_meta id → filename UUID fallback) ----
+
+/// Resolve the session id: prefer `session_meta.payload.id`, fall back to the
+/// UUID embedded in the rollout filename (`rollout-<ts>-<uuid>.jsonl`), then
+/// the file stem. CC-Switch does the same via a UUID regex; we validate the
+/// trailing `8-4-4-4-12` hex shape by hand to avoid pulling in the regex crate.
+fn resolve_session_id(file: &Path, identity: Option<&CodexSessionIdentity>) -> String {
+    if let Some(id) = identity
+        .map(|i| i.thread_id.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        return id.to_string();
+    }
+    infer_session_id_from_filename(file).unwrap_or_else(|| {
+        file.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string()
+    })
+}
+
+/// Extract a trailing UUID (`8-4-4-4-12` hex) from a filename's stem, e.g.
+/// `rollout-2026-03-06T21-50-12-019cc369-bd7c-7891-b371-7b20b4fe0b18` → the
+/// UUID. Returns None when the stem does not end in a well-formed UUID.
+fn infer_session_id_from_filename(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let stem = name.strip_suffix(".jsonl").unwrap_or(name);
+    let chars: Vec<char> = stem.chars().collect();
+    if chars.len() < 36 {
+        return None;
+    }
+    let tail: String = chars[chars.len() - 36..].iter().collect();
+    if is_uuid_format(&tail) {
+        Some(tail)
+    } else {
+        None
+    }
+}
+
+/// Validate the `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` UUID shape (ASCII hex
+/// digits at every non-dash position). UUIDs are pure ASCII, so byte indexing
+/// on the candidate string is safe.
+fn is_uuid_format(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    bytes.len() == 36
+        && [8usize, 13, 18, 23].iter().all(|&i| bytes[i] == b'-')
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(i, b)| matches!(i, 8 | 13 | 18 | 23) || b.is_ascii_hexdigit())
+}
+
+// ---- Transcript message extraction ----
+//
+// Codex `response_item` events carry the transcript. Mapping to VaultOne's four
+// roles: `message` with role user/assistant → User/Assistant (developer is
+// injected instructions, dropped); `function_call` → Tool with the tool name.
+// `function_call_output` is dropped — the function_call line already records
+// the call, and outputs are often verbose (claude.rs drops user-role
+// tool_results for the same reason: keep the transcript lean).
+
+/// Extract transcript message lines from one `response_item` payload. Each
+/// emitted line gets a stable uuid — the payload's `id` when present, else
+/// `session_id:L<line_no>` — so re-collects append idempotently.
+fn extract_codex_messages(
+    payload: &serde_json::Value,
+    session_id: &str,
+    ts: &str,
+    line_no: i64,
+) -> Vec<SessionMessage> {
+    let payload_type = payload.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    let uuid = payload
+        .get("id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{session_id}:L{line_no}"));
+    let mk =
+        |role: SessionMessageRole, model: Option<String>, name: Option<String>, content: String| {
+            SessionMessage {
+                uuid: uuid.clone(),
+                session_id: session_id.to_string(),
+                role,
+                ts: ts.to_string(),
+                model,
+                name,
+                content,
+            }
+        };
+
+    let mut out = Vec::new();
+    match payload_type {
+        "message" => {
+            let role = payload.get("role").and_then(|r| r.as_str()).unwrap_or("");
+            let mapped = match role {
+                "user" => Some(SessionMessageRole::User),
+                "assistant" => Some(SessionMessageRole::Assistant),
+                // developer messages are injected instructions (e.g. permissions
+                // preamble); they are not user dialog, so drop them.
+                _ => None,
+            };
+            if let Some(role) = mapped {
+                if let Some(content) = payload.get("content") {
+                    let text = truncate(&extract_codex_message_text(content), TRIM_LIMIT);
+                    if !text.is_empty() {
+                        out.push(mk(role, None, None, text));
+                    }
+                }
+            }
+        }
+        "function_call" => {
+            let name = payload
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("tool")
+                .to_string();
+            // Arguments are a JSON string; keep a trimmed copy (lean, like
+            // claude's tool_use input cap).
+            let args = payload
+                .get("arguments")
+                .and_then(|v| v.as_str())
+                .map(|s| truncate(s, 1024))
+                .unwrap_or_default();
+            out.push(mk(SessionMessageRole::Tool, None, Some(name), args));
+        }
+        // function_call_output / unknown payload types → drop (see note above).
+        _ => {}
+    }
+    out
+}
+
+/// Flatten a Codex message `content` field into plain text. The value is either
+/// a string (plain user text) or an array of items whose text lives under one
+/// of the `text` / `input_text` / `output_text` keys (Codex's content-block
+/// shape, distinct from Claude's `{"type":"text","text":…}` arrays).
+fn extract_codex_message_text(content: &serde_json::Value) -> String {
+    match content {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .filter_map(|item| {
+                ["text", "input_text", "output_text"]
+                    .iter()
+                    .find_map(|key| item.get(key).and_then(|v| v.as_str()))
+                    .map(str::to_string)
+                    .filter(|s| !s.trim().is_empty())
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+// ---- Original-title extraction (ported from CC-Switch) ----
+//
+// Codex has no `summary`/`customTitle` event; the original title is the first
+// real user message, with two injected-noise shapes skipped so the title is the
+// actual prompt:
+//   - `# AGENTS.md` preamble and `<environment_context>` blocks;
+//   - VS Code's `# Context from my IDE setup:` wrapper — the real prompt lives
+//     in its LAST `## My request for Codex:` section.
+
+/// VS Code IDE-context wrapper prefix; the real prompt is nested inside.
+const VSCODE_CONTEXT_PREFIX: &str = "# Context from my IDE setup:";
+/// Lowercased heading marker for the inline IDE-request section.
+const CODEX_REQUEST_MARKER: &str = "my request for codex";
+
+/// Decide whether a user message is a usable title candidate, and extract the
+/// real prompt from a VS Code IDE-context wrapper when present. Returns None
+/// for known injection noise or an IDE-context block with no request section
+/// (so the caller keeps scanning for the next user message).
+fn title_candidate_from_user_message(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with("# AGENTS.md")
+        || trimmed.starts_with("<environment_context>")
+    {
+        return None;
+    }
+    if trimmed.starts_with(VSCODE_CONTEXT_PREFIX) {
+        return extract_codex_prompt_from_ide_context(trimmed);
+    }
+    Some(trimmed.to_string())
+}
+
+/// Extract the real prompt from a VS Code IDE-context block: the body of the
+/// LAST `## My request for Codex:` heading. Earlier matches can be headings
+/// inside the active selection / open file content. Ported from CC-Switch
+/// (which documents this best-effort trade-off in its tests).
+fn extract_codex_prompt_from_ide_context(text: &str) -> Option<String> {
+    let normalized = text.replace("\r\n", "\n");
+    let lines: Vec<&str> = normalized.lines().collect();
+    let mut prompt: Option<String> = None;
+    for (index, line) in lines.iter().enumerate() {
+        let Some(inline_prompt) = codex_request_heading_payload(line) else {
+            continue;
+        };
+        if !inline_prompt.is_empty() {
+            prompt = Some(inline_prompt.to_string());
+            continue;
+        }
+        let following = lines[index + 1..].join("\n").trim().to_string();
+        prompt = (!following.is_empty()).then_some(following);
+    }
+    prompt
+}
+
+/// If `line` is a `## My request for Codex[:…]` heading, return the inline text
+/// after the separator (or `""` when the prompt is on the following lines).
+fn codex_request_heading_payload(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('#') {
+        return None;
+    }
+    let heading = trimmed.trim_start_matches('#').trim_start();
+    let lowered = heading.to_ascii_lowercase();
+    if !lowered.starts_with(CODEX_REQUEST_MARKER) {
+        return None;
+    }
+    // CODEX_REQUEST_MARKER is ASCII, so byte indexing into `heading` is safe.
+    let suffix = heading[CODEX_REQUEST_MARKER.len()..].trim_start();
+    if suffix.is_empty() {
+        return Some("");
+    }
+    let Some(separator) = suffix.chars().next() else {
+        return Some("");
+    };
+    if !matches!(separator, ':' | '：' | '-' | '—') {
+        return None;
+    }
+    Some(
+        suffix
+            .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, ':' | '：' | '-' | '—'))
+            .trim(),
+    )
 }
 
 /// Recursive `.jsonl` discovery with a depth cap (Codex nests `YYYY/MM/DD`).
@@ -816,5 +1174,450 @@ mod tests {
         assert_eq!(r2.events.len(), 1);
         assert_eq!(r2.events[0].tokens.input, 200);
         assert_eq!(r2.events[0].tokens.output, 20);
+    }
+
+    // ---- session + transcript extraction (Codex, this phase) ----
+
+    /// `session_meta` with cwd + a first user message + token usage yields one
+    /// RawSession (id/cwd/title/timestamps) and stamps session_id on RawUsage.
+    fn codex_session_meta_cwd(thread_id: &str, cwd: &str) -> serde_json::Value {
+        serde_json::json!({
+            "timestamp": "2026-07-10T03:00:00Z",
+            "type": "session_meta",
+            "payload": { "id": thread_id, "session_id": thread_id, "cwd": cwd, "source": "cli" }
+        })
+    }
+
+    fn codex_response_message(
+        id: &str,
+        role: &str,
+        ts: &str,
+        content: serde_json::Value,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "timestamp": ts,
+            "type": "response_item",
+            "payload": { "type": "message", "role": role, "id": id, "content": content }
+        })
+    }
+
+    fn codex_function_call(id: &str, ts: &str, name: &str, arguments: &str) -> serde_json::Value {
+        serde_json::json!({
+            "timestamp": ts,
+            "type": "response_item",
+            "payload": { "type": "function_call", "id": id, "name": name, "arguments": arguments }
+        })
+    }
+
+    #[test]
+    fn codex_emits_raw_session_and_stamps_usage_session_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sessions").join("sess-xyz.jsonl");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        write_jsonl(
+            &file,
+            &[
+                codex_session_meta_cwd("sess-xyz", "/home/me/proj"),
+                codex_turn_context("gpt-5.6-sol"),
+                codex_response_message(
+                    "m_u1",
+                    "user",
+                    "2026-07-10T03:00:10Z",
+                    serde_json::json!("Build a thing"),
+                ),
+                codex_token_count(100, 50, 10),
+            ],
+        );
+        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+
+        // One session, system data from the full file.
+        assert_eq!(result.sessions.len(), 1);
+        let s = &result.sessions[0];
+        assert_eq!(s.id, "sess-xyz");
+        assert_eq!(s.source, "codex_cli");
+        assert_eq!(s.project_dir, "/home/me/proj");
+        assert_eq!(s.title_orig, "Build a thing"); // first user message
+        assert_eq!(s.started_at, "2026-07-10T03:00:00Z"); // first line ts
+        assert_eq!(s.last_active_at, "2026-07-10T03:00:02Z"); // last line ts
+
+        // Usage carries the session_id (was empty before this phase).
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].session_id, "sess-xyz");
+    }
+
+    #[test]
+    fn codex_session_title_falls_back_to_cwd_basename() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sessions").join("s.jsonl");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        // Assistant-only content (no user message) → title = cwd basename.
+        write_jsonl(
+            &file,
+            &[
+                codex_session_meta_cwd("s1", "/home/me/O_VaultOne"),
+                codex_response_message(
+                    "m_a1",
+                    "assistant",
+                    "2026-07-10T03:00:10Z",
+                    serde_json::json!([{"type":"output_text","text":"Sure"}]),
+                ),
+            ],
+        );
+        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(result.sessions[0].title_orig, "O_VaultOne");
+        assert_eq!(result.sessions[0].project_dir, "/home/me/O_VaultOne");
+    }
+
+    /// Title skips `# AGENTS.md` preamble and `<environment_context>` injection,
+    /// landing on the first real user message (mirrors CC-Switch).
+    #[test]
+    fn codex_session_title_skips_injection_noise() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sessions").join("s.jsonl");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        write_jsonl(
+            &file,
+            &[
+                codex_session_meta_cwd("s1", "/tmp/project"),
+                codex_response_message(
+                    "m_u_agents",
+                    "user",
+                    "2026-07-10T03:00:10Z",
+                    serde_json::json!(
+                        "# AGENTS.md instructions for /tmp/project\n<INSTRUCTIONS>Do stuff</INSTRUCTIONS>"
+                    ),
+                ),
+                codex_response_message(
+                    "m_u_env",
+                    "user",
+                    "2026-07-10T03:00:11Z",
+                    serde_json::json!("<environment_context>\n  <cwd>/tmp/project</cwd>\n</environment_context>"),
+                ),
+                codex_response_message(
+                    "m_u_real",
+                    "user",
+                    "2026-07-10T03:00:12Z",
+                    serde_json::json!("Fix the login bug"),
+                ),
+            ],
+        );
+        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(result.sessions[0].title_orig, "Fix the login bug");
+    }
+
+    /// VS Code IDE-context wrapper: the real prompt is the body of the last
+    /// `## My request for Codex:` section.
+    #[test]
+    fn codex_session_title_extracts_vscode_ide_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sessions").join("s.jsonl");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let ide = "# Context from my IDE setup:\n\n## Active file: src/main.ts\n\n## My request for Codex:\nFix the session title preview";
+        write_jsonl(
+            &file,
+            &[
+                codex_session_meta_cwd("s1", "/tmp/project"),
+                codex_response_message(
+                    "m_u1",
+                    "user",
+                    "2026-07-10T03:00:10Z",
+                    serde_json::json!(ide),
+                ),
+            ],
+        );
+        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(
+            result.sessions[0].title_orig,
+            "Fix the session title preview"
+        );
+    }
+
+    /// IDE-context wrapper with NO request section is skipped, and the title
+    /// falls through to the next real user message.
+    #[test]
+    fn codex_session_title_skips_vscode_context_without_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sessions").join("s.jsonl");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let ide = "# Context from my IDE setup:\n\n## Active file: src/main.ts";
+        write_jsonl(
+            &file,
+            &[
+                codex_session_meta_cwd("s1", "/tmp/project"),
+                codex_response_message(
+                    "m_u1",
+                    "user",
+                    "2026-07-10T03:00:10Z",
+                    serde_json::json!(ide),
+                ),
+                codex_response_message(
+                    "m_u2",
+                    "user",
+                    "2026-07-10T03:00:11Z",
+                    serde_json::json!("Fix the login bug"),
+                ),
+            ],
+        );
+        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(result.sessions[0].title_orig, "Fix the login bug");
+    }
+
+    /// Transcript: user/assistant text kept; function_call → a Tool line with
+    /// the tool name; function_call_output dropped (lean transcript, like
+    /// claude.rs dropping user-role tool_results).
+    #[test]
+    fn codex_transcript_keeps_text_and_tool_call_drops_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sessions").join("s.jsonl");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        write_jsonl(
+            &file,
+            &[
+                codex_session_meta_cwd("s1", "/tmp"),
+                codex_response_message(
+                    "m_u1",
+                    "user",
+                    "2026-07-10T03:00:10Z",
+                    serde_json::json!("list files"),
+                ),
+                codex_function_call(
+                    "call_1",
+                    "2026-07-10T03:00:11Z",
+                    "shell",
+                    r#"{"cmd":["ls"]}"#,
+                ),
+                serde_json::json!({
+                    "timestamp": "2026-07-10T03:00:12Z",
+                    "type": "response_item",
+                    "payload": { "type": "function_call_output", "id": "out_1", "call_id": "call_1", "output": "file1.txt\nfile2.txt" }
+                }),
+                codex_response_message(
+                    "m_a1",
+                    "assistant",
+                    "2026-07-10T03:00:13Z",
+                    serde_json::json!([{"type":"output_text","text":"Done."}]),
+                ),
+            ],
+        );
+        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+
+        let roles: Vec<_> = result.messages.iter().map(|m| m.role).collect();
+        use crate::model::SessionMessageRole::*;
+        assert_eq!(roles, vec![User, Tool, Assistant], "output dropped");
+
+        let user = result.messages.iter().find(|m| m.role == User).unwrap();
+        assert_eq!(user.content, "list files");
+        assert_eq!(user.uuid, "m_u1");
+
+        let tool = result.messages.iter().find(|m| m.role == Tool).unwrap();
+        assert_eq!(tool.name.as_deref(), Some("shell"));
+        assert!(tool.content.contains("ls"));
+        assert_eq!(tool.uuid, "call_1");
+
+        let asst = result
+            .messages
+            .iter()
+            .find(|m| m.role == Assistant)
+            .unwrap();
+        assert_eq!(asst.content, "Done.");
+        assert_eq!(asst.uuid, "m_a1");
+
+        // Every message carries the session_id.
+        assert!(result.messages.iter().all(|m| m.session_id == "s1"));
+    }
+
+    /// Message uuid is stable (idempotent): a re-collect that only appends one
+    /// line emits just that line, and existing lines are not re-emitted.
+    #[test]
+    fn codex_messages_incremental_past_cursor_with_stable_uuid() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sessions").join("s.jsonl");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        write_jsonl(
+            &file,
+            &[
+                codex_session_meta_cwd("s1", "/tmp"),
+                codex_response_message(
+                    "m_u1",
+                    "user",
+                    "2026-07-10T03:00:10Z",
+                    serde_json::json!("first"),
+                ),
+            ],
+        );
+        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let (r1, progress) = p.collect_incremental(&ScanProgress::new()).unwrap();
+        assert_eq!(r1.messages.len(), 1);
+        assert_eq!(r1.messages[0].uuid, "m_u1");
+        assert_eq!(r1.sessions[0].started_at, "2026-07-10T03:00:00Z");
+
+        // Append a second user line — mtime bump past the gate.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&file)
+                .unwrap();
+            writeln!(
+                f,
+                "{}",
+                codex_response_message(
+                    "m_u2",
+                    "user",
+                    "2026-07-10T03:05:00Z",
+                    serde_json::json!("second")
+                )
+            )
+            .unwrap();
+        }
+        let (r2, _) = p.collect_incremental(&progress).unwrap();
+        // Only the appended line is a new message.
+        assert_eq!(r2.messages.len(), 1);
+        assert_eq!(r2.messages[0].uuid, "m_u2");
+        assert_eq!(r2.messages[0].content, "second");
+        // Meta still covers the full file: started_at from line 1, last_active
+        // from the appended line.
+        assert_eq!(r2.sessions[0].started_at, "2026-07-10T03:00:00Z");
+        assert_eq!(r2.sessions[0].last_active_at, "2026-07-10T03:05:00Z");
+    }
+
+    /// Sub-agent sessions emit usage (their own post-boundary delta, empty
+    /// session_id) but NO RawSession and NO transcript messages.
+    #[test]
+    fn codex_subagent_session_emits_no_session_and_no_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sessions").join("child.jsonl");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        write_jsonl(
+            &file,
+            &[
+                codex_session_meta("child", "parent"), // source.subagent ⇒ sub-agent
+                codex_turn_context("gpt-5.6-sol"),
+                codex_response_message(
+                    "m_u1",
+                    "user",
+                    "2026-07-10T03:00:10Z",
+                    serde_json::json!("Inspect the project"),
+                ),
+                codex_token_count(100, 50, 10),
+            ],
+        );
+        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert!(result.sessions.is_empty(), "sub-agent emits no session");
+        assert!(result.messages.is_empty(), "sub-agent emits no transcript");
+        // Usage still emitted, with empty session_id (no top-level session).
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].session_id, "");
+    }
+
+    /// Without `session_meta.id`, the session id falls back to the UUID embedded
+    /// in the rollout filename (`rollout-<ts>-<uuid>.jsonl`).
+    #[test]
+    fn codex_session_id_falls_back_to_filename_uuid() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir
+            .path()
+            .join("sessions")
+            .join("rollout-2026-03-06T21-50-12-019cc369-bd7c-7891-b371-7b20b4fe0b18.jsonl");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        // session_meta with no `id` — only cwd.
+        let meta = serde_json::json!({
+            "timestamp": "2026-03-06T21:50:12Z",
+            "type": "session_meta",
+            "payload": { "cwd": "/tmp/project", "source": "cli" }
+        });
+        write_jsonl(
+            &file,
+            &[
+                meta,
+                codex_response_message(
+                    "m_u1",
+                    "user",
+                    "2026-03-06T21:50:13Z",
+                    serde_json::json!("hello"),
+                ),
+            ],
+        );
+        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(result.sessions.len(), 1);
+        assert_eq!(
+            result.sessions[0].id,
+            "019cc369-bd7c-7891-b371-7b20b4fe0b18"
+        );
+    }
+
+    // ---- pure helper unit tests ----
+
+    #[test]
+    fn codex_is_uuid_format_validates_8_4_4_4_12() {
+        assert!(is_uuid_format("019cc369-bd7c-7891-b371-7b20b4fe0b18"));
+        assert!(!is_uuid_format("not-a-uuid"));
+        assert!(!is_uuid_format("019cc369-bd7c-7891-b371-7b20b4fe0")); // too short
+        assert!(!is_uuid_format("019cc369xbd7cx7891xb371x7b20b4fe0b18")); // dashes wrong
+        assert!(!is_uuid_format("019cc369-bd7c-7891-b371-7b20b4fe0b1z")); // non-hex
+    }
+
+    #[test]
+    fn codex_infer_session_id_from_filename_extracts_trailing_uuid() {
+        let p = Path::new("rollout-2026-03-06T21-50-12-019cc369-bd7c-7891-b371-7b20b4fe0b18.jsonl");
+        assert_eq!(
+            infer_session_id_from_filename(p).as_deref(),
+            Some("019cc369-bd7c-7891-b371-7b20b4fe0b18")
+        );
+        // No UUID tail ⇒ None.
+        assert!(infer_session_id_from_filename(Path::new("no-uuid-here.jsonl")).is_none());
+    }
+
+    #[test]
+    fn codex_title_candidate_filters_noise_and_extracts_ide_request() {
+        assert_eq!(
+            title_candidate_from_user_message("  How do I deploy?  ").as_deref(),
+            Some("How do I deploy?")
+        );
+        assert!(title_candidate_from_user_message("# AGENTS.md stuff").is_none());
+        assert!(title_candidate_from_user_message("<environment_context>").is_none());
+        assert!(title_candidate_from_user_message("   ").is_none());
+        // IDE wrapper with no request ⇒ None (fall through to next message).
+        let ide_no_req = "# Context from my IDE setup:\n\n## Active file: x.ts";
+        assert!(title_candidate_from_user_message(ide_no_req).is_none());
+        // Inline heading form.
+        let ide_inline = "# Context from my IDE setup:\n\n## My request for Codex: Fix the TOC";
+        assert_eq!(
+            title_candidate_from_user_message(ide_inline).as_deref(),
+            Some("Fix the TOC")
+        );
+        // Block heading form (prompt on following lines); last heading wins.
+        let ide_block =
+            "# Context from my IDE setup:\n\n## My request for Codex:\nUse the real request";
+        assert_eq!(
+            title_candidate_from_user_message(ide_block).as_deref(),
+            Some("Use the real request")
+        );
+    }
+
+    #[test]
+    fn codex_extract_message_text_handles_string_and_array() {
+        assert_eq!(
+            extract_codex_message_text(&serde_json::json!("plain")),
+            "plain"
+        );
+        let arr = serde_json::json!([
+            { "type": "output_text", "text": "Hello" },
+            { "type": "input_text", "text": "World" }
+        ]);
+        assert_eq!(extract_codex_message_text(&arr), "Hello\nWorld");
+        // Unknown item shapes contribute nothing.
+        let mixed = serde_json::json!([{ "type": "tool_use", "name": "x" }, { "text": "kept" }]);
+        assert_eq!(extract_codex_message_text(&mixed), "kept");
+        assert_eq!(extract_codex_message_text(&serde_json::Value::Null), "");
     }
 }

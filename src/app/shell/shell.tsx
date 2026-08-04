@@ -12,6 +12,7 @@ import {
   Gauge,
   Library,
   List,
+  MessagesSquare,
   PanelLeftClose,
   PanelLeftOpen,
   Settings,
@@ -37,6 +38,7 @@ import { useUpdateCheck } from "./use-update-check"
 
 const NAV: Array<{ id: ViewId; key: string; icon: typeof Gauge }> = [
   { id: "dashboard", key: "nav.dashboard", icon: Gauge },
+  { id: "sessions", key: "nav.sessions", icon: MessagesSquare },
   { id: "logs", key: "nav.logs", icon: List },
   { id: "pricing", key: "nav.pricing", icon: Tags },
   { id: "library", key: "nav.library", icon: Library },

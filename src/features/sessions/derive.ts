@@ -1,0 +1,195 @@
+// Pure derivations for the sessions browser: tab → backend filter, sort order,
+// substring search, and the two-track grouping (local / synced) that drives the
+// sidebar buckets. Extracted from the hook so each rule is testable in
+// isolation (architecture.md: "关键不变量用代码表达") — the hook wires these to
+// React state + RTK Query, these own the math.
+
+import type {
+  SessionFilter,
+  SessionGroup,
+  SessionRow,
+} from "@/types/generated/bindings"
+
+/**
+ * The two top-level tabs (ADR 0002). Local = this device's collected sessions
+ * (favorited ones still listed, star lit). Favorites = every favorited session
+ * across all devices.
+ */
+export type SessionTab = "local" | "favorites"
+
+/**
+ * The two grouping tracks. The Local tab groups by `local_group_id`
+ * (device-private, never enters git); the Favorites tab groups by
+ * `synced_group_id` (per-device groups.json, git-synced). A session may sit in
+ * different groups across the two tracks — two independent organizations.
+ */
+export type GroupTrack = "local" | "synced"
+
+/**
+ * Sidebar selection sentinels. `ALL_GROUPS` renders every session in the tab;
+ * `UNGROUPED` renders only those without a group in this track; a real group id
+ * filters to that one bucket. Lives here so the view and hook share one definition.
+ */
+export const ALL_GROUPS = "__all__"
+export const UNGROUPED = "__ungrouped__"
+
+/** Result of grouping a flat session list by one track. */
+export interface GroupedSessions {
+  /** One entry per group that has at least one session, in group-list order. */
+  groups: { group: SessionGroup; sessions: SessionRow[] }[]
+  /** Sessions whose track group id is empty or points to a missing group. */
+  ungrouped: SessionRow[]
+}
+
+/**
+ * Extra filter dimensions the sessions toolbar exposes on top of the tab. All
+ * optional — omitted/empty values mean "no constraint". Mirrors the logs view's
+ * toolbar (time range · source · device) so the two data views filter the same
+ * way; model filtering is intentionally absent (TODO — a session may span
+ * several models, so the right grain is unclear).
+ */
+export interface SessionListFilter {
+  /** Provider tag, e.g. "claude_code". */
+  source?: string | null
+  /** Inclusive lower bound on `last_active_at` (ISO8601). */
+  fromTs?: string | null
+  /** Inclusive upper bound on `last_active_at` (ISO8601). */
+  toTs?: string | null
+  /**
+   * Device id to narrow the Favorites tab ("all devices" by default). Ignored
+   * on the Local tab — that tab is always this device.
+   */
+  deviceScope?: string | null
+}
+
+/**
+ * Build the backend `SessionFilter` for a tab. Local → only this device's
+ * sessions (favorited or not); Favorites → only favorited, across all devices.
+ * `null` fields mean "no constraint" (see SessionFilter docs). Group fields stay
+ * `null` — grouping is a client-side render concern (groupSessionsByGroup), so
+ * the backend returns the whole tab slice once and the sidebar filters locally.
+ *
+ * `filter.source` / `filter.fromTs` / `filter.toTs` narrow the tab slice and are
+ * applied backend-side (single source of truth — never re-applied client-side).
+ * `filter.deviceScope` narrows the Favorites tab to one device; on the Local
+ * tab it is ignored (always this device). The substring search box is a separate
+ * client-side concern (filterSessionsByQuery).
+ */
+export function sessionTabFilter(
+  tab: SessionTab,
+  selfDeviceId: string,
+  filter: SessionListFilter = {},
+): SessionFilter {
+  const src = filter.source || null
+  const fromTs = filter.fromTs || null
+  const toTs = filter.toTs || null
+  if (tab === "local") {
+    return {
+      device_scope: selfDeviceId,
+      source: src,
+      favorited: null,
+      local_group_id: null,
+      synced_group_id: null,
+      from_ts: fromTs,
+      to_ts: toTs,
+    }
+  }
+  // Favorites tab: deviceScope narrows from "all devices" to one.
+  return {
+    device_scope: filter.deviceScope || null,
+    source: src,
+    favorited: true,
+    local_group_id: null,
+    synced_group_id: null,
+    from_ts: fromTs,
+    to_ts: toTs,
+  }
+}
+
+/**
+ * Sort sessions by `last_active_at` descending (most recent first). Missing or
+ * unparseable timestamps sort last. Returns a new array — input is not mutated.
+ */
+export function sortSessions(rows: SessionRow[]): SessionRow[] {
+  return [...rows].sort(
+    (a, b) => toMillis(b.last_active_at) - toMillis(a.last_active_at),
+  )
+}
+
+function toMillis(ts: string | null | undefined): number {
+  if (!ts) return 0
+  const n = Date.parse(ts)
+  return Number.isNaN(n) ? 0 : n
+}
+
+/**
+ * Case-insensitive substring filter over title and project path. An empty or
+ * whitespace-only query returns the input unchanged (no constraint) so callers
+ * can pipe through unconditionally.
+ */
+export function filterSessionsByQuery(
+  rows: SessionRow[],
+  q: string,
+): SessionRow[] {
+  const needle = q.trim().toLowerCase()
+  if (!needle) return rows
+  return rows.filter((r) => {
+    const title = (r.title ?? "").toLowerCase()
+    const project = (r.project_dir ?? "").toLowerCase()
+    return title.includes(needle) || project.includes(needle)
+  })
+}
+
+/**
+ * Bucket sessions by one grouping track. A session whose `local_group_id`
+ * (local track) or `synced_group_id` (synced track) is empty OR references a
+ * group id not present in `groups` falls into `ungrouped` — a stale id left by
+ * a deleted group is treated as ungrouped, never silently dropped. Input order
+ * is preserved within each bucket — pass pre-sorted rows to get sorted buckets.
+ * Groups with zero sessions are omitted here (empty groups still appear in the
+ * sidebar, sourced from the raw group list).
+ */
+export function groupSessionsByGroup(
+  rows: SessionRow[],
+  groups: SessionGroup[],
+  track: GroupTrack,
+): GroupedSessions {
+  const trackGroups = groups.filter((g) => g.kind === track)
+  const knownIds = new Set(trackGroups.map((g) => g.id))
+  const buckets = new Map<string, SessionRow[]>()
+  const ungrouped: SessionRow[] = []
+  for (const row of rows) {
+    const gid = track === "local" ? row.local_group_id : row.synced_group_id
+    if (gid && knownIds.has(gid)) {
+      const arr = buckets.get(gid)
+      if (arr) arr.push(row)
+      else buckets.set(gid, [row])
+    } else {
+      ungrouped.push(row)
+    }
+  }
+  return {
+    groups: trackGroups
+      .filter((g) => buckets.has(g.id))
+      .map((g) => ({ group: g, sessions: buckets.get(g.id) ?? [] })),
+    ungrouped,
+  }
+}
+
+/**
+ * Resolve the sidebar selection to the sessions to render. `ALL_GROUPS` → every
+ * session in the tab (pass the full sorted+filtered list as `allRows` so the
+ * flat order is preserved, not the grouped concatenation); `UNGROUPED` → only
+ * the ungrouped bucket; a real group id → that bucket (empty if unknown).
+ */
+export function selectSessions(
+  allRows: SessionRow[],
+  grouped: GroupedSessions,
+  selectedGroupId: string,
+): SessionRow[] {
+  if (selectedGroupId === ALL_GROUPS) return allRows
+  if (selectedGroupId === UNGROUPED) return grouped.ungrouped
+  return (
+    grouped.groups.find((g) => g.group.id === selectedGroupId)?.sessions ?? []
+  )
+}

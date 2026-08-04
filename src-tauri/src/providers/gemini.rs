@@ -1,13 +1,13 @@
 //! Gemini CLI (`~/.gemini`) session-log provider.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::{AppError, AppResult};
-use crate::model::{ServerToolUse, TokenCounts};
+use crate::model::{RawSession, ServerToolUse, SessionMessage, SessionMessageRole, TokenCounts};
 
 use super::{
-    collect_jsonl_incremental, normalize_cache_inclusive, CollectResult, FileParseOutcome,
-    Provider, RawUsage, ScanProgress, ScanProgressDelta,
+    collect_jsonl_incremental, normalize_cache_inclusive, truncate, CollectResult,
+    FileParseOutcome, Provider, RawUsage, ScanProgress, ScanProgressDelta, TITLE_MAX, TRIM_LIMIT,
 };
 
 /// Gemini CLI (`~/.gemini`) session-log provider.
@@ -86,6 +86,8 @@ impl Provider for GeminiCliProvider {
 
     fn parse(&self, files: &[PathBuf]) -> AppResult<CollectResult> {
         let mut events = Vec::new();
+        let mut sessions = Vec::new();
+        let mut messages = Vec::new();
         let mut skipped = 0u32;
         for file in files {
             let text = match std::fs::read_to_string(file) {
@@ -95,13 +97,20 @@ impl Provider for GeminiCliProvider {
                     continue;
                 }
             };
-            events.extend(parse_gemini_text(&text));
+            let outcome = fold_file(file, &text);
+            events.extend(outcome.events);
+            sessions.extend(outcome.sessions);
+            messages.extend(outcome.messages);
+            skipped += outcome.skipped;
         }
         events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
+        sessions.sort_by(|a, b| (&a.last_active_at, &a.id).cmp(&(&b.last_active_at, &a.id)));
         Ok(CollectResult {
             source: self.name().to_string(),
             events,
             turn_durations: Vec::new(),
+            sessions,
+            messages,
             files_scanned: files.len() as u32,
             lines_skipped: skipped,
         })
@@ -119,14 +128,10 @@ impl Provider for GeminiCliProvider {
         &self,
         progress: &ScanProgress,
     ) -> AppResult<(CollectResult, ScanProgressDelta)> {
-        collect_jsonl_incremental(self, progress, |_file, text, _start_line| {
+        collect_jsonl_incremental(self, progress, |file, text, _start_line| {
             // Single JSON object per file ⇒ no line cursor; `start_line` is
             // irrelevant and the whole text is parsed on every gate pass.
-            FileParseOutcome {
-                events: parse_gemini_text(text),
-                turn_durations: Vec::new(),
-                skipped: 0,
-            }
+            fold_file(file, text)
         })
     }
 }
@@ -155,76 +160,246 @@ fn parse_gemini_tokens(tokens: &serde_json::Value) -> GeminiTokens {
     }
 }
 
-/// Parse one Gemini session file's JSON text into raw events.
-fn parse_gemini_text(text: &str) -> Vec<RawUsage> {
+/// Fold one Gemini session file's text into a per-file parse outcome. Three
+/// streams from a single forward pass over the JSON `messages` array:
+///   - per-call usages (`type:"gemini"` with a usable `tokens` object);
+///   - one [`RawSession`] (system data: id / source / project_dir / title /
+///     timestamps) — meta is rebuilt every pass so a re-collect refreshes it;
+///   - transcript [`SessionMessage`]s (`type:"user"`→User, `type:"gemini"`→
+///     Assistant; `info`/`error`/unknown skipped).
+///
+/// `session_id` (the JSON `sessionId`) is stamped onto every emitted
+/// [`RawUsage`] and [`SessionMessage`]. Gemini rewrites the whole JSON per edit
+/// (not append), so there is no line cursor — the shared driver's mtime gate
+/// triggers a full re-parse, and the ledger dedups already-seen message ids.
+fn fold_file(file: &Path, text: &str) -> FileParseOutcome {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
-        return Vec::new();
+        return FileParseOutcome {
+            events: Vec::new(),
+            turn_durations: Vec::new(),
+            sessions: Vec::new(),
+            messages: Vec::new(),
+            skipped: 1,
+        };
     };
     let session_id = value
         .get("sessionId")
         .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    let Some(messages) = value.get("messages").and_then(|v| v.as_array()) else {
-        return Vec::new();
-    };
+        .unwrap_or("unknown")
+        .to_string();
+    let project_dir = read_project_root(file);
+    let started_at = value
+        .get("startTime")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let last_active_at = value
+        .get("lastUpdated")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
     let mut events = Vec::new();
-    for msg in messages {
-        if msg.get("type").and_then(|t| t.as_str()) != Some("gemini") {
-            continue;
+    let mut messages: Vec<SessionMessage> = Vec::new();
+    let mut title_orig = String::new();
+
+    if let Some(msgs) = value.get("messages").and_then(|v| v.as_array()) {
+        for msg in msgs {
+            let typ = msg.get("type").and_then(|t| t.as_str());
+
+            // Original title: first user message's content (string or first
+            // text block), truncated at TITLE_MAX.
+            if title_orig.is_empty() && typ == Some("user") {
+                if let Some(t) = first_content_text(msg.get("content")) {
+                    let t = t.trim();
+                    if !t.is_empty() {
+                        title_orig = truncate(t, TITLE_MAX);
+                    }
+                }
+            }
+
+            // Per-call usage (type:"gemini" with a usable tokens object).
+            if typ == Some("gemini") {
+                if let Some(u) = extract_usage(msg, &session_id) {
+                    events.push(u);
+                }
+            }
+
+            // Transcript message (user/gemini only; info/error/unknown skipped).
+            let role = match typ {
+                Some("user") => Some(SessionMessageRole::User),
+                Some("gemini") => Some(SessionMessageRole::Assistant),
+                _ => None, // info / error / unknown → skip
+            };
+            if let Some(role) = role {
+                let Some(uuid) = msg
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                else {
+                    continue;
+                };
+                let content = truncate(&join_content(msg.get("content")), TRIM_LIMIT);
+                if content.is_empty() {
+                    continue;
+                }
+                messages.push(SessionMessage {
+                    uuid: uuid.to_string(),
+                    session_id: session_id.clone(),
+                    role,
+                    ts: msg
+                        .get("timestamp")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    model: if typ == Some("gemini") {
+                        msg.get("model")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                    } else {
+                        None
+                    },
+                    name: first_tool_name(msg),
+                    content,
+                });
+            }
         }
-        let Some(tokens_obj) = msg.get("tokens") else {
-            continue;
-        };
-        if !tokens_obj.is_object() {
-            continue;
-        }
-        let tokens = parse_gemini_tokens(tokens_obj);
-        if tokens.is_all_zero() {
-            continue;
-        }
-        // Gemini's `input` is cache-inclusive (it already contains `cached`);
-        // normalize to fresh so RawUsage.input matches the fresh-input contract.
-        let (fresh_input, clamped_cache_read) =
-            normalize_cache_inclusive(tokens.input, tokens.cached);
-        let output = tokens.output + tokens.thoughts;
-        // A row that normalizes to nothing (e.g. a malformed cache-only row
-        // whose `cached` exceeds its inclusive `input`, clamped down to 0)
-        // carries no billable tokens — skip it rather than emit a zero event.
-        if fresh_input == 0 && output == 0 && clamped_cache_read == 0 {
-            continue;
-        }
-        let message_id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
-        let model = msg
-            .get("model")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        let timestamp = msg
-            .get("timestamp")
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
-        events.push(RawUsage {
-            uuid: format!("gemini:{session_id}:{message_id}"),
-            timestamp: timestamp.unwrap_or_else(crate::time::now_iso),
-            model: model.to_string(),
-            source: "gemini_cli".to_string(),
-            tokens: TokenCounts {
-                input: fresh_input,
-                output,
-                cache_creation: 0,
-                cache_read: clamped_cache_read,
-            },
-            server_tool_use: ServerToolUse::default(),
-            stop_reason: String::new(),
-            service_tier: String::new(),
-            iterations: 0,
-        });
     }
-    events
+
+    FileParseOutcome {
+        events,
+        turn_durations: Vec::new(),
+        sessions: vec![RawSession {
+            id: session_id,
+            source: "gemini_cli".to_string(),
+            project_dir,
+            title_orig,
+            started_at,
+            last_active_at,
+        }],
+        messages,
+        skipped: 0,
+    }
+}
+
+/// Extract a per-call [`RawUsage`] from a `type:"gemini"` message carrying a
+/// usable `tokens` object. Returns `None` for missing/non-object tokens,
+/// all-zero tokens, or a row that normalizes to nothing (cache-only whose
+/// `cached` exceeds its inclusive `input`). `session_id` is stamped onto the
+/// result so usage rows carry their session grouping key.
+fn extract_usage(msg: &serde_json::Value, session_id: &str) -> Option<RawUsage> {
+    let tokens_obj = msg.get("tokens")?;
+    if !tokens_obj.is_object() {
+        return None;
+    }
+    let tokens = parse_gemini_tokens(tokens_obj);
+    if tokens.is_all_zero() {
+        return None;
+    }
+    // Gemini's `input` is cache-inclusive (it already contains `cached`);
+    // normalize to fresh so RawUsage.input matches the fresh-input contract.
+    let (fresh_input, clamped_cache_read) = normalize_cache_inclusive(tokens.input, tokens.cached);
+    let output = tokens.output + tokens.thoughts;
+    // A row that normalizes to nothing carries no billable tokens — skip it.
+    if fresh_input == 0 && output == 0 && clamped_cache_read == 0 {
+        return None;
+    }
+    let message_id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let model = msg
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let timestamp = msg
+        .get("timestamp")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    Some(RawUsage {
+        uuid: format!("gemini:{session_id}:{message_id}"),
+        timestamp: timestamp.unwrap_or_else(crate::time::now_iso),
+        model: model.to_string(),
+        source: "gemini_cli".to_string(),
+        session_id: session_id.to_string(),
+        tokens: TokenCounts {
+            input: fresh_input,
+            output,
+            cache_creation: 0,
+            cache_read: clamped_cache_read,
+        },
+        server_tool_use: ServerToolUse::default(),
+        stop_reason: String::new(),
+        service_tier: String::new(),
+        iterations: 0,
+    })
+}
+
+/// Read the sibling `.project_root` file (at `tmp/<hash>/.project_root`, two
+/// levels up from the session file) for the session's working directory.
+/// Returns an empty string when the file is absent or unreadable — Gemini does
+/// not record `cwd` inside the session JSON.
+fn read_project_root(file: &Path) -> String {
+    let Some(hash_dir) = file.parent().and_then(|p| p.parent()) else {
+        return String::new();
+    };
+    std::fs::read_to_string(hash_dir.join(".project_root"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default()
+}
+
+/// Join a message's `content` into a single string. Gemini content is either a
+/// plain string or an array of `{"text": …}` blocks (joined with `\n`).
+/// Returns an empty string when absent or shaped differently.
+fn join_content(content: Option<&serde_json::Value>) -> String {
+    let Some(content) = content else {
+        return String::new();
+    };
+    match content {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .filter_map(|item| item.get("text").and_then(|v| v.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// First text of a message's `content`: the string itself, or the first
+/// `{"text": …}` block. Used for the original-title fallback (first user msg).
+fn first_content_text(content: Option<&serde_json::Value>) -> Option<String> {
+    let content = content?;
+    match content {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Array(items) => items.iter().find_map(|item| {
+            item.get("text")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        }),
+        _ => None,
+    }
+}
+
+/// First tool-call name from a message's optional `toolCalls` array. Used to
+/// populate the `name` field on assistant transcript messages.
+fn first_tool_name(msg: &serde_json::Value) -> Option<String> {
+    msg.get("toolCalls")
+        .and_then(|v| v.as_array())
+        .and_then(|calls| {
+            calls.iter().find_map(|c| {
+                c.get("name")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            })
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{SessionMessage, SessionMessageRole};
+    use std::collections::HashMap;
     use std::path::{Path, PathBuf};
 
     fn write_gemini_session(dir: &Path, hash: &str, filename: &str, json: &str) -> PathBuf {
@@ -232,6 +407,14 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, json).unwrap();
         path
+    }
+
+    /// Write the sibling `.project_root` (one line = the project absolute path)
+    /// at `tmp/<hash>/.project_root` — two levels above the session file.
+    fn write_project_root(dir: &Path, hash: &str, project_path: &str) {
+        let path = dir.join("tmp").join(hash).join(".project_root");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, project_path).unwrap();
     }
 
     #[test]
@@ -333,5 +516,177 @@ mod tests {
         std::fs::write(&path, json).unwrap();
         let (r3, _) = p.collect_incremental(&progress).unwrap();
         assert_eq!(r3.events.len(), 1);
+    }
+
+    // ---- session management: RawSession + SessionMessage + session_id ----
+
+    /// Full session extraction: RawSession (project_dir from sibling
+    /// .project_root, title from first user content, timestamps from
+    /// startTime/lastUpdated), SessionMessage (role mapping including
+    /// gemini→Assistant, content join, tool name, uuid = message id), and
+    /// RawUsage.session_id stamped. info/error messages are skipped.
+    #[test]
+    fn gemini_parses_session_meta_messages_and_usage_session_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let json = r#"{
+            "sessionId": "sess-abc",
+            "startTime": "2026-08-01T10:00:00.000Z",
+            "lastUpdated": "2026-08-01T11:30:00.000Z",
+            "messages": [
+                {"id":"u1","type":"user","timestamp":"2026-08-01T10:00:00.000Z","content":"Hello Gemini"},
+                {"id":"g1","type":"gemini","timestamp":"2026-08-01T10:01:00.000Z","model":"gemini-2.5-pro","content":[{"text":"Hi"},{"text":"How can I help?"}],"toolCalls":[{"name":"read_file","args":{}}],"tokens":{"input":100,"output":50,"cached":10,"thoughts":5}},
+                {"id":"i1","type":"info","timestamp":"2026-08-01T10:02:00.000Z","content":"system info"},
+                {"id":"e1","type":"error","timestamp":"2026-08-01T10:03:00.000Z","content":"oops"},
+                {"id":"u2","type":"user","timestamp":"2026-08-01T11:00:00.000Z","content":"Thanks"}
+            ]
+        }"#;
+        write_gemini_session(dir.path(), "hashA", "session-abc.json", json);
+        write_project_root(dir.path(), "hashA", "/home/me/project");
+
+        let p = GeminiCliProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+
+        // ---- RawSession ----
+        assert_eq!(result.sessions.len(), 1);
+        let s = &result.sessions[0];
+        assert_eq!(s.id, "sess-abc");
+        assert_eq!(s.source, "gemini_cli");
+        assert_eq!(s.project_dir, "/home/me/project"); // from .project_root
+        assert_eq!(s.title_orig, "Hello Gemini"); // first user content
+        assert_eq!(s.started_at, "2026-08-01T10:00:00.000Z");
+        assert_eq!(s.last_active_at, "2026-08-01T11:30:00.000Z");
+
+        // ---- SessionMessages: u1 + g1 + u2 kept; i1 + e1 skipped ----
+        assert_eq!(result.messages.len(), 3);
+        let by_id: HashMap<&str, &SessionMessage> = result
+            .messages
+            .iter()
+            .map(|m| (m.uuid.as_str(), m))
+            .collect();
+
+        let u1 = by_id["u1"];
+        assert_eq!(u1.role, SessionMessageRole::User);
+        assert_eq!(u1.content, "Hello Gemini");
+        assert_eq!(u1.session_id, "sess-abc");
+        assert_eq!(u1.ts, "2026-08-01T10:00:00.000Z");
+        assert!(u1.model.is_none(), "user messages have no model");
+        assert!(u1.name.is_none());
+
+        // gemini → Assistant; content blocks joined with \n; tool name captured.
+        let g1 = by_id["g1"];
+        assert_eq!(g1.role, SessionMessageRole::Assistant);
+        assert_eq!(g1.content, "Hi\nHow can I help?");
+        assert_eq!(g1.model.as_deref(), Some("gemini-2.5-pro"));
+        assert_eq!(g1.name.as_deref(), Some("read_file"));
+        assert_eq!(g1.session_id, "sess-abc");
+
+        let u2 = by_id["u2"];
+        assert_eq!(u2.role, SessionMessageRole::User);
+        assert_eq!(u2.content, "Thanks");
+
+        // info / error are NOT in the transcript.
+        assert!(!by_id.contains_key("i1"), "info skipped");
+        assert!(!by_id.contains_key("e1"), "error skipped");
+
+        // ---- RawUsage.session_id filled ----
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].session_id, "sess-abc");
+        assert_eq!(result.events[0].uuid, "gemini:sess-abc:g1");
+    }
+
+    /// Message uuids are the source message ids — stable across re-parses so
+    /// the ingest ledger can dedup idempotently.
+    #[test]
+    fn gemini_message_uuids_stable_across_reparses() {
+        let dir = tempfile::tempdir().unwrap();
+        let json = r#"{"sessionId":"s1","messages":[
+            {"id":"m1","type":"user","timestamp":"2026-08-01T10:00:00Z","content":"first"},
+            {"id":"m2","type":"gemini","timestamp":"2026-08-01T10:01:00Z","model":"gemini-2.5-pro","content":"reply"}
+        ]}"#;
+        write_gemini_session(dir.path(), "h", "session-1.json", json);
+        let p = GeminiCliProvider::with_dir(dir.path().to_path_buf());
+
+        let r1 = p.parse(&p.discover().unwrap()).unwrap();
+        let r2 = p.parse(&p.discover().unwrap()).unwrap();
+        let ids1: Vec<&str> = r1.messages.iter().map(|m| m.uuid.as_str()).collect();
+        let ids2: Vec<&str> = r2.messages.iter().map(|m| m.uuid.as_str()).collect();
+        assert_eq!(ids1, vec!["m1", "m2"]);
+        assert_eq!(ids1, ids2, "uuids stable across re-parses");
+    }
+
+    /// Missing sibling `.project_root` ⇒ project_dir is an empty string (the
+    /// session JSON does not carry `cwd`).
+    #[test]
+    fn gemini_project_dir_empty_without_project_root_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let json = r#"{"sessionId":"s1","startTime":"2026-08-01T10:00:00Z","lastUpdated":"2026-08-01T10:00:00Z","messages":[{"id":"m1","type":"user","timestamp":"2026-08-01T10:00:00Z","content":"hi"}]}"#;
+        write_gemini_session(dir.path(), "h", "session-1.json", json);
+        // No .project_root written.
+        let p = GeminiCliProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(result.sessions[0].project_dir, "");
+    }
+
+    /// Content over TRIM_LIMIT (32 KiB) is truncated with an ellipsis.
+    #[test]
+    fn gemini_message_content_truncated_over_trim_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let long_text = "x".repeat(TRIM_LIMIT + 1000);
+        let json = format!(
+            r#"{{"sessionId":"s1","messages":[{{"id":"m1","type":"user","timestamp":"2026-08-01T10:00:00Z","content":"{long_text}"}}]}}"#
+        );
+        write_gemini_session(dir.path(), "h", "session-1.json", &json);
+        let p = GeminiCliProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(result.messages.len(), 1);
+        let content = &result.messages[0].content;
+        assert!(content.ends_with('…'), "truncated with ellipsis");
+        assert!(content.chars().count() <= TRIM_LIMIT);
+    }
+
+    /// Incremental: a rewrite (new mtime) triggers a full re-parse — both meta
+    /// and messages are rebuilt. The provider re-emits already-seen message ids
+    /// (the ledger dedups at ingest, not here).
+    #[test]
+    fn gemini_incremental_rebuilds_meta_and_messages_on_rewrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let json_v1 = r#"{"sessionId":"s1","startTime":"2026-08-01T10:00:00Z","lastUpdated":"2026-08-01T10:00:00Z","messages":[{"id":"m1","type":"user","timestamp":"2026-08-01T10:00:00Z","content":"first"}]}"#;
+        let path = write_gemini_session(dir.path(), "h", "session-1.json", json_v1);
+        let p = GeminiCliProvider::with_dir(dir.path().to_path_buf());
+
+        let (r1, progress) = p.collect_incremental(&ScanProgress::new()).unwrap();
+        assert_eq!(r1.messages.len(), 1);
+        assert_eq!(r1.sessions[0].title_orig, "first");
+
+        // Rewrite with an added message + bumped lastUpdated (new mtime).
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let json_v2 = r#"{"sessionId":"s1","startTime":"2026-08-01T10:00:00Z","lastUpdated":"2026-08-02T12:00:00Z","messages":[{"id":"m1","type":"user","timestamp":"2026-08-01T10:00:00Z","content":"first"},{"id":"m2","type":"user","timestamp":"2026-08-02T12:00:00Z","content":"second"}]}"#;
+        std::fs::write(&path, json_v2).unwrap();
+
+        let (r2, _) = p.collect_incremental(&progress).unwrap();
+        // Whole file re-parsed: m1 re-emitted + m2 new (ledger dedups at ingest).
+        assert_eq!(r2.messages.len(), 2);
+        // Meta rebuilt: last_active_at reflects the new lastUpdated.
+        assert_eq!(r2.sessions[0].last_active_at, "2026-08-02T12:00:00Z");
+    }
+
+    /// Empty content is skipped (string or array with no text blocks); messages
+    /// without a stable id are also skipped (dedup needs a key).
+    #[test]
+    fn gemini_skips_empty_content_and_idless_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let json = r#"{"sessionId":"s1","messages":[
+            {"id":"e1","type":"user","timestamp":"2026-08-01T10:00:00Z","content":""},
+            {"id":"e2","type":"gemini","timestamp":"2026-08-01T10:01:00Z","content":[]},
+            {"type":"user","timestamp":"2026-08-01T10:02:00Z","content":"no id"},
+            {"id":"ok","type":"user","timestamp":"2026-08-01T10:03:00Z","content":"kept"}
+        ]}"#;
+        write_gemini_session(dir.path(), "h", "session-1.json", json);
+        let p = GeminiCliProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        // Only the "ok" message survives (non-empty content + has id).
+        assert_eq!(result.messages.len(), 1);
+        assert_eq!(result.messages[0].uuid, "ok");
+        assert_eq!(result.messages[0].content, "kept");
     }
 }

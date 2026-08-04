@@ -526,6 +526,8 @@ pub fn pull_and_import(
     // Per-turn durations (separate grain, uuid-deduped).
     let turns = crate::ingest::read_all_turn_artifacts(paths)?;
     store.ingest_turn_durations(&turns)?;
+    // Sessions stay local in this phase — the per-session sync shape lands
+    // with the session phase.
     // Device-name registry: pull may have added/updated config/devices/*.json.
     crate::devices::reload_devices_into_store(store, paths, cfg)?;
     Ok(inserted.len() as u32)
@@ -956,6 +958,7 @@ mod tests {
             timestamp: "2026-07-13T16:55:22.467Z".into(),
             model: "glm-5.2".into(),
             source: "claude_code".into(),
+            session_id: String::new(),
             tokens: TokenCounts {
                 input: 1000,
                 output: 500,

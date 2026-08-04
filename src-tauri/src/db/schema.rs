@@ -1,6 +1,6 @@
 //! Single source of truth for the SQLite Local Store schema.
 //!
-//! Every table's column DDL lives here as a Rust constant. [`schema_sql`]
+//! Every table's column DDL lives here as a Rust constant. [`schema_tables_sql`]
 //! assembles the `CREATE TABLE IF NOT EXISTS ...` batch that [`Store::open`]
 //! runs on every open, and the per-table column-name lists feed
 //! `migrate_to_composite_pk`'s rebuild. **Adding (or dropping) a column is a
@@ -36,6 +36,7 @@ pub(super) const USAGE_RECORDS_COLS_DDL: &str = "\
     model TEXT NOT NULL, \
     pricing_model TEXT NOT NULL, \
     source TEXT NOT NULL, \
+    session_id TEXT NOT NULL DEFAULT '', \
     device_id TEXT NOT NULL, \
     input_tokens INTEGER NOT NULL, \
     output_tokens INTEGER NOT NULL, \
@@ -53,7 +54,7 @@ pub(super) const USAGE_RECORDS_COLS_DDL: &str = "\
     PRIMARY KEY (uuid, device_id)";
 
 pub(super) const USAGE_RECORDS_COLNAMES: &str = "\
-    uuid, timestamp, day, model, pricing_model, source, device_id, \
+    uuid, timestamp, day, model, pricing_model, source, session_id, device_id, \
     input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, \
     server_tool_use, stop_reason, service_tier, iterations, \
     input_cost_usd, output_cost_usd, cache_read_cost_usd, \
@@ -64,7 +65,8 @@ pub(super) const USAGE_RECORDS_INDEXES: &str = "\
     CREATE INDEX IF NOT EXISTS idx_usage_model ON usage_records(model); \
     CREATE INDEX IF NOT EXISTS idx_usage_device ON usage_records(device_id); \
     CREATE INDEX IF NOT EXISTS idx_usage_source ON usage_records(source); \
-    CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_records(timestamp);";
+    CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_records(timestamp); \
+    CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_records(session_id);";
 
 /// `turn_durations` — per-turn durations (per-turn grain, separate from per-call
 /// `usage_records`). Sourced from system/turn_duration events.
@@ -126,30 +128,82 @@ pub(super) const SCAN_PROGRESS_COLS_DDL: &str = "\
 
 /// Dead tables dropped on every open, so an upgraded Local Store physically
 /// sheds them (idempotent: present ⇒ dropped, absent ⇒ no-op; safe to run on
-/// every startup, zero migration code — spec §5.3). `daily_rollups` was a
-/// derived cache nobody read; `ledger` duplicated the `(uuid, device_id)` dedup.
+/// every startup, zero migration code). `daily_rollups` was a derived cache
+/// nobody read; `ledger` duplicated the `(uuid, device_id)` dedup.
 const DEAD_TABLES_DROP: &str = "\
     DROP TABLE IF EXISTS daily_rollups; \
     DROP TABLE IF EXISTS ledger;";
 
-/// Assemble the full idempotent schema batch (`CREATE ... IF NOT EXISTS`) run on
-/// every open. Built from the constants above so the [`Store::open`] path and
-/// the `migrate_to_composite_pk` rebuild path can never drift apart. The dead
-/// tables are dropped FIRST — an old database physically cleans them before the
-/// fresh tables are created.
+/// `sessions` — one row per (session id, device id). The system-data columns
+/// (source / project_dir / title_orig / started_at / last_active_at) are
+/// refreshable: every collect re-extracts them from the source log. The user-
+/// data columns (custom_title / favorited / synced_group_id / local_group_id)
+/// are NEVER overwritten by re-extract — `upsert_session`'s ON CONFLICT clause
+/// refreshes only the system-data columns, preserving user edits. This split is
+/// the "user data not overwritten by re-extract" invariant, encoded in SQL.
+/// `local_group_id` is device-private (never enters git); the session sync
+/// shape lands later.
+pub(super) const SESSIONS_COLS_DDL: &str = "\
+    id TEXT NOT NULL, \
+    device_id TEXT NOT NULL, \
+    source TEXT NOT NULL DEFAULT '', \
+    project_dir TEXT NOT NULL DEFAULT '', \
+    title_orig TEXT NOT NULL DEFAULT '', \
+    started_at TEXT NOT NULL DEFAULT '', \
+    last_active_at TEXT NOT NULL DEFAULT '', \
+    custom_title TEXT NOT NULL DEFAULT '', \
+    favorited INTEGER NOT NULL DEFAULT 0, \
+    synced_group_id TEXT NOT NULL DEFAULT '', \
+    local_group_id TEXT NOT NULL DEFAULT '', \
+    PRIMARY KEY (id, device_id)";
+
+pub(super) const SESSIONS_INDEXES: &str = "\
+    CREATE INDEX IF NOT EXISTS idx_sessions_device ON sessions(device_id); \
+    CREATE INDEX IF NOT EXISTS idx_sessions_favorited ON sessions(favorited);";
+
+/// `local_groups` — device-private group names (local track). Never enters
+/// git; CRUD is immediate (no network).
+pub(super) const LOCAL_GROUPS_COLS_DDL: &str = "\
+    id TEXT PRIMARY KEY, \
+    name TEXT NOT NULL, \
+    created_at TEXT NOT NULL";
+
+/// All `CREATE TABLE IF NOT EXISTS` statements (no indexes). [`Store::open`]
+/// runs this FIRST so every table shell exists before
+/// [`migrate::migrate_schema`] ALTERs legacy columns onto them — and before any
+/// index that references a column migration adds. Concretely:
+/// `idx_usage_session` indexes `session_id`, a column legacy DBs lack until
+/// migration ALTERs it on; building that index before the column exists panics
+/// on upgrade. Indexes land in [`schema_indexes_sql`], after migration.
 ///
 /// [`Store::open`]: super::Store::open
-pub(super) fn schema_sql() -> String {
+/// [`migrate::migrate_schema`]: super::migrate::migrate_schema
+pub(super) fn schema_tables_sql() -> String {
     [
         DEAD_TABLES_DROP.to_string(),
         create_table("usage_records", USAGE_RECORDS_COLS_DDL),
-        USAGE_RECORDS_INDEXES.to_string(),
         create_table("turn_durations", TURN_DURATIONS_COLS_DDL),
-        TURN_DURATIONS_INDEXES.to_string(),
         create_table("dirty_days", DIRTY_DAYS_COLS_DDL),
         create_table("model_pricing", MODEL_PRICING_COLS_DDL),
         create_table("device", DEVICE_COLS_DDL),
         create_table("scan_progress", SCAN_PROGRESS_COLS_DDL),
+        create_table("sessions", SESSIONS_COLS_DDL),
+        create_table("local_groups", LOCAL_GROUPS_COLS_DDL),
+    ]
+    .join("\n")
+}
+
+/// All `CREATE INDEX IF NOT EXISTS` statements. [`Store::open`] runs this AFTER
+/// [`migrate::migrate_schema`] so indexes on migration-added columns (e.g.
+/// `idx_usage_session` on `session_id`) find the column present on legacy DBs.
+///
+/// [`Store::open`]: super::Store::open
+/// [`migrate::migrate_schema`]: super::migrate::migrate_schema
+pub(super) fn schema_indexes_sql() -> String {
+    [
+        USAGE_RECORDS_INDEXES.to_string(),
+        TURN_DURATIONS_INDEXES.to_string(),
+        SESSIONS_INDEXES.to_string(),
     ]
     .join("\n")
 }
@@ -203,11 +257,17 @@ mod tests {
     }
 
     /// The assembled batch is valid SQL and creates every expected table. Guards
-    /// against a typo in any constant silently skipping a table on open.
+    /// against a typo in any constant silently skipping a table on open. Runs
+    /// tables then indexes — the same order [`Store::open`] uses (a fresh DB
+    /// already has every column, so the split is invisible here; it matters only
+    /// for legacy upgrades, which the migrate tests cover).
+    ///
+    /// [`Store::open`]: super::Store::open
     #[test]
-    fn schema_sql_creates_all_tables() {
+    fn schema_tables_then_indexes_creates_all_tables() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(&schema_sql()).unwrap();
+        conn.execute_batch(&schema_tables_sql()).unwrap();
+        conn.execute_batch(&schema_indexes_sql()).unwrap();
         let mut stmt = conn
             .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
             .unwrap();
@@ -223,6 +283,8 @@ mod tests {
             "model_pricing",
             "device",
             "scan_progress",
+            "sessions",
+            "local_groups",
         ] {
             assert!(tables.contains(expected), "schema missing table {expected}");
         }
@@ -230,7 +292,7 @@ mod tests {
 
     /// An upgraded Local Store that still physically holds the dead tables sheds
     /// them on open — the idempotent DROP runs before the CREATEs, so the store
-    /// never keeps `daily_rollups` / `ledger` residue (spec §5.3).
+    /// never keeps `daily_rollups` / `ledger` residue.
     #[test]
     fn schema_drops_dead_tables_from_upgraded_db() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -239,7 +301,7 @@ mod tests {
              CREATE TABLE ledger (uuid TEXT PRIMARY KEY);",
         )
         .unwrap();
-        conn.execute_batch(&schema_sql()).unwrap();
+        conn.execute_batch(&schema_tables_sql()).unwrap();
         let mut stmt = conn
             .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
             .unwrap();

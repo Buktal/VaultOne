@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::AppResult;
-use crate::model::{ServerToolUse, TokenCounts};
+use crate::model::{RawSession, ServerToolUse, SessionMessage, TokenCounts};
 
 mod claude;
 mod codex;
@@ -32,6 +32,10 @@ pub struct RawUsage {
     pub model: String,
     /// Provider tag, e.g. `claude_code`.
     pub source: String,
+    /// Session this call belongs to (the source log's session identifier).
+    /// Empty for providers not yet wired for sessions (every source but Claude
+    /// in this phase). NOT part of the dedup key — grouping info only.
+    pub session_id: String,
     pub tokens: TokenCounts,
     pub server_tool_use: ServerToolUse,
     /// Semantic termination reason (`tool_use` / `end_turn` / …). NOT an HTTP status.
@@ -60,6 +64,15 @@ pub struct CollectResult {
     pub events: Vec<RawUsage>,
     /// Per-turn durations (from `system/turn_duration` events).
     pub turn_durations: Vec<RawTurnDuration>,
+    /// Sessions discovered this pass (system data: id/source/project/title/
+    /// timestamps). One per source log file (Claude: one session per jsonl).
+    /// Empty for providers not yet wired for sessions.
+    pub sessions: Vec<RawSession>,
+    /// Transcript messages extracted this pass (only the new lines past each
+    /// file's cursor). Collected for ALL sessions so the ingest layer can decide
+    /// per-session (only favorited ones land in `sessions/<id>.jsonl`). Empty
+    /// for providers not yet wired for sessions.
+    pub messages: Vec<SessionMessage>,
     /// Files scanned.
     pub files_scanned: u32,
     /// Lines that failed to parse (skipped, not fatal).
@@ -136,6 +149,11 @@ pub fn all_providers() -> AppResult<Vec<Box<dyn Provider>>> {
 pub(super) struct FileParseOutcome {
     pub(super) events: Vec<RawUsage>,
     pub(super) turn_durations: Vec<RawTurnDuration>,
+    /// Sessions discovered in this file (one per Claude jsonl; empty for
+    /// providers not yet wired for sessions).
+    pub(super) sessions: Vec<RawSession>,
+    /// Transcript messages parsed this pass (only lines past the cursor).
+    pub(super) messages: Vec<SessionMessage>,
     pub(super) skipped: u32,
 }
 
@@ -157,6 +175,8 @@ pub(super) fn collect_jsonl_incremental(
     let files = provider.discover()?;
     let mut events: Vec<RawUsage> = Vec::new();
     let mut turn_durations: Vec<RawTurnDuration> = Vec::new();
+    let mut sessions: Vec<RawSession> = Vec::new();
+    let mut messages: Vec<SessionMessage> = Vec::new();
     let mut skipped = 0u32;
     let mut delta = ScanProgressDelta::new();
 
@@ -195,6 +215,8 @@ pub(super) fn collect_jsonl_incremental(
         let outcome = parse_file(file, &text, start_line);
         events.extend(outcome.events);
         turn_durations.extend(outcome.turn_durations);
+        sessions.extend(outcome.sessions);
+        messages.extend(outcome.messages);
         skipped += outcome.skipped;
         // Partial-last-line guard: no trailing newline ⇒ the last line may be
         // mid-write; don't advance past it or the next collect skips it.
@@ -217,11 +239,20 @@ pub(super) fn collect_jsonl_incremental(
 
     // Deterministic order (timestamp, then uuid).
     events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
+    // Sessions: deterministic order by (last_active_at, id) so repeated parses
+    // of the same sources yield identical grain lines.
+    sessions.sort_by(|a, b| (&a.last_active_at, &a.id).cmp(&(&b.last_active_at, &b.id)));
+    // Messages: keep source order (within-file chronological); cross-file extend
+    // is stable per the discover() order, which is deterministic per OS but not
+    // sorted — the ingest layer re-groups by session_id before writing, and each
+    // session's file is appended in this order.
     // files_scanned stays "discovered count" — do not redefine to "parsed count".
     let result = CollectResult {
         source: provider.name().to_string(),
         events,
         turn_durations,
+        sessions,
+        messages,
         files_scanned: files.len() as u32,
         lines_skipped: skipped,
     };
@@ -241,6 +272,27 @@ pub(super) fn normalize_cache_inclusive(input: u32, cache_read: u32) -> (u32, u3
     let clamped = cache_read.min(input);
     let fresh = input.saturating_sub(clamped);
     (fresh, clamped)
+}
+
+/// Soft cap on any single content string (32 KiB). Oversized content is
+/// truncated; a per-session 5 MiB soft cap is warned-on only at the ingest
+/// layer, not enforced here. Shared across JSONL providers so the rule cannot
+/// drift between them (single source of truth).
+pub(super) const TRIM_LIMIT: usize = 32 * 1024;
+
+/// Max chars of the original title (summary or first user message). Shared
+/// across session-emitting providers.
+pub(super) const TITLE_MAX: usize = 80;
+
+/// Truncate a string to `limit` chars, appending an ellipsis when shortened.
+/// Shared across providers — one truncation rule so Claude / Codex / … cannot
+/// silently diverge (architecture review: single source of truth).
+pub(super) fn truncate(s: &str, limit: usize) -> String {
+    if s.chars().count() <= limit {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(limit.saturating_sub(1)).collect();
+    format!("{head}…")
 }
 
 /// File mtime in nanos since UNIX_EPOCH, for the incremental mtime gate. Clamped

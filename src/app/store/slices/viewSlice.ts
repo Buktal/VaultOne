@@ -6,7 +6,13 @@
 
 import { createSlice } from "@reduxjs/toolkit"
 
-export type ViewId = "dashboard" | "logs" | "pricing" | "settings" | "library"
+export type ViewId =
+  | "dashboard"
+  | "logs"
+  | "pricing"
+  | "library"
+  | "sessions"
+  | "settings"
 
 /** Full dashboard ⇄ lightweight glance card. Same window, two skins. */
 export type WindowMode = "full" | "lightweight"

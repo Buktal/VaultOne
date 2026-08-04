@@ -3,11 +3,12 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::{AppError, AppResult};
-use crate::model::{ServerToolUse, TokenCounts};
+use crate::model::{RawSession, ServerToolUse, SessionMessage, SessionMessageRole, TokenCounts};
+use crate::time::epoch_millis_to_iso;
 
 use super::{
-    metadata_modified_nanos, CollectResult, FileCursor, Provider, RawUsage, ScanProgress,
-    ScanProgressDelta,
+    metadata_modified_nanos, truncate, CollectResult, FileCursor, Provider, RawUsage, ScanProgress,
+    ScanProgressDelta, TRIM_LIMIT,
 };
 
 /// OpenCode (`~/.local/share/opencode/opencode.db`) session-log provider.
@@ -54,6 +55,8 @@ impl Provider for OpenCodeProvider {
 
     fn parse(&self, files: &[PathBuf]) -> AppResult<CollectResult> {
         let mut events = Vec::new();
+        let mut sessions = Vec::new();
+        let mut messages = Vec::new();
         let mut skipped = 0u32;
         let mut files_scanned = 0u32;
         for db_path in files {
@@ -65,16 +68,23 @@ impl Provider for OpenCodeProvider {
                     continue;
                 }
             };
-            match collect_all_messages(&conn) {
-                Ok(ev) => events.extend(ev),
+            match collect_all(&conn) {
+                Ok((ev, ss, ms)) => {
+                    events.extend(ev);
+                    sessions.extend(ss);
+                    messages.extend(ms);
+                }
                 Err(_) => skipped += 1,
             }
         }
         events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
+        sessions.sort_by(|a, b| (&a.last_active_at, &a.id).cmp(&(&b.last_active_at, &b.id)));
         Ok(CollectResult {
             source: self.name().to_string(),
             events,
             turn_durations: Vec::new(),
+            sessions,
+            messages,
             files_scanned,
             lines_skipped: skipped,
         })
@@ -121,11 +131,26 @@ impl Provider for OpenCodeProvider {
                 return Ok((result, delta));
             }
         };
+        let session_rows = match query_session_rows(&conn) {
+            Ok(r) => r,
+            Err(_) => {
+                result.lines_skipped = 1;
+                return Ok((result, delta));
+            }
+        };
+        let row_by_id: std::collections::HashMap<&str, &OpenCodeSessionRow> =
+            session_rows.iter().map(|r| (r.id.as_str(), r)).collect();
         for (session_id, watermark) in &sessions {
             let sync_key = format!("{db_path_str}:{session_id}");
             let prev_sess = progress.get(&sync_key).copied().unwrap_or_default();
             if *watermark <= prev_sess.last_modified {
                 continue;
+            }
+            // System data is refreshable — re-emit the RawSession whenever the
+            // session advances (mirrors Claude rebuilding session meta from a
+            // file that passed its mtime gate).
+            if let Some(row) = row_by_id.get(session_id.as_str()) {
+                result.sessions.push(opencode_raw_session(row));
             }
             match query_assistant_messages(&conn, session_id) {
                 Ok(qr) => {
@@ -146,10 +171,21 @@ impl Provider for OpenCodeProvider {
                 }
                 Err(_) => result.lines_skipped += 1,
             }
+            // Transcript (all roles) — re-queried on each advance and deduped
+            // downstream by the stable message-id uuid, so re-emission is a
+            // no-op for already-synced lines. Same shape as the usage re-emit
+            // above.
+            match query_transcript_messages(&conn, session_id) {
+                Ok(ms) => result.messages.extend(ms),
+                Err(_) => result.lines_skipped += 1,
+            }
         }
         result
             .events
             .sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
+        result
+            .sessions
+            .sort_by(|a, b| (&a.last_active_at, &a.id).cmp(&(&b.last_active_at, &b.id)));
         delta.insert(
             db_path_str,
             FileCursor {
@@ -203,20 +239,233 @@ fn open_opencode_readonly(db_path: &Path) -> AppResult<rusqlite::Connection> {
         .map_err(|e| AppError::Db(format!("cannot open opencode.db read-only: {e}")))
 }
 
-/// All sessions' completed assistant messages (full scan, no watermark gate).
-/// Reached only from `Provider::parse` — the test/diagnostic full-scan path.
-#[allow(dead_code)] // production runs collect_incremental (per-session, watermarked); this is parse-only
-fn collect_all_messages(conn: &rusqlite::Connection) -> AppResult<Vec<RawUsage>> {
-    let sessions = query_sessions(conn)?;
+/// Full-scan collect: every session's [`RawSession`] + completed-assistant
+/// usage events + transcript messages (no watermark gate). Reached only from
+/// [`Provider::parse`] — the test/diagnostic full-scan path. Production runs
+/// [`OpenCodeProvider::collect_incremental`] (per-session, two-level watermark).
+#[allow(dead_code)] // parse-only; production runs collect_incremental
+fn collect_all(
+    conn: &rusqlite::Connection,
+) -> AppResult<(Vec<RawUsage>, Vec<RawSession>, Vec<SessionMessage>)> {
+    let session_rows = query_session_rows(conn)?;
     let mut events = Vec::new();
-    for (session_id, _) in &sessions {
-        if let Ok(qr) = query_assistant_messages(conn, session_id) {
+    let mut sessions = Vec::new();
+    let mut messages = Vec::new();
+    for row in &session_rows {
+        sessions.push(opencode_raw_session(row));
+        if let Ok(qr) = query_assistant_messages(conn, &row.id) {
             for (message_id, msg) in &qr.messages {
-                events.push(opencode_raw_usage(session_id, message_id, msg));
+                events.push(opencode_raw_usage(&row.id, message_id, msg));
+            }
+        }
+        if let Ok(ms) = query_transcript_messages(conn, &row.id) {
+            messages.extend(ms);
+        }
+    }
+    Ok((events, sessions, messages))
+}
+
+/// One row of the opencode `session` table — the metadata needed to build a
+/// [`RawSession`] (system data), separate from the sync watermark used by the
+/// incremental gate ([`query_sessions`]).
+struct OpenCodeSessionRow {
+    id: String,
+    title: String,
+    directory: String,
+    time_created_ms: i64,
+    time_updated_ms: i64,
+}
+
+/// All session rows (metadata only; the sync watermark comes from
+/// [`query_sessions`]). Ordered by `(time_updated, id)` for deterministic
+/// source ordering; callers re-sort the emitted [`RawSession`]s by
+/// `(last_active_at, id)` before returning.
+fn query_session_rows(conn: &rusqlite::Connection) -> AppResult<Vec<OpenCodeSessionRow>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, title, directory, time_created, time_updated
+             FROM session
+             ORDER BY time_updated, id",
+        )
+        .map_err(|e| AppError::Db(format!("opencode session-row query prepare: {e}")))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(OpenCodeSessionRow {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                directory: row.get(2)?,
+                time_created_ms: row.get(3)?,
+                time_updated_ms: row.get(4)?,
+            })
+        })
+        .map_err(|e| AppError::Db(format!("opencode session-row query: {e}")))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| AppError::Db(format!("opencode session-row row: {e}")))?);
+    }
+    Ok(out)
+}
+
+/// Build a [`RawSession`] (system data) from a session row. `title_orig` falls
+/// back from the DB title to the directory's basename, then to empty — matching
+/// CC-Switch's OpenCode title derivation. Timestamps are ms-epoch → ISO8601 UTC
+/// via the shared [`epoch_millis_to_iso`].
+fn opencode_raw_session(row: &OpenCodeSessionRow) -> RawSession {
+    RawSession {
+        id: row.id.clone(),
+        source: "opencode".to_string(),
+        project_dir: row.directory.clone(),
+        title_orig: derive_title(&row.title, &row.directory),
+        started_at: epoch_millis_to_iso(row.time_created_ms),
+        last_active_at: epoch_millis_to_iso(row.time_updated_ms),
+    }
+}
+
+/// Title fallback chain: non-empty DB title > directory basename > empty
+/// string. (OpenCode titles are short by nature — the DB column or a basename
+/// — so unlike Claude's summary/first-prompt title no truncation cap is needed.)
+fn derive_title(title: &str, directory: &str) -> String {
+    let t = title.trim();
+    if !t.is_empty() {
+        return t.to_string();
+    }
+    Path::new(directory)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_default()
+}
+
+/// A session's transcript (all roles), reconstructed by joining `message` with
+/// its `part` rows. One [`SessionMessage`] per message row: `uuid` = the
+/// message id (stable → re-emission is idempotent under ingest's uuid dedup),
+/// `role` mapped from `data.role`, `content` from parts joined in
+/// `time_created` order (text → text, tool → tool name), `name` = the first
+/// tool part's tool name when present. Empty-content and unknown-role messages
+/// are skipped.
+fn query_transcript_messages(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+) -> AppResult<Vec<SessionMessage>> {
+    // 1. Collect this session's parts, grouped by message_id (one pass; the
+    //    block scope releases the statement borrow before the message query).
+    let mut parts_by_msg: std::collections::HashMap<String, Vec<serde_json::Value>> =
+        std::collections::HashMap::new();
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT message_id, data FROM part WHERE session_id = ?1 ORDER BY time_created",
+            )
+            .map_err(|e| AppError::Db(format!("opencode part query prepare: {e}")))?;
+        let rows = stmt
+            .query_map([session_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| AppError::Db(format!("opencode part query: {e}")))?;
+        for row in rows {
+            let (message_id, data) =
+                row.map_err(|e| AppError::Db(format!("opencode part row: {e}")))?;
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+                parts_by_msg.entry(message_id).or_default().push(v);
             }
         }
     }
-    Ok(events)
+
+    // 2. Walk messages in time order, joining their parts.
+    let mut out = Vec::new();
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, time_created, data FROM message WHERE session_id = ?1 ORDER BY time_created",
+            )
+            .map_err(|e| AppError::Db(format!("opencode transcript query prepare: {e}")))?;
+        let rows = stmt
+            .query_map([session_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|e| AppError::Db(format!("opencode transcript query: {e}")))?;
+        for row in rows {
+            let (id, time_created_ms, data_json) =
+                row.map_err(|e| AppError::Db(format!("opencode transcript row: {e}")))?;
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&data_json) else {
+                continue;
+            };
+            let role_str = value.get("role").and_then(|v| v.as_str()).unwrap_or("");
+            let Some(role) = map_role(role_str) else {
+                continue;
+            };
+            let model = value
+                .get("modelID")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let empty = Vec::new();
+            let part_values = parts_by_msg.get(&id).unwrap_or(&empty);
+            let (content, name) = build_content_and_name(part_values);
+            if content.trim().is_empty() {
+                continue;
+            }
+            out.push(SessionMessage {
+                uuid: id,
+                session_id: session_id.to_string(),
+                role,
+                ts: epoch_millis_to_iso(time_created_ms),
+                model,
+                name,
+                content: truncate(&content, TRIM_LIMIT),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Map an OpenCode `data.role` string to a [`SessionMessageRole`]. Unknown
+/// values map to `None` so the caller skips the message rather than emitting a
+/// mis-classified line.
+fn map_role(role: &str) -> Option<SessionMessageRole> {
+    match role {
+        "user" => Some(SessionMessageRole::User),
+        "assistant" => Some(SessionMessageRole::Assistant),
+        "tool" => Some(SessionMessageRole::Tool),
+        _ => None,
+    }
+}
+
+/// Build `(content, name)` from a message's part JSON values (in order):
+/// - `text` part → its text appended to `content`;
+/// - `tool` part → the tool name appended to `content` AND captured as `name`;
+/// - any other part type → skipped.
+fn build_content_and_name(parts: &[serde_json::Value]) -> (String, Option<String>) {
+    let mut pieces: Vec<String> = Vec::new();
+    let mut tool_name: Option<String> = None;
+    for v in parts {
+        match v.get("type").and_then(|t| t.as_str()) {
+            Some("text") => {
+                if let Some(t) = v.get("text").and_then(|x| x.as_str()) {
+                    if !t.trim().is_empty() {
+                        pieces.push(t.to_string());
+                    }
+                }
+            }
+            Some("tool") => {
+                if let Some(name) = v.get("tool").and_then(|x| x.as_str()) {
+                    if !name.is_empty() {
+                        pieces.push(name.to_string());
+                        if tool_name.is_none() {
+                            tool_name = Some(name.to_string());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    (pieces.join("\n"), tool_name)
 }
 
 /// Per-session (id, sync watermark) — the max of the session's own
@@ -365,6 +614,7 @@ fn opencode_raw_usage(session_id: &str, message_id: &str, msg: &OpenCodeMessageD
         timestamp,
         model: msg.model_id.clone(),
         source: "opencode".to_string(),
+        session_id: session_id.to_string(),
         tokens: TokenCounts {
             input: msg.input_tokens,
             output: msg.output_tokens + msg.reasoning_tokens,
@@ -477,9 +727,9 @@ mod tests {
         {
             let conn = rusqlite::Connection::open(&db).unwrap();
             conn.execute_batch(
-                "CREATE TABLE session (id TEXT, time_updated INTEGER);
+                "CREATE TABLE session (id TEXT, title TEXT, directory TEXT, time_created INTEGER, time_updated INTEGER);
                  CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
-                 INSERT INTO session VALUES ('s1', 100);
+                 INSERT INTO session VALUES ('s1','','/p',0,100);
                  INSERT INTO message (id, session_id, time_created, time_updated) VALUES ('m1','s1',90,200);
                  INSERT INTO message (id, session_id, time_created, time_updated) VALUES ('m2','s1',91,201);",
             )
@@ -540,9 +790,9 @@ mod tests {
         {
             let conn = rusqlite::Connection::open(&db).unwrap();
             conn.execute_batch(
-                "CREATE TABLE session (id TEXT, time_updated INTEGER);
+                "CREATE TABLE session (id TEXT, title TEXT, directory TEXT, time_created INTEGER, time_updated INTEGER);
                  CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
-                 INSERT INTO session VALUES ('s1', 100);
+                 INSERT INTO session VALUES ('s1','','/p',0,100);
                  INSERT INTO message (id, session_id, time_created, time_updated) VALUES ('m1','s1',90,200);",
             )
             .unwrap();
@@ -560,5 +810,217 @@ mod tests {
         // Same db, no changes ⇒ file mtime gate skips it entirely.
         let (r2, _) = p.collect_incremental(&progress).unwrap();
         assert_eq!(r2.events.len(), 0);
+    }
+
+    // ---- session + transcript extraction (OpenCode sessions) ----
+
+    /// Build the full opencode schema (session/message/part) on an in-memory
+    /// connection for the session/transcript tests below.
+    fn opencode_schema(conn: &rusqlite::Connection) {
+        conn.execute_batch(
+            "CREATE TABLE session (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                directory TEXT NOT NULL,
+                time_created INTEGER NOT NULL,
+                time_updated INTEGER NOT NULL
+             );
+             CREATE TABLE message (
+                id TEXT,
+                session_id TEXT NOT NULL,
+                time_created INTEGER NOT NULL,
+                time_updated INTEGER NOT NULL,
+                data TEXT NOT NULL
+             );
+             CREATE TABLE part (
+                id TEXT,
+                session_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                time_created INTEGER NOT NULL,
+                data TEXT NOT NULL
+             );",
+        )
+        .unwrap();
+    }
+
+    /// RawSession fields + title fallback chain (title > directory basename >
+    /// empty). Timestamps are ms-epoch → ISO8601.
+    #[test]
+    fn opencode_session_row_title_and_basename_fallback() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        opencode_schema(&conn);
+        conn.execute_batch(
+            "INSERT INTO session VALUES ('ses_a','My Session','/work/proj',1722500000000,1722600000000);
+             INSERT INTO session VALUES ('ses_b','','/work/other',1722500000000,1722600000000);
+             INSERT INTO session VALUES ('ses_c','','',1722500000000,1722600000000);",
+        )
+        .unwrap();
+        let rows = query_session_rows(&conn).unwrap();
+        assert_eq!(rows.len(), 3);
+
+        // Title present → used verbatim; timestamps formatted ms-epoch → ISO.
+        let a = opencode_raw_session(rows.iter().find(|r| r.id == "ses_a").unwrap());
+        assert_eq!(a.id, "ses_a");
+        assert_eq!(a.source, "opencode");
+        assert_eq!(a.project_dir, "/work/proj");
+        assert_eq!(a.title_orig, "My Session");
+        assert_eq!(a.started_at, epoch_millis_to_iso(1_722_500_000_000));
+        assert_eq!(a.last_active_at, epoch_millis_to_iso(1_722_600_000_000));
+
+        // Empty title → directory basename.
+        let b = opencode_raw_session(rows.iter().find(|r| r.id == "ses_b").unwrap());
+        assert_eq!(b.title_orig, "other");
+        assert_eq!(b.project_dir, "/work/other");
+
+        // Empty title and directory → empty string (no panic).
+        let c = opencode_raw_session(rows.iter().find(|r| r.id == "ses_c").unwrap());
+        assert_eq!(c.title_orig, "");
+    }
+
+    /// Transcript join: one SessionMessage per message row, ordered by
+    /// `time_created`; content = parts joined (text → text, tool → tool name);
+    /// `name` carries the tool name; `uuid` is the stable message id; assistant
+    /// model is preserved.
+    #[test]
+    fn opencode_transcript_joins_message_and_parts() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        opencode_schema(&conn);
+        conn.execute_batch(
+            "INSERT INTO session VALUES ('ses_1','T','/p',1000,4000);
+             INSERT INTO message VALUES ('msg_u','ses_1',1000,1000,'{\"role\":\"user\"}');
+             INSERT INTO message VALUES ('msg_a','ses_1',2000,2000,'{\"role\":\"assistant\",\"modelID\":\"glm-5.2\"}');",
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO part VALUES ('p1','ses_1','msg_u',1100,'{\"type\":\"text\",\"text\":\"Hello\"}');
+             INSERT INTO part VALUES ('p2','ses_1','msg_a',2100,'{\"type\":\"text\",\"text\":\"Hi there\"}');
+             INSERT INTO part VALUES ('p3','ses_1','msg_a',2200,'{\"type\":\"tool\",\"tool\":\"bash\"}');",
+        )
+        .unwrap();
+        let msgs = query_transcript_messages(&conn, "ses_1").unwrap();
+        assert_eq!(msgs.len(), 2, "one SessionMessage per row, in time order");
+
+        let u = &msgs[0];
+        assert_eq!(u.uuid, "msg_u", "uuid is the stable message id");
+        assert_eq!(u.session_id, "ses_1");
+        assert_eq!(u.role, SessionMessageRole::User);
+        assert_eq!(u.content, "Hello");
+        assert!(u.model.is_none());
+        assert!(u.name.is_none());
+
+        let a = &msgs[1];
+        assert_eq!(a.uuid, "msg_a");
+        assert_eq!(a.role, SessionMessageRole::Assistant);
+        assert_eq!(a.model.as_deref(), Some("glm-5.2"));
+        // Content joins the text part and the tool part's tool name.
+        assert_eq!(a.content, "Hi there\nbash");
+        // Tool part surfaced its tool name on `name`.
+        assert_eq!(a.name.as_deref(), Some("bash"));
+    }
+
+    /// Transcript skips messages with no parseable content (no parts) and
+    /// messages whose role is outside {user, assistant, tool}.
+    #[test]
+    fn opencode_transcript_skips_empty_and_unknown_roles() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        opencode_schema(&conn);
+        conn.execute_batch(
+            "INSERT INTO session VALUES ('ses_1','T','/p',1000,4000);
+             INSERT INTO message VALUES ('m_user','ses_1',1000,1000,'{\"role\":\"user\"}');
+             INSERT INTO message VALUES ('m_empty','ses_1',2000,2000,'{\"role\":\"assistant\"}');
+             INSERT INTO message VALUES ('m_weird','ses_1',3000,3000,'{\"role\":\"system\"}');",
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO part VALUES ('p1','ses_1','m_user',1100,'{\"type\":\"text\",\"text\":\"hi\"}');
+             INSERT INTO part VALUES ('p2','ses_1','m_weird',3100,'{\"type\":\"text\",\"text\":\"sys\"}');",
+        )
+        .unwrap();
+        let msgs = query_transcript_messages(&conn, "ses_1").unwrap();
+        // m_empty has no parts (empty content); m_weird has an unknown role.
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].uuid, "m_user");
+    }
+
+    /// End-to-end via `parse`: one RawSession with the DB title + ISO
+    /// timestamps, transcript messages, and the usage event now carries
+    /// `session_id` (was empty before this change).
+    #[test]
+    fn opencode_parse_emits_session_messages_and_usage_session_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("opencode.db");
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            opencode_schema(&conn);
+            conn.execute_batch(
+                "INSERT INTO session VALUES ('ses_1','Build it','/home/me/vault',1722500000000,1722600000000);
+                 INSERT INTO message VALUES ('msg_a','ses_1',1722550000000,1722550000000,'{\"role\":\"assistant\",\"modelID\":\"glm-5.2\"}');
+                 INSERT INTO part VALUES ('p1','ses_1','msg_a',1722550001000,'{\"type\":\"text\",\"text\":\"drafting\"}');",
+            )
+            .unwrap();
+            // A completed assistant usage message → RawUsage with session_id.
+            let data = opencode_data_json(100, 20, 0, 0, 0, "glm-5.2", true);
+            conn.execute(
+                "INSERT INTO message VALUES ('msg_b','ses_1',1722550002000,1722550002000,?1)",
+                rusqlite::params![data],
+            )
+            .unwrap();
+        }
+        let p = OpenCodeProvider::with_db(db.clone());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+
+        // RawSession: title from DB, ISO timestamps, source tagged opencode.
+        assert_eq!(result.sessions.len(), 1);
+        let s = &result.sessions[0];
+        assert_eq!(s.id, "ses_1");
+        assert_eq!(s.source, "opencode");
+        assert_eq!(s.project_dir, "/home/me/vault");
+        assert_eq!(s.title_orig, "Build it");
+        assert_eq!(s.started_at, epoch_millis_to_iso(1_722_500_000_000));
+        assert_eq!(s.last_active_at, epoch_millis_to_iso(1_722_600_000_000));
+
+        // Usage event carries the session id (the field this task fills in).
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].session_id, "ses_1");
+
+        // The assistant transcript message was extracted (msg_b has no parts ⇒
+        // empty content ⇒ skipped, so only msg_a survives).
+        assert_eq!(result.messages.len(), 1);
+        assert_eq!(result.messages[0].uuid, "msg_a");
+        assert_eq!(result.messages[0].role, SessionMessageRole::Assistant);
+        assert_eq!(result.messages[0].content, "drafting");
+    }
+
+    /// Incremental collect emits RawSession + transcript + session-stamped
+    /// usage the first time a session advances.
+    #[test]
+    fn opencode_incremental_emits_session_and_messages_on_advance() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("opencode.db");
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            opencode_schema(&conn);
+            conn.execute_batch("INSERT INTO session VALUES ('ses_1','T','/p',1000,1000);")
+                .unwrap();
+            let data = opencode_data_json(100, 20, 0, 0, 0, "glm-5.2", true);
+            conn.execute(
+                "INSERT INTO message VALUES ('msg_a','ses_1',1000,1000,?1)",
+                rusqlite::params![data],
+            )
+            .unwrap();
+            conn.execute_batch(
+                "INSERT INTO part VALUES ('p1','ses_1','msg_a',1100,'{\"type\":\"text\",\"text\":\"hi\"}');",
+            )
+            .unwrap();
+        }
+        let p = OpenCodeProvider::with_db(db);
+        let (r1, _delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
+        // First collect: session meta + transcript + session-stamped usage.
+        assert_eq!(r1.sessions.len(), 1);
+        assert_eq!(r1.sessions[0].id, "ses_1");
+        assert_eq!(r1.messages.len(), 1);
+        assert_eq!(r1.messages[0].uuid, "msg_a");
+        assert_eq!(r1.events.len(), 1);
+        assert_eq!(r1.events[0].session_id, "ses_1");
     }
 }
