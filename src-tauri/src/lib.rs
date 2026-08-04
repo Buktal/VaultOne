@@ -28,6 +28,7 @@ mod model;
 mod pricing;
 mod providers;
 mod proxy;
+mod sessions;
 mod sync;
 mod time;
 mod window_geom;
@@ -77,6 +78,21 @@ fn specta_builder() -> Builder<tauri::Wry> {
         library::delete_from_library,
         library::rename_in_library,
         library::library_device_summary,
+        sessions::query_sessions_cmd,
+        sessions::get_session_transcript_cmd,
+        sessions::set_session_favorited_cmd,
+        sessions::set_session_custom_title_cmd,
+        sessions::set_session_local_group_cmd,
+        sessions::set_session_synced_group_cmd,
+        sessions::list_local_groups_cmd,
+        sessions::create_local_group_cmd,
+        sessions::rename_local_group_cmd,
+        sessions::delete_local_group_cmd,
+        sessions::list_synced_groups_cmd,
+        sessions::create_synced_group_cmd,
+        sessions::rename_synced_group_cmd,
+        sessions::delete_synced_group_cmd,
+        sessions::list_groups_cmd,
         window_geom::dock_window_right,
         window_geom::center_window,
         window_geom::set_window_rect,

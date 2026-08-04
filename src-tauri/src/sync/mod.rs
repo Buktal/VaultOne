@@ -622,6 +622,9 @@ pub fn pull_and_import(
     // Per-turn durations (separate grain, uuid-deduped).
     let turns = crate::ingest::read_all_turn_artifacts(paths)?;
     store.ingest_turn_durations(&turns)?;
+    // Sessions: import each peer device's session-meta grain (own id skipped —
+    // own user data is authoritative locally). See `import_peer_sessions`.
+    let _ = crate::ingest::import_peer_sessions(store, paths, &cfg.device_id);
     // Device-name registry: pull may have added/updated config/devices/*.json.
     crate::devices::reload_devices_into_store(store, paths, cfg)?;
     Ok(inserted.len() as u32)
@@ -1029,6 +1032,7 @@ mod tests {
             timestamp: "2026-07-13T16:55:22.467Z".into(),
             model: "glm-5.2".into(),
             source: "claude_code".into(),
+            session_id: String::new(),
             tokens: TokenCounts {
                 input: 1000,
                 output: 500,
@@ -1335,5 +1339,89 @@ mod tests {
             .query_stats(&crate::model::UsageFilter::default())
             .unwrap();
         assert_eq!(stats.request_count, 1);
+    }
+
+    /// Sessions ride the same sync flow as usage: A's session-meta grain
+    /// reaches B after A commits + B pulls, and B sees A's session (with A's
+    /// favorited flag) via `query_sessions`. Own sessions are NOT re-imported
+    /// (own user data is authoritative locally).
+    #[test]
+    fn sessions_sync_across_devices_via_pull() {
+        use crate::model::{RawSession, SessionMetaSync};
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = tmp.path().join("remote.git");
+        seed_remote(&remote);
+        let url = remote.to_string_lossy().to_string();
+
+        // Device A: ingest a session, then commit + push.
+        let paths_a = crate::config::Paths::resolve(&tmp.path().join("a"));
+        let cfg_a = ConfigData {
+            repo_url: Some(url.clone()),
+            github_token: Some("tok".into()),
+            device_id: "aabbccddeeff".into(),
+            ..Default::default()
+        };
+        let _repo_a = open_or_clone(&url, &paths_a.repo, "").unwrap();
+        let store_a = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let session = RawSession {
+            id: "sess-a1".into(),
+            source: "claude_code".into(),
+            project_dir: "/proj".into(),
+            title_orig: "A session".into(),
+            started_at: "2026-08-01T00:00:00.000Z".into(),
+            last_active_at: "2026-08-01T01:00:00.000Z".into(),
+        };
+        crate::ingest::ingest_sessions(&store_a, &paths_a, "aabbccddeeff", &[session], &[])
+            .unwrap();
+        // A favorites the session.
+        store_a.set_session_favorited("aabbccddeeff", "sess-a1", true).unwrap();
+        // Re-write the grain so the favorite rides it.
+        let meta = store_a
+            .get_session_meta_sync("aabbccddeeff", "sess-a1")
+            .unwrap()
+            .unwrap();
+        let grain = SessionMetaSync {
+            id: meta.id.clone(),
+            source: meta.source.clone(),
+            project_dir: meta.project_dir.clone(),
+            title_orig: meta.title_orig.clone(),
+            started_at: meta.started_at.clone(),
+            last_active_at: "2026-08-01T01:00:00.000Z".into(),
+            custom_title: meta.custom_title.clone(),
+            favorited: true,
+            synced_group_id: meta.synced_group_id.clone(),
+        };
+        // Append the favorited snapshot to the grain (simulating a re-collect
+        // after the favorite).
+        use std::collections::BTreeMap;
+        let mut by_day: BTreeMap<String, Vec<&SessionMetaSync>> = BTreeMap::new();
+        by_day.insert("2026-08-01".to_string(), vec![&grain]);
+        for (day, rows) in by_day {
+            let path = paths_a.device_data_dir("aabbccddeeff").join(format!("session-meta-{day}.jsonl"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let line = serde_json::to_string(rows[0]).unwrap();
+            std::fs::write(&path, format!("{line}\n")).unwrap();
+        }
+        let pushed_a = commit_and_push(&paths_a, &cfg_a, "vaultone: session sync").unwrap();
+        assert!(pushed_a, "A had the session grain to push");
+
+        // Device B: pull A's session grain and see the session + favorited flag.
+        let paths_b = crate::config::Paths::resolve(&tmp.path().join("b"));
+        let cfg_b = ConfigData {
+            repo_url: Some(url),
+            github_token: Some("tok".into()),
+            device_id: "112233445566".into(),
+            ..Default::default()
+        };
+        let store_b = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
+        pull_and_import(&store_b, &paths_b, &cfg_b).unwrap();
+
+        let sessions_b = store_b.query_sessions(None).unwrap();
+        let s = sessions_b
+            .iter()
+            .find(|s| s.id == "sess-a1" && s.device_id == "aabbccddeeff")
+            .expect("B sees A's session under A's device_id");
+        assert!(s.favorited, "A's favorited flag imported");
+        assert_eq!(s.title, "A session");
     }
 }

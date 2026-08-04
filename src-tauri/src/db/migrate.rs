@@ -43,6 +43,7 @@ pub(super) fn migrate_schema(conn: &Connection) -> AppResult<()> {
         ("stop_reason", "TEXT NOT NULL DEFAULT ''"),
         ("service_tier", "TEXT NOT NULL DEFAULT ''"),
         ("iterations", "INTEGER NOT NULL DEFAULT 0"),
+        ("session_id", "TEXT NOT NULL DEFAULT ''"),
     ];
     for &(col, ddl) in need {
         if !have.contains(col) {
@@ -247,5 +248,93 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 2, "both devices kept after migration");
+    }
+
+    /// Regression: a legacy Local Store whose `usage_records` predates the
+    /// `session_id` column used to panic on open — the old single `schema_sql()`
+    /// batch built `idx_usage_session` before `migrate_schema()` ALTERed the
+    /// column on. `Store::open` now runs tables → migrate → indexes; this pins
+    /// that order on a legacy DB so an upgrade never panics.
+    #[test]
+    fn indexes_on_migration_added_columns_run_after_the_alter() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Legacy usage_records: no session_id, old single-column uuid PK.
+        conn.execute_batch(
+            "CREATE TABLE usage_records (
+                uuid TEXT PRIMARY KEY, timestamp TEXT NOT NULL, day TEXT NOT NULL,
+                model TEXT NOT NULL, pricing_model TEXT NOT NULL, source TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+                cache_creation_tokens INTEGER NOT NULL, cache_read_tokens INTEGER NOT NULL,
+                server_tool_use TEXT NOT NULL DEFAULT '{}',
+                input_cost_usd TEXT NOT NULL, output_cost_usd TEXT NOT NULL,
+                cache_read_cost_usd TEXT NOT NULL, cache_creation_cost_usd TEXT NOT NULL,
+                total_cost_usd TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        // The Store::open order on a pre-existing DB: tables (table exists →
+        // no-op) → migrate (adds session_id) → indexes (session_id now present).
+        conn.execute_batch(&schema::schema_tables_sql()).unwrap();
+        migrate_schema(&conn).unwrap();
+        conn.execute_batch(&schema::schema_indexes_sql()).unwrap();
+
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(usage_records)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(cols.iter().any(|c| c == "session_id"), "session_id added");
+
+        let idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type='index' AND name='idx_usage_session'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx, 1, "idx_usage_session created after the column landed");
+    }
+
+    /// Regression companion: a legacy DB ALREADY on the composite (uuid,
+    /// device_id) PK but predating session_id — the realistic upgrade state for
+    /// anyone on a recent VaultOne before this column shipped. Only the ALTER
+    /// runs (no PK rebuild); the index then finds the column present.
+    #[test]
+    fn alter_adds_session_id_on_already_composite_pk() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Composite PK, but no session_id (the column this change introduced).
+        conn.execute_batch(
+            "CREATE TABLE usage_records (
+                uuid TEXT NOT NULL, timestamp TEXT NOT NULL, day TEXT NOT NULL,
+                model TEXT NOT NULL, pricing_model TEXT NOT NULL, source TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+                cache_creation_tokens INTEGER NOT NULL, cache_read_tokens INTEGER NOT NULL,
+                server_tool_use TEXT NOT NULL DEFAULT '{}', stop_reason TEXT NOT NULL DEFAULT '',
+                service_tier TEXT NOT NULL DEFAULT '', iterations INTEGER NOT NULL DEFAULT 0,
+                input_cost_usd TEXT NOT NULL, output_cost_usd TEXT NOT NULL,
+                cache_read_cost_usd TEXT NOT NULL, cache_creation_cost_usd TEXT NOT NULL,
+                total_cost_usd TEXT NOT NULL,
+                PRIMARY KEY (uuid, device_id)
+            );",
+        )
+        .unwrap();
+        conn.execute_batch(&schema::schema_tables_sql()).unwrap();
+        migrate_schema(&conn).unwrap();
+        conn.execute_batch(&schema::schema_indexes_sql()).unwrap();
+
+        let has_session: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('usage_records') \
+                 WHERE name='session_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_session, 1, "session_id ALTERed onto composite-PK table");
     }
 }

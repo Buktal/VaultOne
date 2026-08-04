@@ -3,11 +3,11 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::{AppError, AppResult};
-use crate::model::{ServerToolUse, TokenCounts};
+use crate::model::{RawSession, ServerToolUse, SessionMessage, SessionMessageRole, TokenCounts};
 
 use super::{
-    collect_jsonl_incremental, CollectResult, Provider, RawTurnDuration, RawUsage, ScanProgress,
-    ScanProgressDelta,
+    collect_jsonl_incremental, truncate, CollectResult, Provider, RawTurnDuration, RawUsage,
+    ScanProgress, ScanProgressDelta, TITLE_MAX, TRIM_LIMIT,
 };
 
 /// Claude Code session-log provider.
@@ -38,80 +38,183 @@ impl ClaudeCodeProvider {
         Self { projects_dir: dir }
     }
 
-    /// Fold one JSONL line into the running accumulators, returning whether it
-    /// was skipped (unparseable). Shared by the full `parse` and the gated
-    /// `collect_incremental` so the message-id dedup + event classification
-    /// policy lives in one place (one assistant response may span several
-    /// content-block events that all repeat the full usage; one message id ⇒
-    /// one record, falling back to the event uuid when the source omits one).
-    fn fold_line(
-        raw: &str,
-        events_by_mid: &mut std::collections::HashMap<String, RawUsage>,
-        turn_durations: &mut Vec<RawTurnDuration>,
-    ) -> bool {
-        let line = raw.trim();
-        if line.is_empty() {
-            return false;
-        }
-        match serde_json::from_str::<SessionEvent>(line) {
-            Ok(ev) => {
-                let mid = ev.message.as_ref().and_then(|m| m.id.clone());
-                match ev.classify() {
-                    Parsed::Usage(u) => {
-                        let key = mid.unwrap_or_else(|| u.uuid.clone());
-                        // One message id ⇒ one record, but pick the BEST snapshot:
-                        // a `message_start` event (output=1, no stop_reason) often
-                        // lands before the final block (full output + stop_reason).
-                        // First-wins would freeze the snapshot and systematically
-                        // undercount output. Prefer a non-empty stop_reason; on a
-                        // tie take the larger output_tokens.
-                        events_by_mid
-                            .entry(key)
-                            .and_modify(|e| {
-                                if should_replace(e, &u) {
-                                    *e = u.clone();
-                                }
-                            })
-                            .or_insert(u);
-                    }
-                    Parsed::TurnDuration(td) => turn_durations.push(td),
-                    Parsed::Skip => {}
-                }
-                false
-            }
-            Err(_) => true,
-        }
-    }
-
-    /// Fold one JSONL file's text into a per-file parse outcome. Lines at or
-    /// before `start_line` (1-based, the incremental cursor) are skipped. Dedup
-    /// is scoped per file: Claude Code writes one session per jsonl and a
-    /// message id is unique within that file, so per-file is the correct scope —
-    /// and it is the scope the production incremental path uses. Sharing this
-    /// fold between `parse` and `collect_incremental` makes the test and
-    /// production paths run the same code (architecture review #10: previously
-    /// `parse` cross-file-deduped while `collect_incremental` per-file-deduped).
+    /// Fold one JSONL file's text into a per-file parse outcome. Three streams
+    /// are produced:
+    ///   - per-call usages + per-turn durations (lines past `start_line`, the
+    ///     incremental cursor — same as before, message-id-deduped);
+    ///   - one session-meta record (`RawSession`) covering the WHOLE file —
+    ///     system data is refreshable, so every pass re-reads first/last ts,
+    ///     cwd, and the title sources (custom-title > summary > first user
+    ///     message > project dir basename), latest-seen at each level;
+    ///   - transcript messages (lines past `start_line` only — incremental, so a
+    ///     re-collect appends only new lines to `sessions/<id>.jsonl`).
+    ///
+    /// `session_id` is the file stem (Claude = one session per jsonl). Dedup is
+    /// scoped per file: a message id is unique within one jsonl, so per-file is
+    /// correct, and sharing this fold between `parse` and `collect_incremental`
+    /// keeps the test and production paths identical (architecture review #10).
     ///
     /// Invariant: the stored `RawUsage.uuid` is the source **event** uuid, NOT
     /// the dedup key (the message id) — re-keying stored rows to the message id
     /// would mass-duplicate on first run. The message id is the map key only.
-    fn fold_file(text: &str, start_line: i64) -> super::FileParseOutcome {
+    fn fold_file(file: &Path, text: &str, start_line: i64) -> super::FileParseOutcome {
+        let session_id = file
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
         let mut events_by_mid: std::collections::HashMap<String, RawUsage> =
             std::collections::HashMap::new();
         let mut turn_durations = Vec::new();
+        let mut messages: Vec<SessionMessage> = Vec::new();
         let mut skipped = 0u32;
-        for (idx, line) in text.lines().enumerate() {
+
+        // Session meta (tracked over the FULL file, not just the cursor tail —
+        // system data is refreshable, and started_at/cwd/title would be lost if
+        // we only saw the appended lines on a re-collect).
+        let mut started_at = String::new();
+        let mut last_active_at = String::new();
+        let mut project_dir = String::new();
+        let mut summary = String::new();
+        let mut custom_title: Option<String> = None;
+        let mut first_user_text: Option<String> = None;
+        let mut saw_any_event = false;
+
+        for (idx, raw) in text.lines().enumerate() {
             let line_no = idx as i64 + 1; // 1-based, matching the cursor
+            let line = raw.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let ev = match serde_json::from_str::<SessionEvent>(line) {
+                Ok(ev) => ev,
+                Err(_) => {
+                    // Only count a malformed line as skipped when it is past the
+                    // cursor (the incremental tail); already-counted lines are
+                    // not re-counted on a re-collect.
+                    if line_no > start_line {
+                        skipped += 1;
+                    }
+                    continue;
+                }
+            };
+
+            // ---- session meta (full file, every pass) ----
+            if !saw_any_event {
+                started_at = ev.timestamp.clone().unwrap_or_default();
+                saw_any_event = true;
+            }
+            if let Some(ts) = &ev.timestamp {
+                if !ts.is_empty() {
+                    last_active_at = ts.clone();
+                }
+            }
+            if project_dir.is_empty() {
+                if let Some(c) = &ev.cwd {
+                    project_dir = c.clone();
+                }
+            }
+            // summary: latest non-empty wins — Claude may emit it later in
+            // the file (e.g. after a /compact); the title follows that update
+            // instead of freezing on the first-seen value.
+            if let Some(s) = &ev.summary {
+                let s = s.trim();
+                if !s.is_empty() {
+                    summary = s.to_string();
+                }
+            }
+            // custom_title: latest non-empty wins. The user's manual session
+            // name in Claude Code; a mid-session rename must refresh the title
+            // (the first-wins bug CC-Switch has).
+            if let Some(ct) = &ev.custom_title {
+                let ct = ct.trim();
+                if !ct.is_empty() {
+                    custom_title = Some(ct.to_string());
+                }
+            }
+            if first_user_text.is_none() {
+                if let Some(m) = &ev.message {
+                    if m.role.as_deref() == Some("user") {
+                        if let Some(t) = first_text_of(m) {
+                            // Skip Claude Code command/caveat noise so the
+                            // title is the first real prompt, not `/clear`.
+                            let t = t.trim();
+                            if !t.is_empty()
+                                && !t.contains("<local-command-caveat>")
+                                && !t.starts_with("<command-name>")
+                            {
+                                first_user_text = Some(t.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ---- incremental (only lines past the cursor) ----
             if line_no <= start_line {
                 continue;
             }
-            if Self::fold_line(line, &mut events_by_mid, &mut turn_durations) {
-                skipped += 1;
+
+            // Transcript messages (trimmed: text + tool_use name; thinking and
+            // images dropped; long tool_result/text truncated at TRIM_LIMIT).
+            if let Some(m) = &ev.message {
+                let ts = ev.timestamp.as_deref().unwrap_or("");
+                messages.extend(extract_messages(m, &ev.uuid, &session_id, ts));
+            }
+
+            // Per-call usage + per-turn durations (existing message-id dedup).
+            let mid = ev.message.as_ref().and_then(|m| m.id.clone());
+            match ev.classify(&session_id) {
+                Parsed::Usage(u) => {
+                    let key = mid.unwrap_or_else(|| u.uuid.clone());
+                    events_by_mid
+                        .entry(key)
+                        .and_modify(|e| {
+                            if should_replace(e, &u) {
+                                *e = u.clone();
+                            }
+                        })
+                        .or_insert(u);
+                }
+                Parsed::TurnDuration(td) => turn_durations.push(td),
+                Parsed::Skip => {}
             }
         }
+
+        let sessions = if saw_any_event {
+            // Title priority: manual name (custom-title) > Claude summary >
+            // first real user message > project dir basename. Every level is
+            // latest-seen (re-scanned each collect), so a rename or a late
+            // summary refreshes the title.
+            let title_orig = custom_title
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .or_else(|| (!summary.is_empty()).then_some(summary.as_str()))
+                .or_else(|| first_user_text.as_deref().filter(|s| !s.is_empty()))
+                .or_else(|| {
+                    Path::new(&project_dir)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .filter(|s| !s.is_empty())
+                });
+            let title_orig = truncate(title_orig.unwrap_or(""), TITLE_MAX);
+            vec![RawSession {
+                id: session_id,
+                source: "claude_code".to_string(),
+                project_dir,
+                title_orig,
+                started_at,
+                last_active_at,
+            }]
+        } else {
+            Vec::new()
+        };
+
         super::FileParseOutcome {
             events: events_by_mid.into_values().collect(),
             turn_durations,
+            sessions,
+            messages,
             skipped,
         }
     }
@@ -145,9 +248,22 @@ impl Provider for ClaudeCodeProvider {
                 continue;
             }
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-                out.push(path.to_path_buf());
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
             }
+            // Skip Claude Code subagent/sidechain sessions (agent-*.jsonl) —
+            // these are Task-tool child sessions, not user conversations.
+            // Including them floods the list with duplicate-titled noise (one
+            // real project dir had 49 agent- files vs 5 real sessions). CC-
+            // Switch's is_agent_session filter does the same.
+            if path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.starts_with("agent-"))
+            {
+                continue;
+            }
+            out.push(path.to_path_buf());
         }
         Ok(out)
     }
@@ -165,6 +281,8 @@ impl Provider for ClaudeCodeProvider {
         // matters.
         let mut events = Vec::new();
         let mut turn_durations = Vec::new();
+        let mut sessions = Vec::new();
+        let mut messages = Vec::new();
         let mut skipped = 0u32;
         for file in files {
             let text = match std::fs::read_to_string(file) {
@@ -174,18 +292,23 @@ impl Provider for ClaudeCodeProvider {
                     continue;
                 }
             };
-            let outcome = Self::fold_file(&text, 0);
+            let outcome = Self::fold_file(file, &text, 0);
             events.extend(outcome.events);
             turn_durations.extend(outcome.turn_durations);
+            sessions.extend(outcome.sessions);
+            messages.extend(outcome.messages);
             skipped += outcome.skipped;
         }
         // Deterministic order (timestamp, then uuid) so repeated parses of the
         // same sources yield identical artifact lines.
         events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
+        sessions.sort_by(|a, b| (&a.last_active_at, &a.id).cmp(&(&b.last_active_at, &b.id)));
         Ok(CollectResult {
             source: self.name().to_string(),
             events,
             turn_durations,
+            sessions,
+            messages,
             files_scanned: files.len() as u32,
             lines_skipped: skipped,
         })
@@ -201,8 +324,8 @@ impl Provider for ClaudeCodeProvider {
         &self,
         progress: &ScanProgress,
     ) -> AppResult<(CollectResult, ScanProgressDelta)> {
-        collect_jsonl_incremental(self, progress, |_file: &Path, text, start_line| {
-            Self::fold_file(text, start_line)
+        collect_jsonl_incremental(self, progress, |file: &Path, text, start_line| {
+            Self::fold_file(file, text, start_line)
         })
     }
 }
@@ -222,11 +345,23 @@ struct SessionEvent {
     /// `durationMs` on `system/turn_duration` events.
     #[serde(rename = "durationMs", default)]
     duration_ms: Option<u32>,
-    message: Option<SessionMessage>,
+    /// `cwd` on `system` events — the session's working directory (project_dir).
+    #[serde(default)]
+    cwd: Option<String>,
+    /// `summary` on a top-level event — Claude's auto-generated session
+    /// summary. Latest non-empty value wins (a `/compact` rewrites it later).
+    #[serde(default)]
+    summary: Option<String>,
+    /// `customTitle` on a `type:"custom-title"` event — the user's manual
+    /// session name in Claude Code. Latest non-empty wins (a mid-session
+    /// rename refreshes the title). Highest-priority title source.
+    #[serde(rename = "customTitle", default)]
+    custom_title: Option<String>,
+    message: Option<ClaudeMessageData>,
 }
 
 #[derive(serde::Deserialize)]
-struct SessionMessage {
+struct ClaudeMessageData {
     /// Anthropic message id (e.g. `msg_…`). Shared by every content-block event
     /// of one assistant response — the per-call dedup key (one API call ⇒ one
     /// message id).
@@ -234,6 +369,14 @@ struct SessionMessage {
     model: Option<String>,
     usage: Option<SessionUsage>,
     stop_reason: Option<String>,
+    /// `user` / `assistant` / ... Used to route transcript extraction.
+    #[serde(default)]
+    role: Option<String>,
+    /// Message body — a string (plain user text) or an array of content blocks
+    /// (`text` / `tool_use` / `tool_result` / `thinking` / `image`). Used only
+    /// for transcript extraction, never for usage.
+    #[serde(default)]
+    content: Option<serde_json::Value>,
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -272,7 +415,9 @@ enum Parsed {
 
 impl SessionEvent {
     /// Classify this event into a usage record, a turn duration, or skip.
-    fn classify(self) -> Parsed {
+    /// `session_id` (the source-log file stem) is stamped onto any emitted
+    /// `RawUsage` so usage rows carry their session grouping key.
+    fn classify(self, session_id: &str) -> Parsed {
         // Per-turn duration: system event tagged turn_duration.
         if self.typ.as_deref() == Some("system") && self.subtype.as_deref() == Some("turn_duration")
         {
@@ -287,7 +432,7 @@ impl SessionEvent {
         }
         // Per-call usage: assistant event with a usable usage block.
         if self.typ.as_deref() == Some("assistant") {
-            if let Some(raw) = self.into_usage() {
+            if let Some(raw) = self.into_usage(session_id) {
                 return Parsed::Usage(raw);
             }
         }
@@ -296,7 +441,7 @@ impl SessionEvent {
 
     /// Convert to a `RawUsage` iff this assistant event has a usable usage
     /// block. Drops events with no tokens (e.g. pure tool results).
-    fn into_usage(self) -> Option<RawUsage> {
+    fn into_usage(self, session_id: &str) -> Option<RawUsage> {
         let msg = self.message?;
         let usage = msg.usage?;
         let tokens = TokenCounts {
@@ -317,6 +462,7 @@ impl SessionEvent {
             timestamp,
             model: msg.model.unwrap_or_else(|| "unknown".to_string()),
             source: "claude_code".to_string(),
+            session_id: session_id.to_string(),
             tokens,
             server_tool_use: ServerToolUse {
                 web_search: st.web_search_requests,
@@ -327,6 +473,150 @@ impl SessionEvent {
             iterations: usage.iterations.map(|v| v.len() as u32).unwrap_or(0),
         })
     }
+}
+
+// ---- Transcript message extraction (trimming per design §5.2) ----
+//
+// Keep text content + tool_use name only; drop thinking blocks' full text and
+// base64 images; truncate oversized content at TRIM_LIMIT. One assistant event
+// may carry several content blocks → it can emit multiple SessionMessage lines
+// (one assistant text message + one tool line per tool_use block).
+
+// The soft cap (TRIM_LIMIT = 32 KiB), the original-title max (TITLE_MAX = 80),
+// and the `truncate` helper all live in [`super`] as shared provider helpers,
+// so the truncation rule cannot drift between Claude and Codex.
+
+/// First text block of a message's content (string content or the first `text`
+/// block of an array). Used for the original-title fallback (first user msg).
+fn first_text_of(msg: &ClaudeMessageData) -> Option<String> {
+    let content = msg.content.as_ref()?;
+    match content {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Array(blocks) => blocks.iter().find_map(|b| {
+            if b.get("type").and_then(|v| v.as_str()) == Some("text") {
+                b.get("text").and_then(|v| v.as_str()).map(str::to_string)
+            } else {
+                None
+            }
+        }),
+        _ => None,
+    }
+}
+
+/// Extract transcript message lines from one event's message block, stamping
+/// `session_id`. Trimming: text content + tool_use name are kept; thinking
+/// blocks and image blocks are dropped; long text/tool_result is truncated at
+/// [`TRIM_LIMIT`]. Each emitted line gets a stable synthetic uuid (event uuid +
+/// block index) so the JSONL append is idempotent across re-collects.
+fn extract_messages(
+    msg: &ClaudeMessageData,
+    event_uuid: &Option<String>,
+    session_id: &str,
+    ts: &str,
+) -> Vec<SessionMessage> {
+    let uuid = match event_uuid {
+        Some(u) if !u.is_empty() => u.clone(),
+        _ => return Vec::new(),
+    };
+    let content = match msg.content.as_ref() {
+        Some(c) => c,
+        None => return Vec::new(),
+    };
+    let role = match msg.role.as_deref() {
+        Some(r) => r,
+        None => return Vec::new(),
+    };
+    let mk = |role: SessionMessageRole, suffix: &str, model: Option<String>, name: Option<String>, content: String| SessionMessage {
+        uuid: format!("{uuid}{suffix}"),
+        session_id: session_id.to_string(),
+        role,
+        ts: ts.to_string(),
+        model,
+        name,
+        content,
+    };
+    let mut out = Vec::new();
+    match role {
+        "user" => {
+            let texts = collect_text(content);
+            let joined = truncate(&texts.join("\n"), TRIM_LIMIT);
+            if !joined.is_empty() {
+                out.push(mk(SessionMessageRole::User, "", None, None, joined));
+            }
+        }
+        "assistant" => {
+            // text blocks → one assistant message; tool_use → per-tool lines.
+            let mut text_parts: Vec<String> = Vec::new();
+            if let serde_json::Value::Array(blocks) = content {
+                for (i, b) in blocks.iter().enumerate() {
+                    let t = b.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    match t {
+                        "text" => {
+                            if let Some(txt) = b.get("text").and_then(|v| v.as_str()) {
+                                text_parts.push(txt.to_string());
+                            }
+                        }
+                        "tool_use" => {
+                            let name = b
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("tool")
+                                .to_string();
+                            let input = b
+                                .get("input")
+                                .map(|v| truncate(&v.to_string(), 1024))
+                                .unwrap_or_default();
+                            out.push(mk(
+                                SessionMessageRole::Tool,
+                                &format!("#tool{i}"),
+                                None,
+                                Some(name),
+                                input,
+                            ));
+                        }
+                        // thinking / image / unknown → drop (trim noise + bulk).
+                        _ => {}
+                    }
+                }
+            } else if let serde_json::Value::String(s) = content {
+                text_parts.push(s.clone());
+            }
+            let joined = truncate(&text_parts.join("\n"), TRIM_LIMIT);
+            if !joined.is_empty() {
+                out.push(mk(
+                    SessionMessageRole::Assistant,
+                    "",
+                    msg.model.clone(),
+                    None,
+                    joined,
+                ));
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// Collect every `text` block's text from a content value (string or array).
+/// `tool_result` content is ignored here (user-role tool_results are dropped to
+/// keep the transcript lean; the assistant tool_use line already records the
+/// call).
+fn collect_text(content: &serde_json::Value) -> Vec<String> {
+    let mut out = Vec::new();
+    match content {
+        serde_json::Value::String(s) => out.push(s.clone()),
+        serde_json::Value::Array(blocks) => {
+            for b in blocks {
+                if b.get("type").and_then(|v| v.as_str()) == Some("text") {
+                    if let Some(t) = b.get("text").and_then(|v| v.as_str()) {
+                        out.push(t.to_string());
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    out
 }
 
 /// Message-id dedup winner policy: prefer the snapshot with a non-empty
@@ -587,5 +877,240 @@ mod tests {
         // cursor stops at line 1, leaving the partial line for next collect.
         assert_eq!(cursor.last_line_offset, 1);
         assert_eq!(r1.events.len(), 1, "complete line parsed, partial skipped");
+    }
+
+    // ---- session + transcript extraction (Claude only, this phase) ----
+
+    /// A session jsonl yields one RawSession whose id = file stem, whose
+    /// project_dir comes from a `cwd` field, whose title_orig comes from
+    /// `summary`, and whose started_at/last_active_at bound the timestamps.
+    /// Usage events carry the same session_id on their RawUsage.
+    #[test]
+    fn parses_session_meta_and_stamps_usage_session_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sess-xyz.jsonl");
+        let user = r#"{"type":"user","timestamp":"2026-08-01T10:00:00Z","uuid":"u1","cwd":"/home/me/proj","message":{"role":"user","content":"hello world"}}"#;
+        let assistant = r#"{"type":"assistant","timestamp":"2026-08-01T11:00:00Z","uuid":"a1","cwd":"/home/me/proj","summary":"Build a thing","message":{"id":"msg_A","model":"glm-5.2","role":"assistant","stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":50}}}"#;
+        write_lines(&file, &[user, assistant]);
+
+        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+
+        // One session, id = file stem.
+        assert_eq!(result.sessions.len(), 1);
+        let s = &result.sessions[0];
+        assert_eq!(s.id, "sess-xyz");
+        assert_eq!(s.source, "claude_code");
+        assert_eq!(s.project_dir, "/home/me/proj");
+        assert_eq!(s.title_orig, "Build a thing"); // summary wins
+        assert_eq!(s.started_at, "2026-08-01T10:00:00Z");
+        assert_eq!(s.last_active_at, "2026-08-01T11:00:00Z");
+
+        // The usage event carries the session_id.
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].session_id, "sess-xyz");
+    }
+
+    /// Title falls back to the first user message text when no `summary`.
+    #[test]
+    fn session_title_falls_back_to_first_user_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("s.jsonl");
+        let user = r#"{"type":"user","timestamp":"2026-08-01T10:00:00Z","uuid":"u1","message":{"role":"user","content":"Please refactor this function for me"}}"#;
+        write_lines(&file, &[user]);
+        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(result.sessions.len(), 1);
+        assert!(result.sessions[0].title_orig.starts_with("Please refactor"));
+        // Truncated at TITLE_MAX (80) with an ellipsis when exceeded.
+        let long: String = "x".repeat(200);
+        let user2 = format!(
+            r#"{{"type":"user","timestamp":"2026-08-01T10:00:00Z","uuid":"u2","message":{{"role":"user","content":"{long}"}}}}"#
+        );
+        write_lines(&file, &[user2]);
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        let t = &result.sessions[0].title_orig;
+        assert!(t.ends_with('…'), "long title truncated with ellipsis: {t}");
+        assert!(t.chars().count() <= 80);
+    }
+
+    /// Transcript messages: text content kept (user + assistant), tool_use →
+    /// a separate tool line with the name, thinking/image blocks dropped.
+    #[test]
+    fn transcript_extraction_keeps_text_and_tool_name_drops_thinking() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("s.jsonl");
+        let user = r#"{"type":"user","timestamp":"2026-08-01T10:00:00Z","uuid":"u1","message":{"role":"user","content":"hi"}}"#;
+        let assistant = r#"{"type":"assistant","timestamp":"2026-08-01T10:01:00Z","uuid":"a1","message":{"id":"m1","model":"glm-5.2","role":"assistant","content":[{"type":"thinking","thinking":"internal reasoning"},{"type":"text","text":"Sure"},{"type":"tool_use","name":"Read","input":{"path":"/x"}}]}}"#;
+        write_lines(&file, &[user, assistant]);
+        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+
+        let roles: Vec<_> = result.messages.iter().map(|m| m.role).collect();
+        use crate::model::SessionMessageRole::*;
+        assert!(roles.contains(&User), "user text kept");
+        assert!(roles.contains(&Assistant), "assistant text kept");
+        assert!(roles.contains(&Tool), "tool_use → tool line");
+        // No thinking content leaked into any message.
+        assert!(
+            !result
+                .messages
+                .iter()
+                .any(|m| m.content.contains("internal reasoning")),
+            "thinking block dropped"
+        );
+        // Tool line carries the tool name.
+        let tool = result.messages.iter().find(|m| m.role == Tool).unwrap();
+        assert_eq!(tool.name.as_deref(), Some("Read"));
+        // Assistant text is the text block, not the thinking.
+        let asst = result
+            .messages
+            .iter()
+            .find(|m| m.role == Assistant)
+            .unwrap();
+        assert_eq!(asst.content, "Sure");
+        assert_eq!(asst.model.as_deref(), Some("glm-5.2"));
+    }
+
+    /// Incremental transcript: only lines past the cursor yield messages, but
+    /// session meta is rebuilt from the WHOLE file (so started_at survives a
+    /// re-collect that only sees the tail).
+    #[test]
+    fn incremental_messages_only_past_cursor_but_meta_covers_full_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sess-inc.jsonl");
+        let u1 = r#"{"type":"user","timestamp":"2026-08-01T10:00:00Z","uuid":"u1","message":{"role":"user","content":"first"}}"#;
+        write_lines(&file, &[u1]);
+        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let (r1, progress) = p.collect_incremental(&ScanProgress::new()).unwrap();
+        assert_eq!(r1.messages.len(), 1, "first pass: one message");
+        assert_eq!(r1.sessions[0].started_at, "2026-08-01T10:00:00Z");
+
+        // Append a second user line.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().append(true).open(&file).unwrap();
+            writeln!(
+                f,
+                r#"{{"type":"user","timestamp":"2026-08-02T10:00:00Z","uuid":"u2","message":{{"role":"user","content":"second"}}}}"#
+            )
+            .unwrap();
+        }
+        let (r2, _) = p.collect_incremental(&progress).unwrap();
+        // Only the appended line is a new message.
+        assert_eq!(r2.messages.len(), 1);
+        assert_eq!(r2.messages[0].content, "second");
+        // Meta still covers the full file: started_at from line 1, last_active
+        // from line 2.
+        assert_eq!(r2.sessions[0].started_at, "2026-08-01T10:00:00Z");
+        assert_eq!(r2.sessions[0].last_active_at, "2026-08-02T10:00:00Z");
+    }
+
+    /// custom-title wins over summary and the first prompt; a later
+    /// custom-title event (a rename mid-session) refreshes the title — the
+    /// first-wins bug CC-Switch has.
+    #[test]
+    fn session_title_prefers_custom_title_and_latest_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("s.jsonl");
+        let lines = [
+            r#"{"type":"user","timestamp":"2026-08-01T10:00:00Z","uuid":"u1","message":{"role":"user","content":"first prompt"}}"#,
+            r#"{"type":"assistant","timestamp":"2026-08-01T10:01:00Z","uuid":"a1","summary":"Auto summary","message":{"id":"m1","model":"glm-5.2","role":"assistant","usage":{"input_tokens":1,"output_tokens":1}}}"#,
+            r#"{"type":"custom-title","timestamp":"2026-08-01T10:02:00Z","uuid":"c1","customTitle":"Old name"}"#,
+            r#"{"type":"custom-title","timestamp":"2026-08-01T10:03:00Z","uuid":"c2","customTitle":"New name"}"#,
+        ];
+        write_lines(&file, &lines);
+        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(result.sessions.len(), 1);
+        // Latest custom-title wins over summary and the first prompt.
+        assert_eq!(result.sessions[0].title_orig, "New name");
+    }
+
+    /// summary is latest-seen: a summary emitted later in the file overrides
+    /// an earlier one (e.g. a /compact rewrites the summary).
+    #[test]
+    fn session_summary_latest_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("s.jsonl");
+        let lines = [
+            r#"{"type":"assistant","timestamp":"2026-08-01T10:00:00Z","uuid":"a1","summary":"Early summary","message":{"id":"m1","model":"glm-5.2","role":"assistant","usage":{"input_tokens":1,"output_tokens":1}}}"#,
+            r#"{"type":"assistant","timestamp":"2026-08-01T11:00:00Z","uuid":"a2","summary":"Late summary","message":{"id":"m2","model":"glm-5.2","role":"assistant","usage":{"input_tokens":1,"output_tokens":1}}}"#,
+        ];
+        write_lines(&file, &lines);
+        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(result.sessions[0].title_orig, "Late summary");
+    }
+
+    /// First-user-message fallback skips Claude Code command noise — a session
+    /// that starts with a `/clear` (`<command-name>`) must title on the first
+    /// real prompt, not the command.
+    #[test]
+    fn session_title_skips_command_noise_for_first_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("s.jsonl");
+        let lines = [
+            r#"{"type":"user","timestamp":"2026-08-01T10:00:00Z","uuid":"u1","message":{"role":"user","content":[{"type":"text","text":"<command-name>/clear</command-name>"}]}}"#,
+            r#"{"type":"user","timestamp":"2026-08-01T10:01:00Z","uuid":"u2","message":{"role":"user","content":"Refactor the parser"}}"#,
+        ];
+        write_lines(&file, &lines);
+        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert!(
+            result.sessions[0].title_orig.starts_with("Refactor the parser"),
+            "command noise skipped: {}",
+            result.sessions[0].title_orig
+        );
+    }
+
+    /// With no custom-title, summary, or user message, the title falls back to
+    /// the project dir basename (cwd's last path segment); project_dir keeps
+    /// the full cwd.
+    #[test]
+    fn session_title_falls_back_to_project_dir_basename() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("s.jsonl");
+        // An assistant event with usage but no summary and no user message →
+        // only cwd is available for the title.
+        let line = r#"{"type":"assistant","timestamp":"2026-08-01T10:00:00Z","uuid":"a1","cwd":"/home/me/O_VaultOne","message":{"id":"m1","model":"glm-5.2","role":"assistant","usage":{"input_tokens":1,"output_tokens":1}}}"#;
+        write_lines(&file, &[line]);
+        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(result.sessions[0].title_orig, "O_VaultOne");
+        assert_eq!(result.sessions[0].project_dir, "/home/me/O_VaultOne");
+    }
+
+    /// `agent-*.jsonl` are Claude Code subagent/sidechain sessions, not user
+    /// conversations — discover must skip them or the list floods with
+    /// duplicate-titled noise (a real project dir had 49 of them vs 5 real
+    /// sessions). Mirrors CC-Switch's is_agent_session filter.
+    #[test]
+    fn discover_skips_agent_subagent_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("proj");
+        fs::create_dir_all(&proj).unwrap();
+        // One real user session + two subagent sidechain files.
+        write_lines(&proj.join("249e8e6b.jsonl"), &[assistant_line("u1", "msg_A", 10)]);
+        write_lines(
+            &proj.join("agent-a10c476b.jsonl"),
+            &[assistant_line("u2", "msg_B", 20)],
+        );
+        write_lines(
+            &proj.join("agent-a1366047.jsonl"),
+            &[assistant_line("u3", "msg_C", 30)],
+        );
+        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let files = p.discover().unwrap();
+        assert_eq!(
+            files.len(),
+            1,
+            "agent- subagent files skipped, real session kept"
+        );
+        assert_eq!(
+            files[0].file_stem().unwrap().to_string_lossy(),
+            "249e8e6b"
+        );
     }
 }

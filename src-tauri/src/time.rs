@@ -16,3 +16,14 @@ pub(crate) fn epoch_to_iso(secs: i64) -> String {
         .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
         .unwrap_or_else(now_iso)
 }
+
+/// Format epoch **milliseconds** as ISO8601 UTC with millisecond precision,
+/// the ms variant of [`epoch_to_iso`]. OpenCode's `session` / `message` tables
+/// store `time_created` / `time_updated` as ms-epoch integers; this keeps the
+/// ms→ISO conversion single-source alongside the seconds variant. Same format
+/// and `now_iso` fallback as [`epoch_to_iso`].
+pub(crate) fn epoch_millis_to_iso(ms: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms)
+        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+        .unwrap_or_else(now_iso)
+}

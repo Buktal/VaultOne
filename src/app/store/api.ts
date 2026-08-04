@@ -7,10 +7,16 @@ import type {
   DeviceLibrarySummary,
   LibraryEntry,
   LibraryForgetAction,
+  LocalGroup,
   LogsQuery,
   ModelStatsRow,
   PricingEntry,
   RunMode,
+  SessionFilter,
+  SessionGroup,
+  SessionMessage_Serialize,
+  SessionRow,
+  SyncedGroup,
   TrendBucket,
   TrendPoint,
   UploadItem,
@@ -75,6 +81,19 @@ export function filterId(f: UsageFilter): string {
   return [f.from_ts, f.to_ts, f.model, f.source, f.device_scope].join("|")
 }
 
+/** Stable cache id for a SessionFilter (mirrors `filterId` for UsageFilter). */
+export function sessionFilterId(f: SessionFilter): string {
+  return [
+    f.device_scope,
+    f.source,
+    f.favorited,
+    f.local_group_id,
+    f.synced_group_id,
+    f.from_ts,
+    f.to_ts,
+  ].join("|")
+}
+
 /** Zero-value UsageStats — shared UI fallback for loading/empty. */
 export const ZERO_STATS: UsageStats = {
   request_count: 0,
@@ -92,7 +111,16 @@ export const ZERO_STATS: UsageStats = {
 export const vaultApi = createApi({
   reducerPath: "vaultApi",
   baseQuery: fakeBaseQuery<AppError>(),
-  tagTypes: ["Usage", "Logs", "Models", "Devices", "Pricing", "Library", "App"],
+  tagTypes: [
+    "Usage",
+    "Logs",
+    "Models",
+    "Devices",
+    "Pricing",
+    "Library",
+    "Sessions",
+    "App",
+  ],
   endpoints: (b) => ({
     // ---- reads ----
     appInfo: b.query<AppInfo, void>({
@@ -261,6 +289,106 @@ export const vaultApi = createApi({
       invalidatesTags: ["Devices", "Usage", "Logs", "Models", "Library"],
     }),
 
+    // ---- sessions ----
+    // Session list (one slice per tab; grouping is a client-side concern via
+    // groupSessionsByGroup, so the filter never narrows on group_id). Cached per
+    // filter so the two tabs (this-device / all-favorited) live side by side.
+    listSessions: b.query<SessionRow[], SessionFilter | null>({
+      queryFn: async (filter) => run(commands.querySessionsCmd(filter)),
+      providesTags: (_r, _e, filter) => [
+        { type: "Sessions", id: filter ? sessionFilterId(filter) : "all" },
+      ],
+    }),
+    /** One session's transcript (favorited-only — collect writes the JSONL only
+     *  for favorited sessions, per the design doc). Cached per session. */
+    sessionTranscript: b.query<
+      SessionMessage_Serialize[],
+      { id: string; deviceId: string }
+    >({
+      queryFn: async ({ id, deviceId }) =>
+        run(commands.getSessionTranscriptCmd(id, deviceId)),
+      providesTags: (_r, _e, { id, deviceId }) => [
+        { type: "Sessions", id: `transcript:${deviceId}:${id}` },
+      ],
+    }),
+    // Session user-data writes — every backend write emits `sessions_changed`,
+    // which providers.tsx maps to a whole-`Sessions` tag invalidate (refetching
+    // every active session query incl. the open transcript).
+    setSessionFavorited: b.mutation<
+      null,
+      { id: string; deviceId: string; favorited: boolean }
+    >({
+      queryFn: async ({ id, deviceId, favorited }) =>
+        run(commands.setSessionFavoritedCmd(id, deviceId, favorited)),
+      invalidatesTags: ["Sessions"],
+    }),
+    setSessionCustomTitle: b.mutation<
+      null,
+      { id: string; deviceId: string; title: string | null }
+    >({
+      queryFn: async ({ id, deviceId, title }) =>
+        run(commands.setSessionCustomTitleCmd(id, deviceId, title)),
+      invalidatesTags: ["Sessions"],
+    }),
+    setSessionLocalGroup: b.mutation<
+      null,
+      { id: string; deviceId: string; groupId: string | null }
+    >({
+      queryFn: async ({ id, deviceId, groupId }) =>
+        run(commands.setSessionLocalGroupCmd(id, deviceId, groupId)),
+      invalidatesTags: ["Sessions"],
+    }),
+    setSessionSyncedGroup: b.mutation<
+      null,
+      { id: string; deviceId: string; groupId: string | null }
+    >({
+      queryFn: async ({ id, deviceId, groupId }) =>
+        run(commands.setSessionSyncedGroupCmd(id, deviceId, groupId)),
+      invalidatesTags: ["Sessions"],
+    }),
+
+    // Groups — unified list is the one the UI fetches; the per-track lists are
+    // exposed for completeness. Both tracks cache under `Sessions` so any group
+    // CRUD (which invalidates `Sessions`) refreshes the sidebar in place.
+    listGroups: b.query<SessionGroup[], void>({
+      queryFn: async () => run(commands.listGroupsCmd()),
+      providesTags: ["Sessions"],
+    }),
+    listLocalGroups: b.query<LocalGroup[], void>({
+      queryFn: async () => run(commands.listLocalGroupsCmd()),
+      providesTags: ["Sessions"],
+    }),
+    listSyncedGroups: b.query<SyncedGroup[], void>({
+      queryFn: async () => run(commands.listSyncedGroupsCmd()),
+      providesTags: ["Sessions"],
+    }),
+    createLocalGroup: b.mutation<LocalGroup, string>({
+      queryFn: async (name) => run(commands.createLocalGroupCmd(name)),
+      invalidatesTags: ["Sessions"],
+    }),
+    renameLocalGroup: b.mutation<null, { id: string; name: string }>({
+      queryFn: async ({ id, name }) =>
+        run(commands.renameLocalGroupCmd(id, name)),
+      invalidatesTags: ["Sessions"],
+    }),
+    deleteLocalGroup: b.mutation<null, string>({
+      queryFn: async (id) => run(commands.deleteLocalGroupCmd(id)),
+      invalidatesTags: ["Sessions"],
+    }),
+    createSyncedGroup: b.mutation<SyncedGroup, string>({
+      queryFn: async (name) => run(commands.createSyncedGroupCmd(name)),
+      invalidatesTags: ["Sessions"],
+    }),
+    renameSyncedGroup: b.mutation<null, { id: string; name: string }>({
+      queryFn: async ({ id, name }) =>
+        run(commands.renameSyncedGroupCmd(id, name)),
+      invalidatesTags: ["Sessions"],
+    }),
+    deleteSyncedGroup: b.mutation<null, string>({
+      queryFn: async (id) => run(commands.deleteSyncedGroupCmd(id)),
+      invalidatesTags: ["Sessions"],
+    }),
+
     // ---- preferences ----
     // Go through the generated `commands.*` so tauri-specta's `typedError`
     // wrapping matches what `run` expects. Raw `invoke` skips that wrapping.
@@ -334,6 +462,21 @@ export const {
   useSetLanguageMutation,
   useSetLightweightExpandMutation,
   useSetSkinMutation,
+  useListSessionsQuery,
+  useSessionTranscriptQuery,
+  useSetSessionFavoritedMutation,
+  useSetSessionCustomTitleMutation,
+  useSetSessionLocalGroupMutation,
+  useSetSessionSyncedGroupMutation,
+  useListGroupsQuery,
+  useListLocalGroupsQuery,
+  useListSyncedGroupsQuery,
+  useCreateLocalGroupMutation,
+  useRenameLocalGroupMutation,
+  useDeleteLocalGroupMutation,
+  useCreateSyncedGroupMutation,
+  useRenameSyncedGroupMutation,
+  useDeleteSyncedGroupMutation,
 } = vaultApi
 
 export type VaultApi = typeof vaultApi

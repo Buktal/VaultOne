@@ -140,6 +140,13 @@ pub struct UsageRecord {
     pub pricing_model: String,
     /// Provider tag, e.g. `claude_code`.
     pub source: String,
+    /// Session this call belongs to: the source log's session identifier
+    /// (Claude = the jsonl file stem). Attached grouping info only — the dedup
+    /// key stays `(uuid, device_id)`; `session_id` is NOT part of it. Empty when
+    /// a provider has not been wired for sessions yet (every source but Claude
+    /// in this phase). See `docs/design/session-management.md` §3.1.
+    #[serde(default)]
+    pub session_id: String,
     /// Owning device's 12-hex id.
     pub device_id: String,
     pub tokens: TokenCounts,
@@ -203,6 +210,198 @@ pub struct DeviceArtifact {
     /// ISO8601 UTC of first publish; preserved across rewrites so it stays the
     /// device's stable "first seen" timestamp.
     pub first_seen: String,
+}
+
+// ---- Session management (session-as-usage-grouping-key) ----
+//
+// Session is a grouping key on `usage_records` (ADR 0001), NOT a parallel
+// entity. These types model the two layers a session carries:
+//   - system data (collect can re-extract and refresh freely), and
+//   - user data (custom_title / favorited / group_id — re-extract MUST NOT
+//     overwrite; the UPSERT policy + the merge pure-functions in `ingest`
+//     enforce this invariant in code, per architecture.md).
+// `local_group_id` is local-only (never enters git); only the system data +
+// `custom_title` / `favorited` / `synced_group_id` ride the `session-meta` grain.
+
+/// Session system data: the layer collect re-extracts from the source log on
+/// every pass. Refreshable — re-collecting a session updates these fields in
+/// place. This is a strict subset of [`SessionMetaSync`] (which adds the
+/// syncable user data) and of the SQLite `sessions` row (which also adds the
+/// local-only `local_group_id`).
+///
+/// Also serves as the provider output type alias [`RawSession`] — there is no
+/// device/cost attaching step for sessions (unlike `RawUsage` → `UsageRecord`),
+/// so the provider-output shape and the system-data layer are identical. One
+/// struct, one source of truth (architecture.md).
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type,
+)]
+pub struct SessionSystemData {
+    /// Session id (Claude = the jsonl file stem).
+    pub id: String,
+    /// Provider tag, e.g. `claude_code`.
+    pub source: String,
+    /// Working directory the session ran in (Claude `cwd`).
+    pub project_dir: String,
+    /// Best-effort original title (Claude `summary` / first user message).
+    pub title_orig: String,
+    /// ISO8601 of the first event observed in the source log.
+    pub started_at: String,
+    /// ISO8601 of the most recent event observed. Drives cross-day snapshot
+    /// merge (latest wins) and session-list ordering.
+    pub last_active_at: String,
+}
+
+/// Provider-output alias for a parsed session (pre-device). Identical to
+/// [`SessionSystemData`] — no device/cost step exists for sessions, so the two
+/// concepts share one struct (single source of truth).
+pub type RawSession = SessionSystemData;
+
+/// `session-meta-<day>.jsonl` grain row = system data + the SYNCABLE user data
+/// (`custom_title` / `favorited` / `synced_group_id`). Deliberately does NOT
+/// carry `local_group_id` — that field is device-private and never enters git
+/// (ADR 0002). A session spanning multiple days writes one snapshot per day's
+/// file; readers merge by `id` (see `ingest::merge_session_snapshots`).
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type,
+)]
+pub struct SessionMetaSync {
+    // ---- system data (refreshable) ----
+    pub id: String,
+    pub source: String,
+    pub project_dir: String,
+    pub title_orig: String,
+    pub started_at: String,
+    pub last_active_at: String,
+    // ---- syncable user data (re-extract never overwrites; COALESCE on merge) ----
+    /// User rename; display-priority over `title_orig`.
+    #[serde(default)]
+    pub custom_title: String,
+    /// Favorited star; true ⇒ this device collects and syncs the transcript.
+    #[serde(default)]
+    pub favorited: bool,
+    /// Synced-group membership (cross-device, in-git). Empty = ungrouped.
+    #[serde(default)]
+    pub synced_group_id: String,
+}
+
+/// Role of a transcript line. Matches Claude Code's event types, collapsed to
+/// the four values the UI reasons about.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionMessageRole {
+    #[default]
+    User,
+    Assistant,
+    Tool,
+    System,
+}
+
+/// One transcript line. Single source of truth across three roles: provider
+/// output (`RawSessionMessage` concept), the per-session JSONL Artifact
+/// (`sessions/<id>.jsonl`), and the DTO crossing to the frontend. The shape is
+/// identical for all three, so one struct (single source of truth) — the
+/// `RawSessionMessage` name the design doc uses is a role, not a separate type.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct SessionMessage {
+    /// Source event uuid (dedup key within one session's transcript file).
+    pub uuid: String,
+    /// Session this message belongs to.
+    pub session_id: String,
+    pub role: SessionMessageRole,
+    /// ISO8601 timestamp of the source event.
+    pub ts: String,
+    /// Model on assistant messages (None for user/tool/system).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Tool name on tool_use messages (None otherwise).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Trimmed text content: text blocks for user/assistant, the tool_use `name`
+    /// summary for tool calls; thinking blocks' full text, base64 images, and
+    /// >32 KB tool_results are filtered/truncated at collect time.
+    pub content: String,
+}
+
+/// One session row for the frontend list. Aggregates (request_count /
+/// total_tokens / total_cost_usd) are computed live by `GROUP BY session_id`
+/// over `usage_records` at query time — they are NOT stored on the session, so
+/// there is no second source of token/cost truth to drift (ADR 0001).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct SessionRow {
+    pub id: String,
+    pub device_id: String,
+    pub source: String,
+    pub project_dir: String,
+    /// Display title: `custom_title` when set, else `title_orig`.
+    pub title: String,
+    pub favorited: bool,
+    pub local_group_id: String,
+    pub synced_group_id: String,
+    pub started_at: String,
+    pub last_active_at: String,
+    /// Live aggregate over `usage_records` for this session.
+    pub request_count: u32,
+    /// Live aggregate: sum of all four token buckets.
+    pub total_tokens: u32,
+    /// Live aggregate: sum of cost.
+    pub total_cost_usd: f64,
+}
+
+/// Optional filter for `query_sessions`. Every field optional; `None` = no
+/// constraint. Mirrors the shape of `UsageFilter` for the session list.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct SessionFilter {
+    /// Scope to one device (`None` = all devices).
+    pub device_scope: Option<String>,
+    /// Scope to one source, e.g. `claude_code`.
+    pub source: Option<String>,
+    /// `Some(true)` = only favorited; `Some(false)` = only non-favorited.
+    pub favorited: Option<bool>,
+    /// Scope to a local group (empty string matches ungrouped).
+    pub local_group_id: Option<String>,
+    /// Scope to a synced group (empty string matches ungrouped).
+    pub synced_group_id: Option<String>,
+    /// Inclusive lower bound on `last_active_at` (ISO8601).
+    pub from_ts: Option<String>,
+    /// Inclusive upper bound on `last_active_at` (ISO8601).
+    pub to_ts: Option<String>,
+}
+
+/// One group entry for the frontend, unified across the two tracks.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct SessionGroup {
+    pub id: String,
+    pub name: String,
+    /// `"local"` (device-private SQLite) or `"synced"` (per-device groups.json).
+    pub kind: String,
+    /// Owning device id. Only meaningful for `kind == "synced"`; empty for local.
+    pub device_id: String,
+}
+
+/// A local group row (SQLite `local_groups`; device-private, never enters git).
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type,
+)]
+pub struct LocalGroup {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+}
+
+/// A synced-group row (`data/<deviceId>/groups.json`; cross-device via git).
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type,
+)]
+pub struct SyncedGroup {
+    pub id: String,
+    pub name: String,
+    /// Owning device (the one that created the group). Encoded in the id prefix
+    /// too, but kept here for read-without-parse convenience.
+    pub device_id: String,
+    pub updated_at: String,
 }
 
 // ---- DTOs crossing the boundary (specta-typed, f64 cost) ----
@@ -502,6 +701,7 @@ mod tests {
             model: "glm-5.2".into(),
             pricing_model: "glm-5.2".into(),
             source: "claude_code".into(),
+            session_id: "session-abc".into(),
             device_id: "abc123def456".into(),
             tokens: TokenCounts::default(),
             server_tool_use: ServerToolUse::default(),
@@ -513,6 +713,74 @@ mod tests {
         assert_eq!(r.stop_reason, "tool_use");
         assert_eq!(r.service_tier, "standard");
         assert_eq!(r.iterations, 3);
+        assert_eq!(r.session_id, "session-abc");
+    }
+
+    #[test]
+    fn usage_record_session_id_defaults_empty_when_absent_in_jsonl() {
+        // An older Artifact line (pre-session) lacks `session_id`. It must
+        // deserialize with an empty default rather than fail — the column was
+        // added after the initial schema, and peers may still carry old lines.
+        let json = r#"{"uuid":"u1","timestamp":"2026-07-21T10:00:00Z","day":"2026-07-21","model":"glm-5.2","pricing_model":"glm-5.2","source":"claude_code","device_id":"abc123def456","tokens":{"input":0,"output":0,"cache_creation":0,"cache_read":0},"server_tool_use":{"web_search":0,"web_fetch":0},"stop_reason":"","service_tier":"","iterations":0,"cost":{"input_usd":"0","output_usd":"0","cache_read_usd":"0","cache_creation_usd":"0","total_usd":"0"}}"#;
+        let r: UsageRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(r.session_id, "", "absent session_id ⇒ empty default");
+    }
+
+    #[test]
+    fn session_types_roundtrip() {
+        let sys = SessionSystemData {
+            id: "s1".into(),
+            source: "claude_code".into(),
+            project_dir: "/proj".into(),
+            title_orig: "Hello".into(),
+            started_at: "2026-08-01T10:00:00Z".into(),
+            last_active_at: "2026-08-01T11:00:00Z".into(),
+        };
+        let s: SessionSystemData =
+            serde_json::from_str(&serde_json::to_string(&sys).unwrap()).unwrap();
+        assert_eq!(s, sys);
+
+        // SessionMetaSync round-trips its three user-data fields.
+        let meta = SessionMetaSync {
+            id: "s1".into(),
+            source: "claude_code".into(),
+            project_dir: "/p".into(),
+            title_orig: "orig".into(),
+            started_at: "2026-08-01T10:00:00Z".into(),
+            last_active_at: "2026-08-01T11:00:00Z".into(),
+            custom_title: "Renamed".into(),
+            favorited: true,
+            synced_group_id: "dev-abcd1234".into(),
+        };
+        let m: SessionMetaSync =
+            serde_json::from_str(&serde_json::to_string(&meta).unwrap()).unwrap();
+        assert_eq!(m, meta);
+
+        // A meta row missing the user-data keys (older grain line) deserializes
+        // to the defaults — `#[serde(default)]` on each user-data column.
+        let partial = r#"{"id":"s1","source":"claude_code","project_dir":"","title_orig":"","started_at":"","last_active_at":""}"#;
+        let pm: SessionMetaSync = serde_json::from_str(partial).unwrap();
+        assert_eq!(pm.custom_title, "");
+        assert!(!pm.favorited);
+        assert_eq!(pm.synced_group_id, "");
+    }
+
+    #[test]
+    fn session_message_roundtrips_and_skips_none_extras() {
+        let m = SessionMessage {
+            uuid: "e1".into(),
+            session_id: "s1".into(),
+            role: SessionMessageRole::Assistant,
+            ts: "2026-08-01T10:00:00Z".into(),
+            model: Some("glm-5.2".into()),
+            name: None,
+            content: "hi".into(),
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        let back: SessionMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, m);
+        // `name: None` is skipped on serialize (skip_serializing_if).
+        assert!(!json.contains("\"name\""));
     }
 
     #[test]

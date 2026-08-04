@@ -135,6 +135,37 @@ export const commands = {
 	 *  forget-device dialog to show what would be migrated or deleted.
 	 */
 	libraryDeviceSummary: (deviceId: string) => typedError<DeviceLibrarySummary, AppError>(__TAURI_INVOKE("library_device_summary", { deviceId })),
+	querySessionsCmd: (filter: {
+	/**  Scope to one device (`None` = all devices). */
+	device_scope: string | null,
+	/**  Scope to one source, e.g. `claude_code`. */
+	source: string | null,
+	/**  `Some(true)` = only favorited; `Some(false)` = only non-favorited. */
+	favorited: boolean | null,
+	/**  Scope to a local group (empty string matches ungrouped). */
+	local_group_id: string | null,
+	/**  Scope to a synced group (empty string matches ungrouped). */
+	synced_group_id: string | null,
+	/**  Inclusive lower bound on `last_active_at` (ISO8601). */
+	from_ts: string | null,
+	/**  Inclusive upper bound on `last_active_at` (ISO8601). */
+	to_ts: string | null,
+} | null) => typedError<SessionRow[], AppError>(__TAURI_INVOKE("query_sessions_cmd", { filter })),
+	getSessionTranscriptCmd: (id: string, deviceId: string) => typedError<SessionMessage_Serialize[], AppError>(__TAURI_INVOKE("get_session_transcript_cmd", { id, deviceId })),
+	setSessionFavoritedCmd: (id: string, deviceId: string, favorited: boolean) => typedError<null, AppError>(__TAURI_INVOKE("set_session_favorited_cmd", { id, deviceId, favorited })),
+	setSessionCustomTitleCmd: (id: string, deviceId: string, title: string | null) => typedError<null, AppError>(__TAURI_INVOKE("set_session_custom_title_cmd", { id, deviceId, title })),
+	setSessionLocalGroupCmd: (id: string, deviceId: string, groupId: string | null) => typedError<null, AppError>(__TAURI_INVOKE("set_session_local_group_cmd", { id, deviceId, groupId })),
+	setSessionSyncedGroupCmd: (id: string, deviceId: string, groupId: string | null) => typedError<null, AppError>(__TAURI_INVOKE("set_session_synced_group_cmd", { id, deviceId, groupId })),
+	listLocalGroupsCmd: () => typedError<LocalGroup[], AppError>(__TAURI_INVOKE("list_local_groups_cmd")),
+	createLocalGroupCmd: (name: string) => typedError<LocalGroup, AppError>(__TAURI_INVOKE("create_local_group_cmd", { name })),
+	renameLocalGroupCmd: (id: string, name: string) => typedError<null, AppError>(__TAURI_INVOKE("rename_local_group_cmd", { id, name })),
+	deleteLocalGroupCmd: (id: string) => typedError<null, AppError>(__TAURI_INVOKE("delete_local_group_cmd", { id })),
+	listSyncedGroupsCmd: () => typedError<SyncedGroup[], AppError>(__TAURI_INVOKE("list_synced_groups_cmd")),
+	createSyncedGroupCmd: (name: string) => typedError<SyncedGroup, AppError>(__TAURI_INVOKE("create_synced_group_cmd", { name })),
+	renameSyncedGroupCmd: (id: string, name: string) => typedError<null, AppError>(__TAURI_INVOKE("rename_synced_group_cmd", { id, name })),
+	deleteSyncedGroupCmd: (id: string) => typedError<null, AppError>(__TAURI_INVOKE("delete_synced_group_cmd", { id })),
+	/**  Unified groups list (local + synced) for one-shot UI fetch. */
+	listGroupsCmd: () => typedError<SessionGroup[], AppError>(__TAURI_INVOKE("list_groups_cmd")),
 	/**
 	 *  Dock the given window against the right edge of its current monitor.
 	 * 
@@ -318,6 +349,13 @@ export type LightweightExpand =
 /**  Hover the half-icon to expand. */
 "hover";
 
+/**  A local group row (SQLite `local_groups`; device-private, never enters git). */
+export type LocalGroup = {
+	id: string,
+	name: string,
+	created_at: string,
+};
+
 /**  Query params for the request-log endpoint (adds paging to `UsageFilter`). */
 export type LogsQuery = {
 	filter: UsageFilter,
@@ -378,6 +416,132 @@ export type PricingEntry = {
 export type RunMode = "standalone" | "synced";
 
 /**
+ *  Optional filter for `query_sessions`. Every field optional; `None` = no
+ *  constraint. Mirrors the shape of `UsageFilter` for the session list.
+ */
+export type SessionFilter = {
+	/**  Scope to one device (`None` = all devices). */
+	device_scope: string | null,
+	/**  Scope to one source, e.g. `claude_code`. */
+	source: string | null,
+	/**  `Some(true)` = only favorited; `Some(false)` = only non-favorited. */
+	favorited: boolean | null,
+	/**  Scope to a local group (empty string matches ungrouped). */
+	local_group_id: string | null,
+	/**  Scope to a synced group (empty string matches ungrouped). */
+	synced_group_id: string | null,
+	/**  Inclusive lower bound on `last_active_at` (ISO8601). */
+	from_ts: string | null,
+	/**  Inclusive upper bound on `last_active_at` (ISO8601). */
+	to_ts: string | null,
+};
+
+/**  One group entry for the frontend, unified across the two tracks. */
+export type SessionGroup = {
+	id: string,
+	name: string,
+	/**  `"local"` (device-private SQLite) or `"synced"` (per-device groups.json). */
+	kind: string,
+	/**  Owning device id. Only meaningful for `kind == "synced"`; empty for local. */
+	device_id: string,
+};
+
+/**
+ *  One transcript line. Single source of truth across three roles: provider
+ *  output (`RawSessionMessage` concept), the per-session JSONL Artifact
+ *  (`sessions/<id>.jsonl`), and the DTO crossing to the frontend. The shape is
+ *  identical for all three, so one struct (single source of truth) — the
+ *  `RawSessionMessage` name the design doc uses is a role, not a separate type.
+ */
+export type SessionMessage = SessionMessage_Serialize | SessionMessage_Deserialize;
+
+/**
+ *  Role of a transcript line. Matches Claude Code's event types, collapsed to
+ *  the four values the UI reasons about.
+ */
+export type SessionMessageRole = "user" | "assistant" | "tool" | "system";
+
+/**
+ *  One transcript line. Single source of truth across three roles: provider
+ *  output (`RawSessionMessage` concept), the per-session JSONL Artifact
+ *  (`sessions/<id>.jsonl`), and the DTO crossing to the frontend. The shape is
+ *  identical for all three, so one struct (single source of truth) — the
+ *  `RawSessionMessage` name the design doc uses is a role, not a separate type.
+ */
+export type SessionMessage_Deserialize = {
+	/**  Source event uuid (dedup key within one session's transcript file). */
+	uuid: string,
+	/**  Session this message belongs to. */
+	session_id: string,
+	role: SessionMessageRole,
+	/**  ISO8601 timestamp of the source event. */
+	ts: string,
+	/**  Model on assistant messages (None for user/tool/system). */
+	model?: string | null,
+	/**  Tool name on tool_use messages (None otherwise). */
+	name?: string | null,
+	/**
+	 *  Trimmed text content: text blocks for user/assistant, the tool_use `name`
+	 *  summary for tool calls; thinking blocks' full text, base64 images, and
+	 *  >32 KB tool_results are filtered/truncated at collect time.
+	 */
+	content: string,
+};
+
+/**
+ *  One transcript line. Single source of truth across three roles: provider
+ *  output (`RawSessionMessage` concept), the per-session JSONL Artifact
+ *  (`sessions/<id>.jsonl`), and the DTO crossing to the frontend. The shape is
+ *  identical for all three, so one struct (single source of truth) — the
+ *  `RawSessionMessage` name the design doc uses is a role, not a separate type.
+ */
+export type SessionMessage_Serialize = {
+	/**  Source event uuid (dedup key within one session's transcript file). */
+	uuid: string,
+	/**  Session this message belongs to. */
+	session_id: string,
+	role: SessionMessageRole,
+	/**  ISO8601 timestamp of the source event. */
+	ts: string,
+	/**  Model on assistant messages (None for user/tool/system). */
+	model?: string | null,
+	/**  Tool name on tool_use messages (None otherwise). */
+	name?: string | null,
+	/**
+	 *  Trimmed text content: text blocks for user/assistant, the tool_use `name`
+	 *  summary for tool calls; thinking blocks' full text, base64 images, and
+	 *  >32 KB tool_results are filtered/truncated at collect time.
+	 */
+	content: string,
+};
+
+/**
+ *  One session row for the frontend list. Aggregates (request_count /
+ *  total_tokens / total_cost_usd) are computed live by `GROUP BY session_id`
+ *  over `usage_records` at query time — they are NOT stored on the session, so
+ *  there is no second source of token/cost truth to drift (ADR 0001).
+ */
+export type SessionRow = {
+	id: string,
+	device_id: string,
+	source: string,
+	project_dir: string,
+	/**  Display title: `custom_title` when set, else `title_orig`. */
+	title: string,
+	favorited: boolean,
+	local_group_id: string,
+	synced_group_id: string,
+	started_at: string,
+	last_active_at: string,
+	/**  Live aggregate over `usage_records` for this session. */
+	request_count: number,
+	/**  Live aggregate: sum of all four token buckets. */
+	total_tokens: number,
+	/**  Live aggregate: sum of cost. */
+	total_cost_usd: number | null,
+};
+
+/**
  *  Color skin for multi-skin theming (token-first). Serialized
  *  snake_case; `neutral` is the default and maps to NO `data-skin` attribute on
  *  `<html>` (the :root/.dark values in src/index.css ARE the Neutral palette —
@@ -424,6 +588,18 @@ export type Skin_Deserialize = "neutral" | "pixso" | "sage" | "cuiwei" | "azure"
  *  default) → `Neutral` (the new default); the rest map by hue family.
  */
 export type Skin_Serialize = "neutral" | "sage" | "azure" | "crimson" | "mauve";
+
+/**  A synced-group row (`data/<deviceId>/groups.json`; cross-device via git). */
+export type SyncedGroup = {
+	id: string,
+	name: string,
+	/**
+	 *  Owning device (the one that created the group). Encoded in the id prefix
+	 *  too, but kept here for read-without-parse convenience.
+	 */
+	device_id: string,
+	updated_at: string,
+};
 
 /**  Token four-pack (per-call). `u32` across the boundary. */
 export type TokenCounts = {

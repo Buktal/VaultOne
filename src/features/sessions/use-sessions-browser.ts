@@ -1,0 +1,444 @@
+// Sessions browser state + actions, extracted from SessionsView so the
+// component shrinks to pure rendering. Owns: the tab / search / sidebar-group
+// selection, the session list + groups + devices queries, the transcript query
+// for the open detail sheet, optimistic favorite toggling, the two-track group
+// CRUD (local = immediate, synced = async git push → optimistic + loading), and
+// the derived sidebar buckets / visible-session list.
+//
+// vitest runs in a node-only environment (no DOM — see vitest.config.ts), so
+// renderHook is out of scope; the companion test guards that this module
+// imports cleanly in node (it pulls the tauri-specta API + RTK Query hooks).
+
+import dayjs from "dayjs"
+import { useEffect, useMemo, useState } from "react"
+import { useTranslation } from "react-i18next"
+import { toast } from "sonner"
+import {
+  useAppInfoQuery,
+  useCreateLocalGroupMutation,
+  useCreateSyncedGroupMutation,
+  useDeleteLocalGroupMutation,
+  useDeleteSyncedGroupMutation,
+  useDevicesQuery,
+  useListGroupsQuery,
+  useListSessionsQuery,
+  useRenameLocalGroupMutation,
+  useRenameSyncedGroupMutation,
+  useSessionTranscriptQuery,
+  useSetSessionCustomTitleMutation,
+  useSetSessionFavoritedMutation,
+  useSetSessionLocalGroupMutation,
+  useSetSessionSyncedGroupMutation,
+} from "@/app/store/api"
+import { useAppDispatch } from "@/app/store/hooks"
+import { type Preset, presetDays } from "@/app/store/slices/filterSlice"
+import { setView } from "@/app/store/slices/viewSlice"
+import { useCollectAction } from "@/hooks/use-collect-action"
+import { useMutateWithToast } from "@/hooks/use-toast-mutation"
+import { usePersistedState } from "@/lib/persistence"
+import type { SessionGroup, SessionRow } from "@/types/generated/bindings"
+import {
+  ALL_GROUPS,
+  filterSessionsByQuery,
+  type GroupTrack,
+  groupSessionsByGroup,
+  type SessionTab,
+  selectSessions,
+  sessionTabFilter,
+  sortSessions,
+} from "./derive"
+
+/** Persisted-tab key — the chosen tab (local / favorites) survives restarts. */
+const TAB_KEY = "vaultone:sessions-tab"
+
+/** Composite key for the optimistic-favorite override map — a session is
+ *  uniquely (device_id, id), and the same id could exist on two devices. */
+function favKey(s: SessionRow): string {
+  return `${s.device_id}/${s.id}`
+}
+
+export function useSessionsBrowser() {
+  const { t } = useTranslation()
+  const dispatch = useAppDispatch()
+  const [tab, setTab] = usePersistedState<SessionTab>(TAB_KEY, "local")
+  const [search, setSearch] = useState("")
+  const [source, setSource] = useState("")
+  // Time-range filter (mirrors the logs ControlBar): a dynamic preset (today /
+  // 7d / 30d / all) is the source of truth — its day bounds are computed on
+  // selection. "custom" keeps the user-picked days verbatim.
+  const [rangePreset, setRangePresetState] = useState<Preset>("all")
+  const [fromDay, setFromDay] = useState("")
+  const [toDay, setToDay] = useState("")
+  // Device filter (Favorites tab only — narrows "all devices" to one).
+  const [deviceScope, setDeviceScope] = useState("")
+  const [selectedGroupId, setSelectedGroupId] = useState<string>(ALL_GROUPS)
+  const [favOverrides, setFavOverrides] = useState<Record<string, boolean>>({})
+  const [pendingGroup, setPendingGroup] = useState<string | null>(null)
+  const [busyGroupId, setBusyGroupId] = useState<string | null>(null)
+  const [preview, setPreview] = useState<SessionRow | null>(null)
+  const [editTitle, setEditTitle] = useState(false)
+  const [titleDraft, setTitleDraft] = useState("")
+  const [createGroupOpen, setCreateGroupOpen] = useState(false)
+
+  // The sidebar selection is track-scoped (local vs synced group ids are
+  // disjoint spaces), so a tab switch must drop a stale selection.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional — reset the group selection on tab switch; the body needs no tab value
+  useEffect(() => {
+    setSelectedGroupId(ALL_GROUPS)
+  }, [tab])
+
+  const { data: appInfo } = useAppInfoQuery()
+  const selfDeviceId = appInfo?.device_id ?? ""
+  const synced = appInfo?.mode === "synced"
+  const effectiveTrack: GroupTrack = tab === "local" ? "local" : "synced"
+
+  // Time-range filter: picking a dynamic preset (today/7d/30d) computes the
+  // concrete day bounds on the spot; "all" clears them. Manual date edits flip
+  // to "custom". The days (not the preset label) are the filter source of truth,
+  // matching the usage view's pattern.
+  function setRangePreset(p: Preset): void {
+    setRangePresetState(p)
+    const days = p === "all" ? { from_day: "", to_day: "" } : presetDays(p)
+    setFromDay(days.from_day)
+    setToDay(days.to_day)
+  }
+  function patchFromDay(d: string): void {
+    setRangePresetState("custom")
+    setFromDay(d)
+  }
+  function patchToDay(d: string): void {
+    setRangePresetState("custom")
+    setToDay(d)
+  }
+  // Local-day range → inclusive ISO8601 timestamp bounds on last_active_at.
+  const fromTs = fromDay ? dayjs(fromDay).startOf("day").toISOString() : null
+  const toTs = toDay ? dayjs(toDay).endOf("day").toISOString() : null
+
+  // Sessions for the active tab, narrowed by the toolbar filters (time / source
+  // / device). All narrowing is backend-side (single source of truth) — the
+  // substring search box below is a separate client-side concern. Skipped until
+  // selfDeviceId resolves so the local tab never queries with an empty
+  // device_scope.
+  const sessionsQuery = useListSessionsQuery(
+    sessionTabFilter(tab, selfDeviceId, {
+      source: source || null,
+      fromTs,
+      toTs,
+      deviceScope: deviceScope || null,
+    }),
+    {
+      skip: !selfDeviceId,
+    },
+  )
+  const sessions = sessionsQuery.data ?? []
+  const { data: groups = [] } = useListGroupsQuery()
+  const { data: devices = [] } = useDevicesQuery()
+  const transcriptQuery = useSessionTranscriptQuery(
+    preview
+      ? { id: preview.id, deviceId: preview.device_id }
+      : { id: "", deviceId: "" },
+    { skip: !preview },
+  )
+
+  // Drop optimistic overrides the moment fresh list data lands — the write's
+  // invalidation triggered a refetch, so the real favorited value is now in.
+  const sessionsData = sessionsQuery.data
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional — clear overrides when fresh query data arrives; the body needs no sessionsData value
+  useEffect(() => {
+    setFavOverrides({})
+  }, [sessionsData])
+
+  const [favoritedMut] = useSetSessionFavoritedMutation()
+  const [customTitleMut] = useSetSessionCustomTitleMutation()
+  const [setLocalGroupMut] = useSetSessionLocalGroupMutation()
+  const [setSyncedGroupMut] = useSetSessionSyncedGroupMutation()
+  const [createLocalMut] = useCreateLocalGroupMutation()
+  const [renameLocalMut] = useRenameLocalGroupMutation()
+  const [deleteLocalMut] = useDeleteLocalGroupMutation()
+  const [createSyncedMut] = useCreateSyncedGroupMutation()
+  const [renameSyncedMut] = useRenameSyncedGroupMutation()
+  const [deleteSyncedMut] = useDeleteSyncedGroupMutation()
+  const runWithToast = useMutateWithToast()
+  // Shared collect trigger — same path as the request-log ControlBar
+  // (architecture.md: 单一事实来源). The favorites tab spans devices but the
+  // button is "collect sessions", so it always reads as collect, never sync.
+  const { onCollect, collecting } = useCollectAction(false)
+
+  // ---- derived read model (pure functions from ./derive) ----
+  const trackGroups = useMemo(
+    () => groups.filter((g) => g.kind === effectiveTrack),
+    [groups, effectiveTrack],
+  )
+  const sorted = useMemo(() => sortSessions(sessions), [sessions])
+  const filtered = useMemo(
+    () => filterSessionsByQuery(sorted, search),
+    [sorted, search],
+  )
+  const grouped = useMemo(
+    () => groupSessionsByGroup(filtered, groups, effectiveTrack),
+    [filtered, groups, effectiveTrack],
+  )
+  const visibleSessions = useMemo(
+    () => selectSessions(filtered, grouped, selectedGroupId),
+    [filtered, grouped, selectedGroupId],
+  )
+
+  // id → display label for the favorites tab's source-device column. Self is
+  // "This device"; a peer is its display name (or "Unnamed").
+  const deviceLabel = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const d of devices) {
+      m.set(
+        d.device_id,
+        d.is_self
+          ? t("devices.thisDevice")
+          : d.display_name || t("common.unnamed"),
+      )
+    }
+    return m
+  }, [devices, t])
+  // Device-picker options for the Favorites-tab device filter. Same label logic
+  // as deviceLabel; empty when ≤1 device so a single-machine setup renders no
+  // device filter (mirrors the usage view's useDeviceOptions).
+  const deviceOptions = useMemo(
+    () =>
+      devices.length <= 1
+        ? []
+        : devices.map((d) => ({
+            id: d.device_id,
+            label: d.is_self
+              ? t("devices.thisDevice")
+              : d.display_name || t("common.unnamed"),
+          })),
+    [devices, t],
+  )
+  // The device column only matters in the favorites tab, and only when there
+  // is more than one device (otherwise every row is "This device" — noise).
+  const showDeviceColumn = tab === "favorites" && devices.length > 1
+
+  // ---- effective favorite (optimistic override over the query value) ----
+  function effectiveFavorite(s: SessionRow): boolean {
+    const k = favKey(s)
+    return k in favOverrides ? favOverrides[k] : s.favorited
+  }
+
+  // ---- session row actions ----
+  async function toggleFavorite(s: SessionRow): Promise<void> {
+    const next = !effectiveFavorite(s)
+    setFavOverrides((p) => ({ ...p, [favKey(s)]: next }))
+    const ok = await runWithToast(
+      favoritedMut,
+      { id: s.id, deviceId: s.device_id, favorited: next },
+      {
+        success: {
+          key: next ? "sessions.toast.favorited" : "sessions.toast.unfavorited",
+        },
+        failed: { key: "sessions.toast.failed" },
+      },
+    )
+    if (!ok) {
+      // Rollback the optimistic flip.
+      setFavOverrides((p) => {
+        const c = { ...p }
+        delete c[favKey(s)]
+        return c
+      })
+    }
+  }
+
+  async function setSessionGroup(
+    s: SessionRow,
+    groupId: string | null,
+  ): Promise<void> {
+    const mut =
+      effectiveTrack === "local" ? setLocalGroupMut : setSyncedGroupMut
+    await runWithToast(
+      mut,
+      { id: s.id, deviceId: s.device_id, groupId },
+      {
+        success: { key: "sessions.toast.groupAssigned" },
+        failed: { key: "sessions.toast.failed" },
+      },
+    )
+  }
+
+  // ---- detail sheet: title rename ----
+  function startEditTitle(): void {
+    if (!preview) return
+    setEditTitle(true)
+    setTitleDraft(preview.title)
+  }
+  function cancelEditTitle(): void {
+    setEditTitle(false)
+  }
+  async function commitEditTitle(): Promise<void> {
+    if (!preview) return
+    const name = titleDraft.trim()
+    // Empty draft = revert to the original title (clears the custom override).
+    if (!name || name === preview.title) {
+      setEditTitle(false)
+      return
+    }
+    const ok = await runWithToast(
+      customTitleMut,
+      { id: preview.id, deviceId: preview.device_id, title: name },
+      {
+        success: { key: "sessions.toast.renamed" },
+        failed: { key: "sessions.toast.failed" },
+      },
+    )
+    if (ok) setEditTitle(false)
+  }
+
+  // ---- group CRUD ----
+  // Local groups are immediate (SQLite); synced groups round-trip through git
+  // push, so the UI shows an optimistic pending row + spinner until the write
+  // resolves (ADR 0002).
+  //
+  // Synced (Favorites-tab) groups need a bound Git repo — without one the
+  // create would silently fail or hang. openCreateGroup is the UX guard (toast
+  // + a one-hop to Settings, never opens the dialog); createGroup re-checks
+  // defensively in case a caller bypasses the opener.
+  function canCreateSyncedGroup(): boolean {
+    return effectiveTrack !== "synced" || synced
+  }
+  function notifyGitRequired(): void {
+    toast.warning(t("sessions.group.gitRequiredTitle"), {
+      description: t("sessions.group.gitRequiredDesc"),
+      action: {
+        label: t("sessions.group.gitRequiredAction"),
+        onClick: () => dispatch(setView("settings")),
+      },
+    })
+  }
+  function openCreateGroup(): void {
+    if (!canCreateSyncedGroup()) {
+      notifyGitRequired()
+      return
+    }
+    setCreateGroupOpen(true)
+  }
+  async function createGroup(name: string): Promise<boolean> {
+    const trimmed = name.trim()
+    if (!trimmed) return false
+    if (!canCreateSyncedGroup()) {
+      notifyGitRequired()
+      return false
+    }
+    // Branch per track so the toast helper can infer a single return type
+    // (createLocal returns LocalGroup, createSynced returns SyncedGroup — a
+    // union trigger would not unify).
+    setPendingGroup(trimmed)
+    const ok =
+      effectiveTrack === "local"
+        ? await runWithToast(createLocalMut, trimmed, {
+            success: { key: "sessions.toast.groupCreated" },
+            failed: { key: "sessions.toast.failed" },
+          })
+        : await runWithToast(createSyncedMut, trimmed, {
+            success: { key: "sessions.toast.groupCreated" },
+            failed: { key: "sessions.toast.failed" },
+          })
+    setPendingGroup(null)
+    if (ok) setCreateGroupOpen(false)
+    return ok
+  }
+
+  async function renameGroup(g: SessionGroup, name: string): Promise<void> {
+    const trimmed = name.trim()
+    if (!trimmed || trimmed === g.name) return
+    setBusyGroupId(g.id)
+    try {
+      const mut = g.kind === "local" ? renameLocalMut : renameSyncedMut
+      await runWithToast(
+        mut,
+        { id: g.id, name: trimmed },
+        {
+          success: { key: "sessions.toast.groupRenamed" },
+          failed: { key: "sessions.toast.failed" },
+        },
+      )
+    } finally {
+      setBusyGroupId(null)
+    }
+  }
+
+  async function deleteGroup(g: SessionGroup): Promise<void> {
+    setBusyGroupId(g.id)
+    try {
+      const mut = g.kind === "local" ? deleteLocalMut : deleteSyncedMut
+      const ok = await runWithToast(mut, g.id, {
+        success: { key: "sessions.toast.groupDeleted" },
+        failed: { key: "sessions.toast.failed" },
+      })
+      if (ok && selectedGroupId === g.id) setSelectedGroupId(ALL_GROUPS)
+    } finally {
+      setBusyGroupId(null)
+    }
+  }
+
+  return {
+    // tab / search / source / selection
+    tab,
+    setTab,
+    search,
+    setSearch,
+    source,
+    setSource,
+    selectedGroupId,
+    setSelectedGroupId,
+    effectiveTrack,
+    // toolbar filters (time range · device)
+    rangePreset,
+    fromDay,
+    toDay,
+    setRangePreset,
+    setFromDay: patchFromDay,
+    setToDay: patchToDay,
+    deviceScope,
+    setDeviceScope,
+    deviceOptions,
+    // collect (shared trigger)
+    onCollect,
+    collecting,
+    // data
+    sessions,
+    isLoading: sessionsQuery.isLoading,
+    error: sessionsQuery.error,
+    trackGroups,
+    grouped,
+    visibleSessions,
+    totalCount: filtered.length,
+    // device labels (favorites tab)
+    deviceLabel,
+    showDeviceColumn,
+    // session row actions
+    effectiveFavorite,
+    toggleFavorite,
+    setSessionGroup,
+    // detail sheet
+    preview,
+    setPreview,
+    transcript: transcriptQuery.data ?? [],
+    transcriptLoading: transcriptQuery.isLoading,
+    transcriptError: transcriptQuery.error,
+    refetchTranscript: transcriptQuery.refetch,
+    editTitle,
+    titleDraft,
+    setTitleDraft,
+    startEditTitle,
+    cancelEditTitle,
+    commitEditTitle,
+    // group CRUD
+    createGroupOpen,
+    setCreateGroupOpen,
+    openCreateGroup,
+    createGroup,
+    renameGroup,
+    deleteGroup,
+    pendingGroup,
+    busyGroupId,
+  }
+}
+
+export type UseSessionsBrowser = ReturnType<typeof useSessionsBrowser>
