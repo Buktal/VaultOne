@@ -20,6 +20,10 @@
 // This hook is mounted in App (always under the Redux store, never unmounted
 // by a lightweight switch), so the onMoved/onResized listeners it attaches in
 // full mode keep recording the user's placement for the whole session.
+//
+// getCurrentWindow() is fetched lazily inside each effect (not at module top),
+// so importing this hook does not blow up a non-Tauri test environment. The OS
+// window handle thus stays inside the effect seam, never at module load time.
 
 import { getCurrentWindow } from "@tauri-apps/api/window"
 import { useEffect } from "react"
@@ -40,14 +44,13 @@ import { useAppSelector } from "@/app/store/hooks"
 import { flushPendingWrites } from "@/lib/persistence"
 import { clampToMinFull, DEFAULT_SIZE, meetsMinFull } from "./window-shapes"
 
-const appWindow = getCurrentWindow()
-
 export function useWindowMode() {
   const mode = useAppSelector((s) => s.view.mode)
 
   // Morph always-on-top / taskbar / resizability + restore full geometry.
   useEffect(() => {
     void (async () => {
+      const appWindow = getCurrentWindow()
       if (mode === "lightweight") {
         await appWindow.setAlwaysOnTop(true)
         // Hide from the taskbar AND Alt+Tab; the tray icon still surfaces it.
@@ -66,10 +69,10 @@ export function useWindowMode() {
       // two monitors of different DPI — which would flip MonitorFromWindow
       // and lock WebView2 to the wrong rasterization scale (content renders
       // too small on high-DPI multi-monitor setups).
-      await restoreFullGeometry()
+      await restoreFullGeometry(appWindow)
       // Establish/refresh the baseline record from the actual on-screen rect so
       // the partial patches recorded below always have a record to hit.
-      await snapshotFull()
+      await snapshotFull(appWindow)
     })().catch(() => {})
   }, [mode])
 
@@ -80,6 +83,7 @@ export function useWindowMode() {
   // geometry, so maximizing leaves it alone and an unmaximize returns to it.
   useEffect(() => {
     if (mode !== "full") return
+    const appWindow = getCurrentWindow()
     let cancelled = false
     let unlistenMoved: (() => void) | null = null
     let unlistenResized: (() => void) | null = null
@@ -129,7 +133,9 @@ export function useWindowMode() {
  *  (after first seating the restored rect so an unmaximize returns to it),
  *  otherwise land at the stored rect, or center the default size on the very
  *  first entry when nothing is stored yet. */
-async function restoreFullGeometry(): Promise<void> {
+async function restoreFullGeometry(
+  appWindow: ReturnType<typeof getCurrentWindow>,
+): Promise<void> {
   const geom: FullGeom | null = readFull()
   if (!geom) {
     await centerWindow(DEFAULT_SIZE.w, DEFAULT_SIZE.h)
@@ -151,7 +157,9 @@ async function restoreFullGeometry(): Promise<void> {
  *  when windowed — a maximized window's outer rect overflows its monitor and is
  *  not the user's "restored" geometry, so we leave the stored rect alone and
  *  only flip the flag. */
-async function snapshotFull(): Promise<void> {
+async function snapshotFull(
+  appWindow: ReturnType<typeof getCurrentWindow>,
+): Promise<void> {
   const isMax = await appWindow.isMaximized()
   if (isMax) {
     saveFullMaximized(true)

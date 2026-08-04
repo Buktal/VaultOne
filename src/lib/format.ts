@@ -39,6 +39,16 @@ export function formatPct(rate: number | null | undefined): string {
   return `${(v * 100).toFixed(1)}%`
 }
 
+/** Milliseconds → `12.3s` / `1m05s`. Em-dash when absent / non-positive. */
+export function formatDuration(ms: number | null | undefined): string {
+  const v = Number(ms ?? 0)
+  if (!Number.isFinite(v) || v <= 0) return "—"
+  if (v < 60_000) return `${(v / 1000).toFixed(1)}s`
+  const m = Math.floor(v / 60_000)
+  const sec = Math.round((v % 60_000) / 1000)
+  return `${m}m${sec.toString().padStart(2, "0")}s`
+}
+
 /** ISO timestamp → `MM/DD HH:mm`. Falls back to the raw string on bad input. */
 export function formatTime(ts: string | null | undefined): string {
   if (!ts) return "—"

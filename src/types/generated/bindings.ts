@@ -9,9 +9,13 @@ export const commands = {
 	getAppInfo: () => typedError<AppInfo, AppError>(__TAURI_INVOKE("get_app_info")),
 	/**
 	 *  Configure the sync repo + PAT, upgrading Standalone → Synced, then
-	 *  immediately pull the remote so peer devices show up without a restart (the
-	 *  startup pull only fires on next launch). Best-effort: a pull failure doesn't
-	 *  undo the bind — the next startup pull retries.
+	 *  immediately run one sync round (pull peers + push self) so peer devices show
+	 *  up and this device's existing data reaches the repo without a restart (the
+	 *  startup sync only fires on next launch). Routed through `collect::sync_round`
+	 *  — the same primitive the scheduler runs each push interval — but WITHOUT the
+	 *  retry wrapping that `align` (the manual collect/sync buttons) applies: a
+	 *  failure here is logged and left for the next startup sync to retry, not
+	 *  retried in place. Best-effort: a sync failure doesn't undo the bind.
 	 */
 	setSyncRepo: (repoUrl: string, githubToken: string) => typedError<RunMode, AppError>(__TAURI_INVOKE("set_sync_repo", { repoUrl, githubToken })),
 	/**

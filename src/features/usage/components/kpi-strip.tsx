@@ -7,20 +7,10 @@
 import { useTranslation } from "react-i18next"
 import { useStatsQuery, ZERO_STATS } from "@/app/store/api"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { formatCost, formatInt } from "@/lib/format"
+import { formatCost, formatDuration, formatInt } from "@/lib/format"
 import { cn } from "@/lib/utils"
 
 import type { UsageFilter } from "@/types/generated/bindings"
-
-/** Milliseconds → `12.3s` / `1m05s`. Em-dash when absent. */
-function formatDuration(ms: number | null | undefined): string {
-  const v = Number(ms ?? 0)
-  if (!Number.isFinite(v) || v <= 0) return "—"
-  if (v < 60_000) return `${(v / 1000).toFixed(1)}s`
-  const m = Math.floor(v / 60_000)
-  const sec = Math.round((v % 60_000) / 1000)
-  return `${m}m${sec.toString().padStart(2, "0")}s`
-}
 
 export function KpiStrip({ filter }: { filter: UsageFilter }) {
   const { t } = useTranslation()

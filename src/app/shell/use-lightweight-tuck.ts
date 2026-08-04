@@ -19,6 +19,9 @@
 // Dragging either shape moves it; the Y is remembered so the next dock keeps
 // it. The dock runs only on phase change / height resize — the card does NOT
 // auto-snap back to the edge on drag, so the user can park it.
+//
+// getCurrentWindow() is fetched lazily inside the onMoved effect (not at module
+// top), so importing this hook does not blow up a non-Tauri test environment.
 
 import { getCurrentWindow } from "@tauri-apps/api/window"
 import { useCallback, useEffect, useRef } from "react"
@@ -40,8 +43,6 @@ import {
   TUCKED_HEIGHT,
   TUCKED_WIDTH,
 } from "./window-shapes"
-
-const appWindow = getCurrentWindow()
 
 export type TuckPhase = "tucked" | "expanded"
 
@@ -139,6 +140,7 @@ export function useLightweightTuck() {
   // No auto-tuck, no re-dock on drag — the card stays where it's dropped until
   // the next explicit phase change.
   useEffect(() => {
+    const appWindow = getCurrentWindow()
     const unlisten = appWindow.onMoved(({ payload }) => {
       if (programmatic.current || settling.current) return
       void (async () => {

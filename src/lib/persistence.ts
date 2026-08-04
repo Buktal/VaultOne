@@ -5,8 +5,7 @@
 //      of writes (e.g. window `onMoved` firing once per pixel of a drag) into
 //      one disk write per idle gap, so dragging a window no longer hammers
 //      localStorage. The latest value per key is held in memory and committed
-//      when the burst settles (default 300ms, matching the Redux filter
-//      persistence in app/store/store.ts). Pending writes are flushed
+//      when the burst settles (default 300ms). Pending writes are flushed
 //      synchronously via `flushPendingWrites()` — wired to `beforeunload` below
 //      and to the consumers' unmount effects — so the trailing debounced value
 //      is never lost to a close/unmount mid-burst.
@@ -30,12 +29,9 @@
 //     side effect) that must outlive any single hook instance and be shared
 //     app-wide; that singleton stays a module-level `let`. Only its throttled
 //     "last check" timestamp (a plain number) goes through `usePersistedState`.
-//
-// ─── Also NOT migrated (different mechanism, kept as the reference) ───
-//   • Redux filter slice (`FILTER_STORAGE_KEY`) — persists via `store.subscribe`
-//     + `setTimeout`, the ORIGINAL debounced pattern whose 300ms this module's
-//     default aligns with. RTK state crosses slice boundaries and is read by
-//     selectors; it is not a `useState` leaf and does not fit usePersistedState.
+//   (The Redux filter slice was once a third, hand-rolled persistence path; its
+//   write side now also goes through `debouncedLocalStorageWrite`, so only these
+//   two remain as genuine exceptions.)
 
 import { type Dispatch, type SetStateAction, useEffect, useState } from "react"
 
@@ -66,8 +62,8 @@ function commit(key: string): void {
 
 /** Schedule a debounced write of `value` to `key` (JSON-serialized). Repeated
  *  calls within `debounceMs` reset the timer and replace the pending value, so
- *  only the LAST value in a burst lands on disk. Default 300ms (aligned with
- *  the Redux filter persistence). A `value` of `undefined` is a no-op — nothing
+ *  only the LAST value in a burst lands on disk. Default 300ms. A `value` of
+ *  `undefined` is a no-op — nothing
  *  meaningful to persist. */
 export function debouncedLocalStorageWrite(
   key: string,

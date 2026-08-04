@@ -4,6 +4,7 @@ import {
   dateInputToDay,
   formatCost,
   formatDay,
+  formatDuration,
   formatInt,
   formatPct,
   formatTokens,
@@ -60,6 +61,26 @@ describe("formatPct", () => {
     expect(formatPct(0)).toBe("0.0%")
     expect(formatPct(null)).toBe("0.0%")
     expect(formatPct(Number.NaN)).toBe("0%")
+  })
+})
+
+describe("formatDuration", () => {
+  it("em-dash for nullish / non-positive / non-finite", () => {
+    expect(formatDuration(null)).toBe("—")
+    expect(formatDuration(undefined)).toBe("—")
+    expect(formatDuration(0)).toBe("—")
+    expect(formatDuration(-5)).toBe("—")
+    expect(formatDuration(Number.NaN)).toBe("—")
+  })
+
+  it("sub-minute → seconds with one decimal", () => {
+    expect(formatDuration(12_300)).toBe("12.3s")
+    expect(formatDuration(999)).toBe("1.0s")
+  })
+
+  it(">= 1 minute → mSS format, zero-padded seconds", () => {
+    expect(formatDuration(65_000)).toBe("1m05s")
+    expect(formatDuration(3_602_000)).toBe("60m02s")
   })
 })
 

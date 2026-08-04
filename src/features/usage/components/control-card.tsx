@@ -19,6 +19,7 @@ import type { ReactNode } from "react"
 import { useTranslation } from "react-i18next"
 import { DataFreshness } from "@/app/shell/data-freshness"
 import {
+  useAppInfoQuery,
   useCollectMutation,
   useDistinctModelsQuery,
   useDistinctSourcesQuery,
@@ -76,7 +77,13 @@ const PRESETS: Array<{ value: SelectablePreset; key: string }> = [
  *  触发 → 失效缓存 → 刷新新鲜度 → toast. 文案/反馈按模式自适应. */
 function useCollectAction(multiDevice: boolean) {
   const { t } = useTranslation()
-  const { markCollected } = useFreshness()
+  const { markCollected, markSynced } = useFreshness()
+  // `collectNow` runs `align`: Standalone ⇒ local collect only; Synced ⇒
+  // collect + pull + push. So a push actually happened iff the run mode is
+  // Synced — gate the "synced" freshness stamp on that, not on the device
+  // count (you can be Standalone with several discovered devices).
+  const { data: info } = useAppInfoQuery(undefined, { pollingInterval: 0 })
+  const synced = info?.mode === "synced"
   const [collect, { isLoading: collecting }] = useCollectMutation()
   const runWithToast = useMutateWithToast()
   async function onCollect() {
@@ -90,7 +97,9 @@ function useCollectAction(multiDevice: boolean) {
       },
       failed: { key: "usage.collect.failed" },
     })
-    if (ok) markCollected()
+    if (!ok) return
+    markCollected()
+    if (synced) markSynced()
   }
   return { onCollect, collecting }
 }

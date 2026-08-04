@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { filterAndSortPricing, paginate } from "@/features/pricing/derive"
+import { filterAndSortPricing } from "@/features/pricing/derive"
 
 import type { PricingEntry } from "@/types/generated/bindings"
 
@@ -49,18 +49,5 @@ describe("filterAndSortPricing", () => {
     const copy = [...rows]
     filterAndSortPricing(rows, "", "input_per_million", "desc")
     expect(rows.map((e) => e.model_key)).toEqual(copy.map((e) => e.model_key))
-  })
-})
-
-describe("paginate", () => {
-  it("totalPages is at least 1 even when empty", () => {
-    expect(paginate(0, 0, 50)).toEqual({ totalPages: 1, page: 1 })
-  })
-
-  it("computes page from offset and clamps into range", () => {
-    expect(paginate(100, 0, 50)).toEqual({ totalPages: 2, page: 1 })
-    expect(paginate(100, 50, 50)).toEqual({ totalPages: 2, page: 2 })
-    // offset past the end clamps to the last page
-    expect(paginate(100, 999, 50)).toEqual({ totalPages: 2, page: 2 })
   })
 })

@@ -42,9 +42,10 @@ import {
 import {
   filterAndSortPricing,
   type PricingSortKey,
-  paginate,
 } from "@/features/pricing/derive"
 import { useMutateWithToast } from "@/hooks/use-toast-mutation"
+import { formatCost } from "@/lib/format"
+import { paginate } from "@/lib/pagination"
 
 import type { PricingEntry } from "@/types/generated/bindings"
 import { EntryEditorDialog, emptyEntry } from "./entry-editor-dialog"
@@ -273,16 +274,16 @@ export function PricingView() {
                     </TableCell>
                     <TableCell>{e.display_name}</TableCell>
                     <TableCell className="pr-4 text-right tabular-nums">
-                      {fmtRate(e.input_per_million)}
+                      {formatCost(e.input_per_million)}
                     </TableCell>
                     <TableCell className="pr-4 text-right tabular-nums">
-                      {fmtRate(e.output_per_million)}
+                      {formatCost(e.output_per_million)}
                     </TableCell>
                     <TableCell className="pr-4 text-right tabular-nums">
-                      {fmtRate(e.cache_read_per_million)}
+                      {formatCost(e.cache_read_per_million)}
                     </TableCell>
                     <TableCell className="pr-4 text-right tabular-nums">
-                      {fmtRate(e.cache_creation_per_million)}
+                      {formatCost(e.cache_creation_per_million)}
                     </TableCell>
                     <TableCell>
                       <Badge variant={e.is_builtin ? "secondary" : "default"}>
@@ -398,10 +399,4 @@ function SortHeader({
       />
     </button>
   )
-}
-
-/** Per-million rate → `$x.xxxx` display. */
-function fmtRate(v: number | null | undefined): string {
-  const n = Number(v ?? 0)
-  return `$${n.toFixed(4)}`
 }

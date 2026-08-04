@@ -38,20 +38,3 @@ export function filterAndSortPricing(
   }
   return list
 }
-
-export interface PageStats {
-  totalPages: number
-  page: number
-}
-
-/** Offset → page stats. `totalPages` is at least 1 so a single-page control
- *  never disappears, and `page` is clamped into range. */
-export function paginate(
-  total: number,
-  offset: number,
-  pageSize: number,
-): PageStats {
-  const totalPages = Math.max(1, Math.ceil(total / pageSize))
-  const page = Math.min(Math.floor(offset / pageSize) + 1, totalPages)
-  return { totalPages, page }
-}

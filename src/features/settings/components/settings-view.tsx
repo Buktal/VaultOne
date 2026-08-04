@@ -35,6 +35,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { DeviceList } from "@/features/settings/components/device-list"
 import { GeneralCard } from "@/features/settings/components/general-card"
+import { useFreshness } from "@/hooks/use-freshness"
 import { useMutateWithToast } from "@/hooks/use-toast-mutation"
 import type { VerifyReport } from "@/types/generated/bindings"
 
@@ -48,6 +49,9 @@ export function SettingsView() {
   const [syncNow, { isLoading: syncing }] = useSyncMutation()
   const [verify, { isLoading: verifying }] = useVerifySyncRepoMutation()
   const runWithToast = useMutateWithToast()
+  //「立即同步」does the full align (collect + push) — stamp the per-device
+  //  "last sync" freshness so the dashboard's "· 同步 X 分钟前" hint lands.
+  const { markSynced } = useFreshness()
 
   const [displayName, setDisplayName] = useState("")
   const [repoUrl, setRepoUrl] = useState("")
@@ -241,7 +245,7 @@ export function SettingsView() {
               size="sm"
               disabled={syncing}
               onClick={async () => {
-                await runWithToast(syncNow, undefined, {
+                const ok = await runWithToast(syncNow, undefined, {
                   success: {
                     message: (data) =>
                       t("settings.toast.synced", {
@@ -251,6 +255,7 @@ export function SettingsView() {
                   },
                   failed: { key: "settings.toast.syncFailed" },
                 })
+                if (ok) markSynced()
               }}
             >
               <RefreshCw className="size-4" />

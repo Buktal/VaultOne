@@ -28,6 +28,7 @@ import {
 import { stopReasonTone } from "@/features/usage/derive"
 import { useMutateWithToast } from "@/hooks/use-toast-mutation"
 import { formatCost, formatInt, formatTime } from "@/lib/format"
+import { paginate } from "@/lib/pagination"
 import { tokenTotal } from "@/lib/usage"
 import { cn } from "@/lib/utils"
 import type { UsageFilter } from "@/types/generated/bindings"
@@ -74,8 +75,7 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
   const [collect, { isLoading: collecting }] = useCollectMutation()
   const runWithToast = useMutateWithToast()
 
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
-  const page = Math.floor(offset / PAGE_SIZE) + 1
+  const { totalPages, page } = paginate(total, offset, PAGE_SIZE)
 
   async function onCollect() {
     await runWithToast(collect, undefined, {
