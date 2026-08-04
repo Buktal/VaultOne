@@ -560,6 +560,50 @@ pub async fn rename_in_library(
     .map_err(|e| AppError::Internal(format!("library rename task failed: {e}")))?
 }
 
+/// Text-preview cap: files larger than this are not read into the webview
+/// (the preview falls back to "too large" instead of loading megabytes).
+const TEXT_READ_LIMIT: u64 = 1024 * 1024;
+
+/// Read a library entry as UTF-8 text for the themed text preview.
+/// `Some(text)` = readable text; `None` = NOT text (binary, over the size cap,
+/// or a directory) — a normal state, not an error. Path safety reuses
+/// [`resolve_rel`] (canonicalize + must stay under the library root), so a
+/// `../` escape or a missing file is an error, never a read outside the root.
+/// Binary probing: a NUL byte in the first 8 KiB means binary.
+fn read_text_entry(paths: &crate::config::Paths, rel_path: &str) -> AppResult<Option<String>> {
+    let target = resolve_rel(paths, rel_path)?;
+    if !target.is_file() {
+        return Ok(None);
+    }
+    if target.metadata().map(|m| m.len()).unwrap_or(u64::MAX) > TEXT_READ_LIMIT {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(&target)?;
+    if bytes[..bytes.len().min(8192)].contains(&0) {
+        return Ok(None);
+    }
+    match String::from_utf8(bytes) {
+        Ok(text) => Ok(Some(text)),
+        Err(_) => Ok(None),
+    }
+}
+
+/// Read a library entry as text for the themed preview (see [`read_text_entry`]).
+#[tauri::command]
+#[specta::specta]
+pub async fn read_library_text(
+    state: State<'_, AppState>,
+    rel_path: String,
+) -> AppResult<Option<String>> {
+    let config = state.config.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = config.paths();
+        read_text_entry(&paths, &rel_path)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("library text read task failed: {e}")))?
+}
+
 /// File/folder counts for one device's library subtree — used by the
 /// forget-device dialog to show what would be migrated or deleted.
 #[tauri::command]
@@ -591,6 +635,63 @@ mod tests {
 
     fn write_file(p: &Path, body: &str) {
         std::fs::write(p, body).unwrap();
+    }
+
+    #[test]
+    fn read_text_entry_returns_utf8_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        let dev = "aabbccddeeff";
+        let dir = paths.library.join(dev);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_file(&dir.join("notes.md"), "# Hello\n\n正文内容");
+        let text = read_text_entry(&paths, &format!("{dev}/notes.md")).unwrap();
+        assert_eq!(text.as_deref(), Some("# Hello\n\n正文内容"));
+    }
+
+    #[test]
+    fn read_text_entry_returns_none_for_binary_and_oversized() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        let dev = "aabbccddeeff";
+        let dir = paths.library.join(dev);
+        std::fs::create_dir_all(&dir).unwrap();
+        // NUL byte in the head ⇒ binary.
+        write_file(&dir.join("bin.dat"), "ok\0binary");
+        assert_eq!(
+            read_text_entry(&paths, &format!("{dev}/bin.dat")).unwrap(),
+            None,
+            "NUL in the first 8 KiB ⇒ not text"
+        );
+        // Over the 1 MiB cap ⇒ None (not an error).
+        let big = "x".repeat((TEXT_READ_LIMIT + 1) as usize);
+        write_file(&dir.join("big.txt"), &big);
+        assert_eq!(
+            read_text_entry(&paths, &format!("{dev}/big.txt")).unwrap(),
+            None,
+            "oversized file ⇒ not loaded"
+        );
+        // A directory is not text.
+        assert_eq!(
+            read_text_entry(&paths, dev).unwrap(),
+            None,
+            "directory ⇒ None"
+        );
+    }
+
+    #[test]
+    fn read_text_entry_rejects_escape_and_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        // `..` escapes the library root.
+        std::fs::create_dir_all(paths.library.join("aabbccddeeff")).unwrap();
+        let err = read_text_entry(&paths, "../secret").unwrap_err();
+        assert!(
+            err.to_string().contains("escapes") || err.to_string().contains("not found"),
+            "path escape rejected: {err}"
+        );
+        // Missing file errors (resolve_rel canonicalize fails).
+        assert!(read_text_entry(&paths, "aabbccddeeff/nope.txt").is_err());
     }
 
     #[test]

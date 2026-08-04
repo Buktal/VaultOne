@@ -109,6 +109,14 @@ pub fn ingest_collected(
     // per-session sync shape lands with the session phase.
     ingest_sessions(store, paths, device_id, &result.sessions, &result.messages)?;
 
+    // File-backed reality check: drop session rows (and their transcript
+    // files) whose source file no longer exists. Runs only when the ingest
+    // above succeeded — a failed ingest propagates via `?` and never
+    // reconciles (no partial state).
+    if !result.session_ids.is_empty() {
+        reconcile_session_data(store, paths, device_id, &result.source, &result.session_ids)?;
+    }
+
     Ok(IngestReport {
         source,
         events_collected,
@@ -118,6 +126,38 @@ pub fn ingest_collected(
         files_scanned: result.files_scanned,
         lines_skipped: result.lines_skipped,
     })
+}
+
+/// Reconcile THIS device's `source` sessions against the files actually seen:
+/// delete rows whose id is not in `seen_ids`, then best-effort remove their
+/// transcript files (`sessions/<id>.jsonl`). The session row and its
+/// transcript are one unit — a ghost row's transcript would otherwise linger
+/// forever. Returns the number of sessions removed. Scoped by
+/// `(device_id, source)` in SQL, so a peer's rows and other sources are never
+/// touched. `seen_ids` comes from the provider's DISCOVERED files (not the
+/// parsed output — the mtime gate skips unchanged files, so the parsed set
+/// would shrink to zero on a no-change collect and wipe real sessions).
+pub fn reconcile_session_data(
+    store: &Store,
+    paths: &Paths,
+    device_id: &str,
+    source: &str,
+    seen_ids: &[String],
+) -> AppResult<usize> {
+    let ghosts = store.reconcile_sessions(device_id, source, seen_ids)?;
+    for id in &ghosts {
+        // Best-effort: a transcript that fails to unlink (permissions, etc.)
+        // must not fail the collect — the row is gone; the file is a stale
+        // orphan the next pass retries.
+        let _ = std::fs::remove_file(transcript_path(paths, device_id, id));
+    }
+    if !ghosts.is_empty() {
+        eprintln!(
+            "[vaultone] reconciled {device_id}/{source}: removed {} ghost session(s)",
+            ghosts.len()
+        );
+    }
+    Ok(ghosts.len())
 }
 
 // ---------------- Per-day JSONL Artifact (derived snapshot) ----------------
@@ -376,7 +416,11 @@ pub fn read_all_turn_artifacts(paths: &Paths) -> AppResult<Vec<TurnDuration>> {
 const TRANSCRIPT_SOFT_CAP_BYTES: u64 = 5 * 1024 * 1024;
 
 /// `<device_data_dir>/sessions/<session_id>.jsonl` — one file per session.
-fn transcript_path(paths: &Paths, device_id: &str, session_id: &str) -> std::path::PathBuf {
+pub(crate) fn transcript_path(
+    paths: &Paths,
+    device_id: &str,
+    session_id: &str,
+) -> std::path::PathBuf {
     paths
         .device_data_dir(device_id)
         .join("sessions")
@@ -626,6 +670,7 @@ mod tests {
             lines_skipped: 0,
             sessions: vec![],
             messages: vec![],
+            session_ids: vec![],
         };
         ingest_collected(&store, &paths, dev, &book, result).unwrap();
         assert_eq!(
@@ -657,6 +702,7 @@ mod tests {
             lines_skipped: 0,
             sessions: vec![],
             messages: vec![],
+            session_ids: vec![],
         };
         let rep1 = ingest_collected(&store, &paths, "0123456789ab", &book, result.clone()).unwrap();
         assert_eq!(rep1.rows_inserted, 1);
@@ -688,6 +734,7 @@ mod tests {
             lines_skipped: 0,
             sessions: vec![],
             messages: vec![],
+            session_ids: vec![],
         };
         ingest_collected(&store, &paths, dev, &book, result).unwrap();
         let day_file = paths.device_data_dir(dev).join("usage-2026-07-13.jsonl");
@@ -724,6 +771,7 @@ mod tests {
             lines_skipped: 0,
             sessions: vec![],
             messages: vec![],
+            session_ids: vec![],
         };
         ingest_collected(&store, &paths, dev, &book, result).unwrap();
         let day_file = paths.device_data_dir(dev).join("usage-2026-07-13.jsonl");
@@ -751,6 +799,7 @@ mod tests {
             lines_skipped: 0,
             sessions: vec![],
             messages: vec![],
+            session_ids: vec![],
         };
         ingest_collected(&store, &paths, dev, &book, result).unwrap();
         recompute_usage_day(&store, &paths, dev, "2026-07-13").unwrap();
@@ -841,6 +890,141 @@ mod tests {
         assert!(m.favorited, "favorited preserved");
         assert_eq!(m.synced_group_id, "sg1", "synced_group_id preserved");
         assert_eq!(m.local_group_id, "lg1", "local_group_id preserved");
+    }
+
+    /// Reconcile deletes ghost session rows AND their transcript files; a
+    /// real (seen) favorited session keeps both.
+    #[test]
+    fn reconcile_removes_ghost_rows_and_their_transcripts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let dev = "0123456789ab";
+
+        // Two favorited sessions with transcripts on disk.
+        ingest_sessions(
+            &store,
+            &paths,
+            dev,
+            &[
+                sys_session("real", "2026-08-01T01:00:00.000Z"),
+                sys_session("ghost", "2026-08-01T01:00:00.000Z"),
+            ],
+            &[],
+        )
+        .unwrap();
+        store.set_session_favorited(dev, "real", true).unwrap();
+        store.set_session_favorited(dev, "ghost", true).unwrap();
+        ingest_sessions(
+            &store,
+            &paths,
+            dev,
+            &[
+                sys_session("real", "2026-08-01T01:00:00.000Z"),
+                sys_session("ghost", "2026-08-01T01:00:00.000Z"),
+            ],
+            &[msg("m1", "real", "hi"), msg("m2", "ghost", "bye")],
+        )
+        .unwrap();
+        assert!(
+            transcript_path(&paths, dev, "real").exists()
+                && transcript_path(&paths, dev, "ghost").exists(),
+            "both transcripts written (both favorited)"
+        );
+
+        // Next collect sees only `real` → `ghost` row + transcript vanish.
+        let removed =
+            reconcile_session_data(&store, &paths, dev, "claude_code", &["real".to_string()])
+                .unwrap();
+        assert_eq!(removed, 1);
+        let ids: Vec<String> = store
+            .query_sessions(None)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(ids, ["real"], "ghost row deleted");
+        assert!(
+            !transcript_path(&paths, dev, "ghost").exists(),
+            "ghost transcript file removed"
+        );
+        assert!(
+            transcript_path(&paths, dev, "real").exists(),
+            "real transcript untouched"
+        );
+    }
+
+    /// Full-collect flow: session s2 was on disk at the first collect, deleted
+    /// (or superseded) before the second — its row and transcript disappear
+    /// while s1 (still seen) survives.
+    #[test]
+    fn ingest_collected_reconciles_across_two_passes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let book = seed_book();
+        let dev = "0123456789ab";
+
+        // Pass 1: both sessions seen (rows created, no messages yet — the
+        // favorited flag must be set AFTER the row exists for the transcript
+        // to land).
+        let pass1 = CollectResult {
+            source: "claude_code".into(),
+            events: vec![],
+            turn_durations: vec![],
+            sessions: vec![
+                sys_session("s1", "2026-08-01T01:00:00.000Z"),
+                sys_session("s2", "2026-08-01T01:00:00.000Z"),
+            ],
+            messages: vec![],
+            files_scanned: 2,
+            lines_skipped: 0,
+            session_ids: vec!["s1".into(), "s2".into()],
+        };
+        ingest_collected(&store, &paths, dev, &book, pass1).unwrap();
+        store.set_session_favorited(dev, "s2", true).unwrap();
+        // Pass 1b: messages arrive for the (now favorited) s2 → transcript.
+        let pass1b = CollectResult {
+            source: "claude_code".into(),
+            events: vec![],
+            turn_durations: vec![],
+            sessions: vec![
+                sys_session("s1", "2026-08-01T01:00:00.000Z"),
+                sys_session("s2", "2026-08-01T01:00:00.000Z"),
+            ],
+            messages: vec![msg("m1", "s1", "a"), msg("m2", "s2", "b")],
+            files_scanned: 2,
+            lines_skipped: 0,
+            session_ids: vec!["s1".into(), "s2".into()],
+        };
+        ingest_collected(&store, &paths, dev, &book, pass1b).unwrap();
+        assert!(transcript_path(&paths, dev, "s2").exists());
+
+        // Pass 2: s2's file is gone from disk; only s1 is seen. Its row +
+        // transcript must be reconciled away even though s2 was favorited.
+        let pass2 = CollectResult {
+            source: "claude_code".into(),
+            events: vec![],
+            turn_durations: vec![],
+            sessions: vec![sys_session("s1", "2026-08-02T01:00:00.000Z")],
+            messages: vec![],
+            files_scanned: 1,
+            lines_skipped: 0,
+            session_ids: vec!["s1".into()],
+        };
+        ingest_collected(&store, &paths, dev, &book, pass2).unwrap();
+
+        let ids: Vec<String> = store
+            .query_sessions(None)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(ids, ["s1"], "s2 reconciled away after its file vanished");
+        assert!(
+            !transcript_path(&paths, dev, "s2").exists(),
+            "s2 transcript removed with its row"
+        );
     }
 
     /// Invariant: transcripts are written ONLY for favorited sessions.

@@ -870,6 +870,51 @@ impl Store {
         Ok(())
     }
 
+    /// Delete this device's sessions for `source` whose id was NOT seen by the
+    /// latest collect — the file-backed reality check that keeps the sessions
+    /// table from accumulating ghosts (deleted session files, previously
+    /// scanned agent sub-sessions). Returns the deleted ids so the caller can
+    /// also remove their transcript files. An empty `seen_ids` is a NO-OP —
+    /// a transiently invisible source dir must not wipe real rows (the caller
+    /// only passes a non-empty set anyway; this is the second line of defense).
+    /// One transaction; `(device_id, source, id)` scoping never touches a
+    /// peer's rows or another source.
+    pub fn reconcile_sessions(
+        &self,
+        device_id: &str,
+        source: &str,
+        seen_ids: &[String],
+    ) -> AppResult<Vec<String>> {
+        if seen_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut conn = self.conn.lock().expect("db mutex poisoned");
+        let tx = conn.transaction()?;
+        // The seen set rides as a JSON array through json_each — a single
+        // parameter with no SQLite variable-count ceiling for large sets.
+        let json = serde_json::to_string(seen_ids)
+            .map_err(|e| AppError::Internal(format!("reconcile seen ids: {e}")))?;
+        let ghosts: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT id FROM sessions \
+                 WHERE device_id = ?1 AND source = ?2 \
+                   AND id NOT IN (SELECT value FROM json_each(?3))",
+            )?;
+            let rows = stmt.query_map(params![device_id, source, json], |r| r.get(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        if !ghosts.is_empty() {
+            tx.execute(
+                "DELETE FROM sessions \
+                 WHERE device_id = ?1 AND source = ?2 \
+                   AND id NOT IN (SELECT value FROM json_each(?3))",
+                params![device_id, source, json],
+            )?;
+        }
+        tx.commit()?;
+        Ok(ghosts)
+    }
+
     /// Delete a local group AND clear it off every session that carried it
     /// (sessions stay, just ungrouped). One transaction so the cleanup never
     /// leaves dangling group_id references.
@@ -1235,6 +1280,19 @@ fn build_session_where(filter: Option<&SessionFilter>) -> (String, Vec<SqlValue>
         if !ts.is_empty() {
             conds.push("s.last_active_at <= ?".into());
             params.push(SqlValue::Text(ts.clone()));
+        }
+    }
+    if let Some(m) = &f.model {
+        if !m.is_empty() {
+            // EXISTS semantics: the session matched iff ANY usage record in
+            // this session used the model. Both keys are required — a session
+            // id is a provider file stem, so ids can collide across devices.
+            conds.push(
+                "EXISTS (SELECT 1 FROM usage_records u \
+                 WHERE u.session_id = s.id AND u.device_id = s.device_id AND u.model = ?)"
+                    .into(),
+            );
+            params.push(SqlValue::Text(m.clone()));
         }
     }
     let clause = if conds.is_empty() {
@@ -1886,14 +1944,14 @@ mod tests {
         assert!(s.load_scan_progress().unwrap().is_empty());
     }
 
-    /// Helper: insert one session row with a given last_active_at.
-    fn seed_session(store: &Store, id: &str, device: &str, last_active: &str) {
+    /// Helper: insert one session row with an explicit source.
+    fn seed_session_source(store: &Store, id: &str, device: &str, source: &str, last_active: &str) {
         store
             .upsert_session(
                 device,
                 &SessionSystemData {
                     id: id.into(),
-                    source: "claude_code".into(),
+                    source: source.into(),
                     project_dir: "/proj".into(),
                     title_orig: "Title".into(),
                     started_at: "2026-08-01T00:00:00.000Z".into(),
@@ -1901,6 +1959,11 @@ mod tests {
                 },
             )
             .unwrap();
+    }
+
+    /// Helper: insert one session row with a given last_active_at.
+    fn seed_session(store: &Store, id: &str, device: &str, last_active: &str) {
+        seed_session_source(store, id, device, "claude_code", last_active)
     }
 
     #[test]
@@ -1949,5 +2012,168 @@ mod tests {
             .map(|r| r.id)
             .collect();
         assert_eq!(ids, ["mid"], "from_ts + to_ts intersect to one session");
+    }
+
+    /// Helper: seed one session row + one usage record bound to it.
+    fn seed_session_with_record(store: &Store, sid: &str, device: &str, model: &str) {
+        seed_session(store, sid, device, "2026-08-15T10:00:00.000Z");
+        let mut r = rec(
+            &format!("u-{sid}-{model}"),
+            "2026-08-15",
+            model,
+            device,
+            10,
+            10,
+            0.001,
+        );
+        r.session_id = sid.into();
+        store.ingest_marking_dirty(&[r]).unwrap();
+    }
+
+    #[test]
+    fn query_sessions_model_filter_uses_exists_semantics() {
+        let s = mem();
+        // s1 uses model A + B; s2 uses only B.
+        seed_session_with_record(&s, "s1", "dev", "model-a");
+        seed_session_with_record(&s, "s1", "dev", "model-b");
+        seed_session_with_record(&s, "s2", "dev", "model-b");
+
+        let ids = |model: &str| -> Vec<String> {
+            let f = SessionFilter {
+                model: Some(model.into()),
+                ..Default::default()
+            };
+            s.query_sessions(Some(&f))
+                .unwrap()
+                .into_iter()
+                .map(|r| r.id)
+                .collect()
+        };
+        assert_eq!(ids("model-a"), ["s1"], "A matches only s1");
+        let both: std::collections::BTreeSet<String> = ids("model-b").into_iter().collect();
+        assert_eq!(
+            both,
+            std::collections::BTreeSet::from(["s1".to_string(), "s2".to_string()]),
+            "B matches both (same last_active_at ⇒ order is unspecified)"
+        );
+        assert!(
+            ids("no-such-model").is_empty(),
+            "a model nobody used matches nothing"
+        );
+    }
+
+    #[test]
+    fn query_sessions_model_filter_is_device_isolated() {
+        let s = mem();
+        // Same session id on two devices; the model record exists only on dev1.
+        seed_session_with_record(&s, "same", "dev1", "model-x");
+        seed_session(&s, "same", "dev2", "2026-08-15T10:00:00.000Z");
+
+        let f = SessionFilter {
+            device_scope: Some("dev2".into()),
+            model: Some("model-x".into()),
+            ..Default::default()
+        };
+        let ids: Vec<String> = s
+            .query_sessions(Some(&f))
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert!(
+            ids.is_empty(),
+            "dev2's row must not match dev1's usage record (session ids can collide across devices)"
+        );
+    }
+
+    // ---- reconcile_sessions ----
+
+    #[test]
+    fn reconcile_deletes_ghosts_keeps_seen_and_user_data() {
+        let s = mem();
+        seed_session(&s, "real", "dev", "2026-08-15T10:00:00.000Z");
+        seed_session(&s, "ghost", "dev", "2026-08-10T10:00:00.000Z");
+        // User data on the survivor must survive reconciliation.
+        s.set_session_custom_title("dev", "real", Some("Renamed"))
+            .unwrap();
+        s.set_session_favorited("dev", "real", true).unwrap();
+        s.set_session_local_group("dev", "real", Some("lg1"))
+            .unwrap();
+
+        let ghosts = s
+            .reconcile_sessions("dev", "claude_code", &["real".to_string()])
+            .unwrap();
+        assert_eq!(ghosts, ["ghost"], "ghost row deleted, real row kept");
+
+        let rows = s.query_sessions(None).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "real");
+        assert_eq!(rows[0].title, "Renamed", "custom_title preserved");
+        assert!(rows[0].favorited, "favorited preserved");
+        assert_eq!(rows[0].local_group_id, "lg1", "group preserved");
+    }
+
+    #[test]
+    fn reconcile_is_scoped_by_device_and_source() {
+        let s = mem();
+        seed_session(&s, "same", "dev1", "2026-08-15T10:00:00.000Z");
+        seed_session(&s, "same", "dev2", "2026-08-15T10:00:00.000Z");
+        // Another session id under a different source on the same device.
+        seed_session_source(
+            &s,
+            "codex-same",
+            "dev1",
+            "codex_cli",
+            "2026-08-15T10:00:00.000Z",
+        );
+
+        // Reconcile dev1/claude_code with nothing seen → dev1's claude row
+        // goes, dev2's row and the codex row stay.
+        let ghosts = s.reconcile_sessions("dev1", "claude_code", &[]).unwrap();
+        assert!(ghosts.is_empty(), "empty seen set is a no-op");
+        let ghosts = s
+            .reconcile_sessions("dev1", "claude_code", &["other".to_string()])
+            .unwrap();
+        assert_eq!(ghosts, ["same"], "dev1 claude row is the ghost");
+
+        let survivors: std::collections::BTreeSet<String> = s
+            .query_sessions(None)
+            .unwrap()
+            .into_iter()
+            .map(|r| format!("{}/{}", r.device_id, r.source))
+            .collect();
+        assert_eq!(
+            survivors,
+            std::collections::BTreeSet::from([
+                "dev2/claude_code".to_string(),
+                "dev1/codex_cli".to_string(),
+            ]),
+            "peer + other-source rows untouched"
+        );
+    }
+
+    #[test]
+    fn reconcile_is_idempotent_and_empty_seen_is_noop() {
+        let s = mem();
+        seed_session(&s, "a", "dev", "2026-08-15T10:00:00.000Z");
+        seed_session(&s, "b", "dev", "2026-08-15T10:00:00.000Z");
+        // Empty seen → nothing deleted (protects a transiently invisible dir).
+        assert!(s
+            .reconcile_sessions("dev", "claude_code", &[])
+            .unwrap()
+            .is_empty());
+        assert_eq!(s.query_sessions(None).unwrap().len(), 2);
+        // First pass deletes the ghost.
+        assert_eq!(
+            s.reconcile_sessions("dev", "claude_code", &["a".to_string()])
+                .unwrap(),
+            ["b"]
+        );
+        // Second pass: nothing left to delete.
+        assert!(s
+            .reconcile_sessions("dev", "claude_code", &["a".to_string()])
+            .unwrap()
+            .is_empty());
+        assert_eq!(s.query_sessions(None).unwrap().len(), 1);
     }
 }

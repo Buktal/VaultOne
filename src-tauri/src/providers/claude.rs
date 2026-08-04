@@ -74,7 +74,11 @@ impl ClaudeCodeProvider {
         // we only saw the appended lines on a re-collect).
         let mut started_at = String::new();
         let mut last_active_at = String::new();
-        let mut project_dir = String::new();
+        // cwd counts + first-seen order → the mode becomes project_dir at the
+        // end (a mid-session `cd` must not pin the project to a subdirectory).
+        let mut cwd_order: Vec<String> = Vec::new();
+        let mut cwd_counts: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::new();
         let mut summary = String::new();
         let mut custom_title: Option<String> = None;
         let mut first_user_text: Option<String> = None;
@@ -109,9 +113,14 @@ impl ClaudeCodeProvider {
                     last_active_at = ts.clone();
                 }
             }
-            if project_dir.is_empty() {
-                if let Some(c) = &ev.cwd {
-                    project_dir = c.clone();
+            if let Some(c) = &ev.cwd {
+                let c = c.trim();
+                if !c.is_empty() {
+                    let n = cwd_counts.entry(c.to_string()).or_insert(0);
+                    if *n == 0 {
+                        cwd_order.push(c.to_string());
+                    }
+                    *n += 1;
                 }
             }
             // summary: latest non-empty wins — Claude may emit it later in
@@ -182,6 +191,7 @@ impl ClaudeCodeProvider {
         }
 
         let sessions = if saw_any_event {
+            let project_dir = pick_project_dir(&cwd_order, &cwd_counts).unwrap_or_default();
             // Title priority: manual name (custom-title) > Claude summary >
             // first real user message > project dir basename. Every level is
             // latest-seen (re-scanned each collect), so a rename or a late
@@ -311,6 +321,7 @@ impl Provider for ClaudeCodeProvider {
             messages,
             files_scanned: files.len() as u32,
             lines_skipped: skipped,
+            session_ids: self.session_ids_seen(files),
         })
     }
 
@@ -485,6 +496,32 @@ impl SessionEvent {
 // The soft cap (TRIM_LIMIT = 32 KiB), the original-title max (TITLE_MAX = 80),
 // and the `truncate` helper all live in [`super`] as shared provider helpers,
 // so the truncation rule cannot drift between Claude and Codex.
+
+/// Pick the session's project dir as the most frequent non-empty `cwd` seen in
+/// the file. A session may `cd` into a subdirectory mid-conversation; taking
+/// the first cwd would then pin the project to e.g. `…/src-tauri` instead of
+/// the repo root (observed in real logs). The mode — not the first — is the
+/// stable answer; ties keep the first-seen entry (an explicit `order` list is
+/// required because HashMap iteration order is arbitrary).
+fn pick_project_dir(
+    cwd_order: &[String],
+    cwd_counts: &std::collections::HashMap<String, u32>,
+) -> Option<String> {
+    let mut best: Option<&str> = None;
+    let mut best_count = 0u32;
+    for c in cwd_order {
+        if c.is_empty() {
+            continue;
+        }
+        let n = cwd_counts[c];
+        // Strictly greater wins — a tie keeps the earlier-seen path.
+        if n > best_count {
+            best = Some(c);
+            best_count = n;
+        }
+    }
+    best.map(str::to_string)
+}
 
 /// First text block of a message's content (string content or the first `text`
 /// block of an array). Used for the original-title fallback (first user msg).
@@ -1089,6 +1126,124 @@ mod tests {
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.sessions[0].title_orig, "O_VaultOne");
         assert_eq!(result.sessions[0].project_dir, "/home/me/O_VaultOne");
+    }
+
+    // ---- project_dir mode picking ----
+
+    fn mode_of(paths: &[&str]) -> Option<String> {
+        let mut order: Vec<String> = Vec::new();
+        let mut counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        for p in paths {
+            let n = counts.entry(p.to_string()).or_insert(0);
+            if *n == 0 {
+                order.push(p.to_string());
+            }
+            *n += 1;
+        }
+        pick_project_dir(&order, &counts)
+    }
+
+    #[test]
+    fn pick_project_dir_takes_the_mode() {
+        assert_eq!(
+            mode_of(&["/a", "/a", "/b"]).as_deref(),
+            Some("/a"),
+            "most frequent cwd wins"
+        );
+    }
+
+    #[test]
+    fn pick_project_dir_tie_keeps_first_seen() {
+        assert_eq!(
+            mode_of(&["/a", "/b", "/b", "/a"]).as_deref(),
+            Some("/a"),
+            "equal counts keep the first-seen path (not the last)"
+        );
+    }
+
+    #[test]
+    fn pick_project_dir_skips_empty_and_returns_none_when_all_empty() {
+        assert_eq!(
+            mode_of(&["", "/b", "", "/b"]).as_deref(),
+            Some("/b"),
+            "empty cwd strings never count"
+        );
+        assert_eq!(mode_of(&[]), None);
+        assert_eq!(mode_of(&["", ""]), None);
+    }
+
+    /// A real-session regression: the file's FIRST cwd is a subdirectory the
+    /// user cd'd into (e.g. `…\src-tauri`), but the majority is the repo root
+    /// — the mode must win so the project shows as the root, not the subdir.
+    #[test]
+    fn session_project_dir_uses_mode_not_first_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("s.jsonl");
+        let sub = r#"{"type":"system","timestamp":"2026-08-01T09:00:00Z","uuid":"s1","cwd":"D:\\Project\\O_VaultOne\\src-tauri"}"#;
+        let root1 = r#"{"type":"user","timestamp":"2026-08-01T10:00:00Z","uuid":"u1","cwd":"D:\\Project\\O_VaultOne","message":{"role":"user","content":"hi"}}"#;
+        let root2 = r#"{"type":"assistant","timestamp":"2026-08-01T10:01:00Z","uuid":"a1","cwd":"D:\\Project\\O_VaultOne","message":{"id":"m1","model":"glm-5.2","role":"assistant","usage":{"input_tokens":1,"output_tokens":1}}}"#;
+        write_lines(&file, &[sub, root1, root2]);
+        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let result = p.parse(&p.discover().unwrap()).unwrap();
+        assert_eq!(
+            result.sessions[0].project_dir, "D:\\Project\\O_VaultOne",
+            "mode cwd (2× root) beats first cwd (1× src-tauri)"
+        );
+    }
+
+    /// The reconcile "seen" set comes from the DISCOVERED FILES, not the parsed
+    /// sessions — the mtime gate skips unchanged files, so a seen set derived
+    /// from parsed output would empty out on a no-change collect and wipe every
+    /// real session as a ghost. Regression test for exactly that trap.
+    #[test]
+    fn session_ids_seen_survives_the_mtime_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("s.jsonl");
+        write_lines(&file, &[assistant_line("u1", "msg_A", 10)]);
+        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let (r1, progress) = p.collect_incremental(&ScanProgress::new()).unwrap();
+        assert_eq!(
+            r1.session_ids,
+            vec!["s".to_string()],
+            "first pass sees the file's session"
+        );
+        // Second collect: file unchanged → mtime gate skips it entirely.
+        let (r2, _) = p.collect_incremental(&progress).unwrap();
+        assert_eq!(
+            r2.sessions.len(),
+            0,
+            "no parsed output on a no-change collect"
+        );
+        assert_eq!(
+            r2.session_ids,
+            vec!["s".to_string()],
+            "seen set still covers the discovered file — never derived from parsed output"
+        );
+    }
+
+    /// Agent sub-session files are excluded from the seen set too — their
+    /// stale rows get reconciled away on the first pass, mirroring discover.
+    #[test]
+    fn session_ids_seen_excludes_agent_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("proj");
+        fs::create_dir_all(&proj).unwrap();
+        write_lines(
+            &proj.join("249e8e6b.jsonl"),
+            &[assistant_line("u1", "msg_A", 10)],
+        );
+        write_lines(
+            &proj.join("agent-a10c476b.jsonl"),
+            &[assistant_line("u2", "msg_B", 20)],
+        );
+        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let files = p.discover().unwrap();
+        assert_eq!(files.len(), 1, "discover already skips agent files");
+        assert_eq!(
+            p.session_ids_seen(&files),
+            vec!["249e8e6b".to_string()],
+            "seen set matches discover — no agent ids"
+        );
     }
 
     /// `agent-*.jsonl` are Claude Code subagent/sidechain sessions, not user

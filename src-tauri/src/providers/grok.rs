@@ -131,7 +131,19 @@ impl Provider for GrokProvider {
             messages,
             files_scanned: files.len() as u32,
             lines_skipped: skipped,
+            session_ids: self.session_ids_seen(files),
         })
+    }
+
+    /// Grok's session id is the immediate PARENT DIRECTORY name, not the file
+    /// stem — the stem default would mis-delete real sessions on reconcile.
+    fn session_ids_seen(&self, files: &[std::path::PathBuf]) -> Vec<String> {
+        files
+            .iter()
+            .map(|p| session_id_of(p))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 
     fn collect_incremental(

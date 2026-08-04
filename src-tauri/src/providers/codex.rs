@@ -120,6 +120,7 @@ impl Provider for CodexProvider {
             messages,
             files_scanned: files.len() as u32,
             lines_skipped: skipped,
+            session_ids: self.session_ids_seen(files),
         })
     }
 
@@ -138,6 +139,32 @@ impl Provider for CodexProvider {
         collect_jsonl_incremental(self, progress, |file: &Path, text, start_line| {
             fold_codex_file(file, text, start_line)
         })
+    }
+
+    /// Codex session ids are NOT file stems — the thread id lives in the file's
+    /// `session_meta` (with the rollout-filename UUID as fallback). Must read
+    /// the head to reconcile: the stem default would mis-delete real sessions.
+    fn session_ids_seen(&self, files: &[std::path::PathBuf]) -> Vec<String> {
+        use std::io::Read;
+        files
+            .iter()
+            .map(|f| {
+                // Bounded head read (session_meta is near the top); on any
+                // failure fall back to the filename resolution — a fallback can
+                // only KEEP an extra row, never delete a real session.
+                let head = std::fs::File::open(f)
+                    .ok()
+                    .and_then(|mut fh| {
+                        let mut buf = vec![0u8; 64 * 1024];
+                        let n = fh.read(&mut buf).unwrap_or(0);
+                        buf.truncate(n);
+                        String::from_utf8(buf).ok()
+                    })
+                    .unwrap_or_default();
+                let identity = prescan_codex_text(&head).0;
+                resolve_session_id(f, identity.as_ref())
+            })
+            .collect()
     }
 }
 

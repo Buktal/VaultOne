@@ -77,6 +77,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         library::export_from_library,
         library::delete_from_library,
         library::rename_in_library,
+        library::read_library_text,
         library::library_device_summary,
         sessions::query_sessions_cmd,
         sessions::get_session_transcript_cmd,

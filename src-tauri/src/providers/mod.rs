@@ -77,6 +77,14 @@ pub struct CollectResult {
     pub files_scanned: u32,
     /// Lines that failed to parse (skipped, not fatal).
     pub lines_skipped: u32,
+    /// Session ids SEEN this pass, derived from the DISCOVERED FILES — not
+    /// from the parsed `sessions` (the mtime gate skips unchanged files, so the
+    /// parsed set would shrink to zero on a no-change collect and treat every
+    /// real session as a ghost). Powers the sessions-table reconciliation at
+    /// ingest: rows in `(device_id, source)` not in this set are deleted.
+    /// Empty for providers without file-backed sessions (opencode), which
+    /// disables reconciliation for them.
+    pub session_ids: Vec<String>,
 }
 
 /// Per-file incremental scan cursor. Persisted in `scan_progress`;
@@ -127,6 +135,23 @@ pub trait Provider: Send + Sync {
         &self,
         progress: &ScanProgress,
     ) -> AppResult<(CollectResult, ScanProgressDelta)>;
+
+    /// Session ids represented by the discovered files — the reconciliation
+    /// "seen" set. Default = file stem (Claude: one session per jsonl and the
+    /// id IS the stem; discover already filters `agent-*`, so stale agent rows
+    /// clear on the first reconciled collect). Providers whose session id lives
+    /// INSIDE the file (Codex thread id, Gemini `sessionId`) or in the path
+    /// shape (Grok parent-dir name) MUST override — the stem default would
+    /// mis-delete real sessions. Providers without file-backed sessions
+    /// (opencode, SQLite-managed) override with an empty set to disable
+    /// reconciliation entirely.
+    fn session_ids_seen(&self, files: &[PathBuf]) -> Vec<String> {
+        files
+            .iter()
+            .filter_map(|f| f.file_stem().and_then(|s| s.to_str()))
+            .map(str::to_string)
+            .collect()
+    }
 }
 
 /// All enabled Source-log providers, in collection order. A provider whose
@@ -247,6 +272,8 @@ pub(super) fn collect_jsonl_incremental(
     // sorted — the ingest layer re-groups by session_id before writing, and each
     // session's file is appended in this order.
     // files_scanned stays "discovered count" — do not redefine to "parsed count".
+    // session_ids come from the FILES, not the parsed sessions — the mtime gate
+    // would otherwise empty them on a no-change collect (see the field docs).
     let result = CollectResult {
         source: provider.name().to_string(),
         events,
@@ -255,6 +282,7 @@ pub(super) fn collect_jsonl_incremental(
         messages,
         files_scanned: files.len() as u32,
         lines_skipped: skipped,
+        session_ids: provider.session_ids_seen(&files),
     };
     Ok((result, delta))
 }

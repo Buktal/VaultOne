@@ -113,7 +113,39 @@ impl Provider for GeminiCliProvider {
             messages,
             files_scanned: files.len() as u32,
             lines_skipped: skipped,
+            session_ids: self.session_ids_seen(files),
         })
+    }
+
+    /// Gemini session ids live in the file's JSON `sessionId`, not the stem —
+    /// reconcile needs the real ids or it would mis-delete sessions. Bounded
+    /// head read; on any failure fall back to the stem (a fallback can only
+    /// KEEP an extra row, never delete a real session).
+    fn session_ids_seen(&self, files: &[std::path::PathBuf]) -> Vec<String> {
+        use std::io::Read;
+        files
+            .iter()
+            .map(|f| {
+                let head = std::fs::File::open(f)
+                    .ok()
+                    .and_then(|mut fh| {
+                        let mut buf = vec![0u8; 64 * 1024];
+                        let n = fh.read(&mut buf).unwrap_or(0);
+                        buf.truncate(n);
+                        String::from_utf8(buf).ok()
+                    })
+                    .unwrap_or_default();
+                serde_json::from_str::<serde_json::Value>(&head)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("sessionId")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                    })
+                    .or_else(|| f.file_stem().and_then(|s| s.to_str()).map(str::to_string))
+                    .unwrap_or_else(|| "unknown".to_string())
+            })
+            .collect()
     }
 
     /// Incremental collect: a Gemini session file is a single JSON object, so

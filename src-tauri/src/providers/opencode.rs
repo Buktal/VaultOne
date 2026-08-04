@@ -87,6 +87,9 @@ impl Provider for OpenCodeProvider {
             messages,
             files_scanned,
             lines_skipped: skipped,
+            // SQLite session table is self-managed (per-session watermark) —
+            // file-backed reconciliation must not touch it.
+            session_ids: Vec::new(),
         })
     }
 
@@ -100,6 +103,8 @@ impl Provider for OpenCodeProvider {
     ) -> AppResult<(CollectResult, ScanProgressDelta)> {
         let mut result = CollectResult {
             source: self.name().to_string(),
+            // SQLite session table is self-managed — no file-backed reconcile.
+            session_ids: Vec::new(),
             ..CollectResult::default()
         };
         let mut delta = ScanProgressDelta::new();

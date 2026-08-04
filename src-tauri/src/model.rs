@@ -338,6 +338,10 @@ pub struct SessionFilter {
     pub from_ts: Option<String>,
     /// Inclusive upper bound on `last_active_at` (ISO8601).
     pub to_ts: Option<String>,
+    /// Scope to sessions that have at least one usage record with this model
+    /// (EXISTS semantics — a session spanning several models matches any of
+    /// them). The model lives on `usage_records`, not on the session row.
+    pub model: Option<String>,
 }
 
 /// One group entry for the frontend, unified across the two tracks.
