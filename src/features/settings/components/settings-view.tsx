@@ -2,10 +2,8 @@
 // (Standalone ↔ Synced), manual sync / rebill.
 //
 // Five sectioned cards (通用 / 本机 / 设备 / 同步 / 维护), each fronted by an
-// eyebrow label. The sync card holds the repo binding + a manual「立即同步」
-// entry (same align as the dashboard button — collect + pull + push in Synced
-// mode). Pricing is a per-device local concern now, so there is no separate
-// config-sync entry.
+// eyebrow label. The sync card's state machine (probe / bind / unbind /
+// sync-now + draft inputs) lives in useSyncRepo; this file is presentation.
 
 import {
   Calculator,
@@ -19,15 +17,7 @@ import {
 } from "lucide-react"
 import { useState } from "react"
 import { useTranslation } from "react-i18next"
-import {
-  useAppInfoQuery,
-  useClearSyncRepoMutation,
-  useRebillMutation,
-  useSetDisplayNameMutation,
-  useSetSyncRepoMutation,
-  useSyncMutation,
-  useVerifySyncRepoMutation,
-} from "@/app/store/api"
+import { useRebillMutation, useSetDisplayNameMutation } from "@/app/store/api"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -35,50 +25,34 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { DeviceList } from "@/features/settings/components/device-list"
 import { GeneralCard } from "@/features/settings/components/general-card"
-import { useFreshness } from "@/hooks/use-freshness"
+import { useSyncRepo } from "@/features/settings/use-sync-repo"
 import { useMutateWithToast } from "@/hooks/use-toast-mutation"
 import type { VerifyReport } from "@/types/generated/bindings"
 
 export function SettingsView() {
   const { t } = useTranslation()
-  const { data: info } = useAppInfoQuery()
-  const [setRepo, { isLoading: binding }] = useSetSyncRepoMutation()
-  const [clearRepo, { isLoading: clearing }] = useClearSyncRepoMutation()
+  const {
+    info,
+    synced,
+    repoUrl,
+    setRepoUrl,
+    token,
+    setToken,
+    verifyResult,
+    onVerify,
+    bindRepo,
+    unbind,
+    syncNowAction,
+    binding,
+    clearing,
+    verifying,
+    syncing,
+  } = useSyncRepo()
   const [setName, { isLoading: naming }] = useSetDisplayNameMutation()
   const [rebill, { isLoading: rebilling }] = useRebillMutation()
-  const [syncNow, { isLoading: syncing }] = useSyncMutation()
-  const [verify, { isLoading: verifying }] = useVerifySyncRepoMutation()
   const runWithToast = useMutateWithToast()
-  //「立即同步」does the full align (collect + push) — stamp the per-device
-  //  "last sync" freshness so the dashboard's "· 同步 X 分钟前" hint lands.
-  const { markSynced } = useFreshness()
 
   const [displayName, setDisplayName] = useState("")
-  const [repoUrl, setRepoUrl] = useState("")
-  const [token, setToken] = useState("")
-  const [verifyResult, setVerifyResult] = useState<VerifyReport | null>(null)
-
-  const synced = info?.mode === "synced"
-
-  /** 测试连接：未绑定时用输入框里的值校验；已绑定时传 null，由后端读 config
-   *  里的原文令牌复查（脱敏 token 拿不到原文）。改输入框会先清掉旧结果。 */
-  const onVerify = async () => {
-    setVerifyResult(null)
-    const r = await verify(
-      synced
-        ? { repoUrl: null, githubToken: null }
-        : { repoUrl: repoUrl.trim(), githubToken: token.trim() },
-    )
-    if ("error" in r) {
-      // 只有 spawn_blocking join 失败才会走到这（罕见）；正常探活失败在 r.data.ok。
-      setVerifyResult({
-        ok: false,
-        message: t("settings.sync.verifyRequestFailed"),
-      })
-      return
-    }
-    setVerifyResult(r.data ?? null)
-  }
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-6">
@@ -170,10 +144,7 @@ export function SettingsView() {
           <Input
             placeholder="https://github.com/<owner>/<repo>.git"
             value={repoUrl}
-            onChange={(e) => {
-              setRepoUrl(e.target.value)
-              setVerifyResult(null)
-            }}
+            onChange={(e) => setRepoUrl(e.target.value)}
             disabled={synced}
           />
           <Label className="text-muted-foreground text-xs">
@@ -183,10 +154,7 @@ export function SettingsView() {
             type="password"
             placeholder="github_pat_…"
             value={token}
-            onChange={(e) => {
-              setToken(e.target.value)
-              setVerifyResult(null)
-            }}
+            onChange={(e) => setToken(e.target.value)}
             disabled={synced}
           />
         </div>
@@ -207,20 +175,7 @@ export function SettingsView() {
           <Button
             size="sm"
             disabled={binding || synced || !repoUrl.trim() || !token.trim()}
-            onClick={async () => {
-              const ok = await runWithToast(
-                setRepo,
-                { repoUrl: repoUrl.trim(), githubToken: token.trim() },
-                {
-                  success: { key: "settings.toast.syncEnabled" },
-                  failed: { key: "settings.toast.configFailed" },
-                },
-              )
-              if (ok) {
-                setRepoUrl("")
-                setToken("")
-              }
-            }}
+            onClick={bindRepo}
           >
             <CloudUpload className="size-4" />
             {t("settings.sync.bindAndEnable")}
@@ -229,12 +184,7 @@ export function SettingsView() {
             variant="outline"
             size="sm"
             disabled={clearing || !synced}
-            onClick={async () => {
-              await runWithToast(clearRepo, undefined, {
-                success: { key: "settings.toast.unbound" },
-                failed: { key: "settings.toast.unbindFailed" },
-              })
-            }}
+            onClick={unbind}
           >
             <Unplug className="size-4" />
             {t("settings.sync.unbind")}
@@ -244,19 +194,7 @@ export function SettingsView() {
               variant="outline"
               size="sm"
               disabled={syncing}
-              onClick={async () => {
-                const ok = await runWithToast(syncNow, undefined, {
-                  success: {
-                    message: (data) =>
-                      t("settings.toast.synced", {
-                        count: data.imported ?? 0,
-                      }) +
-                      (data.pushed ? t("settings.toast.syncedPushed") : ""),
-                  },
-                  failed: { key: "settings.toast.syncFailed" },
-                })
-                if (ok) markSynced()
-              }}
+              onClick={syncNowAction}
             >
               <RefreshCw className="size-4" />
               {syncing
