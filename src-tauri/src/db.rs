@@ -195,6 +195,20 @@ impl Store {
         let mut conn = self.conn.lock().expect("db mutex poisoned");
         let tx = conn.transaction()?;
 
+        // Column list and placeholder count derive from the schema constant, so
+        // a column added to `schema::USAGE_RECORDS_COLNAMES` cannot silently
+        // leave this INSERT stale (single source of truth).
+        let cols = schema::USAGE_RECORDS_COLNAMES;
+        let placeholders = (1..=cols.split(',').count())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let insert_sql = format!(
+            "INSERT INTO usage_records ({cols}) VALUES ({placeholders})
+             ON CONFLICT (uuid, device_id) DO NOTHING
+             RETURNING uuid"
+        );
+
         // Dedup is the `(uuid, device_id)` primary key itself: ON CONFLICT DO
         // NOTHING, and RETURNING tells us exactly which rows actually landed (so
         // `rows_inserted` and the dirty-day set reflect real new rows, not a
@@ -204,15 +218,7 @@ impl Store {
         for r in records {
             let landed: Option<String> = tx
                 .query_row(
-                    "INSERT INTO usage_records
-                     (uuid, timestamp, day, model, pricing_model, source, device_id,
-                      input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-                      server_tool_use, stop_reason, service_tier, iterations,
-                      input_cost_usd, output_cost_usd, cache_read_cost_usd,
-                      cache_creation_cost_usd, total_cost_usd)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)
-                     ON CONFLICT (uuid, device_id) DO NOTHING
-                     RETURNING uuid",
+                    &insert_sql,
                     params![
                         r.uuid,
                         r.timestamp,
@@ -355,9 +361,9 @@ impl Store {
     /// The day-buckets holding un-pushed local changes, in deterministic order
     /// (sorted). Drives the push path's per-day Artifact recompute. Read-only —
     /// it does NOT clear: clearing happens only after a push lands (see
-    /// [`Self::clear_dirty_days`]), so a failed push leaves the days dirty for
-    /// the next retry. Pure local state: this makes no claim about the git
-    /// worktree and never reads it.
+    /// [`Self::clear_dirty_days_if_unchanged`]), so a failed push leaves the
+    /// days dirty for the next retry. Pure local state: this makes no claim
+    /// about the git worktree and never reads it.
     pub fn dirty_days(&self) -> AppResult<Vec<String>> {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let mut stmt = conn.prepare("SELECT day FROM dirty_days ORDER BY day")?;
@@ -366,20 +372,42 @@ impl Store {
             .map_err(AppError::from)
     }
 
-    /// Clear the given days from `dirty_days` once their per-day Artifact has
-    /// been recomputed AND the push landed. Days not listed are left dirty
-    /// (a concurrent collect may have flagged a new one between read and push).
-    /// No-op for days already absent.
-    pub fn clear_dirty_days(&self, days: &[String]) -> AppResult<()> {
-        if days.is_empty() {
+    /// Clear the dirty flag for each day whose store contents still match the
+    /// recompute-time snapshot — i.e. exactly the rows the last push committed.
+    /// A collect that raced in a new row since (row count grew) keeps the day
+    /// dirty so the next push carries that row up; a blind delete would silently
+    /// strand it (the exact "miss git" failure the same-tx marking prevents on
+    /// the write side). The check and the delete run in ONE transaction, so the
+    /// flag can never be dropped after new rows land between the two. Row counts
+    /// suffice: per-device rows are INSERT-only (a count mismatch exactly means
+    /// "new row since the snapshot"); `forget_device` wipes a whole device, not
+    /// one day, so it never hides a mismatch.
+    pub fn clear_dirty_days_if_unchanged(
+        &self,
+        snapshots: &[(String, usize, usize)],
+        device_id: &str,
+    ) -> AppResult<()> {
+        if snapshots.is_empty() {
             return Ok(());
         }
-        let conn = self.conn.lock().expect("db mutex poisoned");
-        let placeholders = (0..days.len()).map(|_| "?").collect::<Vec<_>>().join(",");
-        conn.execute(
-            &format!("DELETE FROM dirty_days WHERE day IN ({placeholders})"),
-            params_from_iter(days.iter()),
-        )?;
+        let mut conn = self.conn.lock().expect("db mutex poisoned");
+        let tx = conn.transaction()?;
+        for (day, expected_usage, expected_turns) in snapshots {
+            let usage: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM usage_records WHERE day = ?1 AND device_id = ?2",
+                params![day, device_id],
+                |r| r.get(0),
+            )?;
+            let turns: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM turn_durations WHERE day = ?1 AND device_id = ?2",
+                params![day, device_id],
+                |r| r.get(0),
+            )?;
+            if usage == *expected_usage as i64 && turns == *expected_turns as i64 {
+                tx.execute("DELETE FROM dirty_days WHERE day = ?1", params![day])?;
+            }
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -390,14 +418,14 @@ impl Store {
     /// day is settled.
     pub fn usage_for_day_device(&self, day: &str, device_id: &str) -> AppResult<Vec<UsageRecord>> {
         let conn = self.conn.lock().expect("db mutex poisoned");
-        let mut stmt = conn.prepare(
-            "SELECT uuid, timestamp, day, model, pricing_model, source, device_id,
-                    input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-                    server_tool_use, stop_reason, service_tier, iterations,
-                    input_cost_usd, output_cost_usd, cache_read_cost_usd,
-                    cache_creation_cost_usd, total_cost_usd
-             FROM usage_records WHERE day = ? AND device_id = ? ORDER BY uuid",
-        )?;
+        // Column list derives from the schema constant (same single source of
+        // truth as `ingest_impl`'s INSERT) — column order is the field order
+        // `row_to_usage_record` reads positionally.
+        let select_sql = format!(
+            "SELECT {} FROM usage_records WHERE day = ? AND device_id = ? ORDER BY uuid",
+            schema::USAGE_RECORDS_COLNAMES
+        );
+        let mut stmt = conn.prepare(&select_sql)?;
         let rows = stmt.query_map(params![day, device_id], row_to_usage_record)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(AppError::from)
@@ -426,27 +454,32 @@ impl Store {
     }
 
     /// Rebill zero-cost rows whose model now has a price (freeze +
-    /// top-up zero-cost only). Returns the number of rows rebilled.
+    /// top-up zero-cost only). Returns the number of rows rebilled. Each
+    /// rebilled row's day is flagged dirty IN the same transaction — the store
+    /// is the single source of truth and `dirty_days` is the ONLY channel into
+    /// the Artifact, so a rebill that skipped the flag would silently never
+    /// reach git (same-tx rationale as [`Self::ingest_marking_dirty`]).
     pub fn rebill_zero_cost(&self, book: &PricingBook) -> AppResult<usize> {
         let mut conn = self.conn.lock().expect("db mutex poisoned");
         let tx = conn.transaction()?;
         let mut stmt = tx.prepare(
-            "SELECT uuid, device_id, pricing_model, input_tokens, output_tokens,
+            "SELECT uuid, day, device_id, pricing_model, input_tokens, output_tokens,
                     cache_creation_tokens, cache_read_tokens
              FROM usage_records
              WHERE CAST(total_cost_usd AS REAL) <= 0",
         )?;
-        let candidates: Vec<(String, String, String, TokenCounts)> = stmt
+        let candidates: Vec<(String, String, String, String, TokenCounts)> = stmt
             .query_map([], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
                     TokenCounts {
-                        input: r.get::<_, i64>(3)? as u32,
-                        output: r.get::<_, i64>(4)? as u32,
-                        cache_creation: r.get::<_, i64>(5)? as u32,
-                        cache_read: r.get::<_, i64>(6)? as u32,
+                        input: r.get::<_, i64>(4)? as u32,
+                        output: r.get::<_, i64>(5)? as u32,
+                        cache_creation: r.get::<_, i64>(6)? as u32,
+                        cache_read: r.get::<_, i64>(7)? as u32,
                     },
                 ))
             })?
@@ -454,8 +487,9 @@ impl Store {
             .collect();
         drop(stmt);
 
+        let mut dirty = std::collections::BTreeSet::new();
         let mut rebilled = 0usize;
-        for (uuid, device, model, tokens) in candidates {
+        for (uuid, day, device, model, tokens) in candidates {
             let Some(rate) = book.resolve(&model) else {
                 continue;
             };
@@ -479,8 +513,10 @@ impl Store {
                     device,
                 ],
             )?;
+            dirty.insert(day);
             rebilled += 1;
         }
+        mark_days_dirty(&tx, &dirty)?;
         tx.commit()?;
         Ok(rebilled)
     }
@@ -905,7 +941,7 @@ fn build_where(filter: &UsageFilter, include_model_source: bool) -> (String, Vec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ServerToolUse;
+    use crate::model::{CostBreakdown, ServerToolUse, TokenCounts, UsageRecord};
     use std::path::Path;
 
     fn mem() -> Store {
@@ -1143,6 +1179,74 @@ mod tests {
         assert!(z.total_cost_usd > 0.0);
     }
 
+    /// Rebill mutates stored costs — a change that must reach git. It flags the
+    /// affected day dirty in the same transaction (the only channel into the
+    /// Artifact), so the next push materializes the rebilled amounts.
+    #[test]
+    fn rebill_flags_rebilled_day_dirty() {
+        let s = mem();
+        s.ingest(&[rec("z", "2026-07-13", "glm-5.2", "d", 1000, 500, 0.0)])
+            .unwrap();
+        let book = s.load_pricing_book().unwrap();
+        s.rebill_zero_cost(&book).unwrap();
+        assert_eq!(
+            s.dirty_days().unwrap(),
+            vec!["2026-07-13".to_string()],
+            "rebilled day is flagged for the next push"
+        );
+    }
+
+    /// The three hand-written column positions (the INSERT, the per-day SELECT,
+    /// and `row_to_usage_record`'s positional reads) must stay aligned with the
+    /// schema constant — a column added there but missed in one spot silently
+    /// misaligns the positional reads (single source of truth). This round-trips
+    /// a full sentinel row through the PRODUCTION paths (`ingest_marking_dirty`
+    /// → `usage_for_day_device`), so every field is compared non-trivially:
+    /// any drift (missing column, swapped order, off-by-one index) breaks the
+    /// equality instead of being papered over by defaults.
+    #[test]
+    fn usage_row_roundtrips_through_production_paths() {
+        let s = mem();
+        let r = UsageRecord {
+            uuid: "sentinel-uuid-001".into(),
+            timestamp: "2026-07-13T12:34:56Z".into(),
+            day: "2026-07-13".into(),
+            model: "model-sentinel".into(),
+            pricing_model: "pricing-sentinel".into(),
+            source: "source-sentinel".into(),
+            device_id: "dev-sentinel".into(),
+            tokens: TokenCounts {
+                input: 123,
+                output: 456,
+                cache_creation: 78,
+                cache_read: 90,
+            },
+            server_tool_use: ServerToolUse {
+                web_search: 7,
+                web_fetch: 8,
+            },
+            stop_reason: "stop-sentinel".into(),
+            service_tier: "tier-sentinel".into(),
+            iterations: 42,
+            cost: CostBreakdown {
+                input_usd: "1.11".parse().unwrap(),
+                output_usd: "2.22".parse().unwrap(),
+                cache_read_usd: "3.33".parse().unwrap(),
+                cache_creation_usd: "4.44".parse().unwrap(),
+                total_usd: "11.10".parse().unwrap(),
+            },
+        };
+        s.ingest_marking_dirty(std::slice::from_ref(&r)).unwrap();
+        let out = s
+            .usage_for_day_device("2026-07-13", "dev-sentinel")
+            .unwrap();
+        assert_eq!(out.len(), 1, "sentinel row landed");
+        assert_eq!(
+            out[0], r,
+            "every usage_records column round-trips through the production paths"
+        );
+    }
+
     #[test]
     fn forget_device_local_purges_all_its_data() {
         let s = mem();
@@ -1291,10 +1395,52 @@ mod tests {
         let s = mem();
         let r = rec("a", "2026-07-13", "glm-5.2", "dev1", 100, 50, 1.0);
         s.ingest_marking_dirty(std::slice::from_ref(&r)).unwrap();
-        s.clear_dirty_days(&["2026-07-13".to_string()]).unwrap();
+        // Snapshot (1 usage row, 0 turns) still matches ⇒ cleared.
+        s.clear_dirty_days_if_unchanged(&[("2026-07-13".into(), 1, 0)], "dev1")
+            .unwrap();
         // Same uuid again ⇒ no new row ⇒ no dirty flag.
         s.ingest_marking_dirty(std::slice::from_ref(&r)).unwrap();
         assert!(s.dirty_days().unwrap().is_empty());
+    }
+
+    /// Regression (review): a day whose store grew between the recompute
+    /// snapshot and the clear must NOT be cleared — the new row has not reached
+    /// git, and clearing would strand it forever. The blind
+    /// `DELETE WHERE day IN (...)` this snapshot API replaces could not tell
+    /// the two apart.
+    #[test]
+    fn clear_keeps_day_dirty_when_rows_grew_since_snapshot() {
+        let s = mem();
+        s.ingest_marking_dirty(std::slice::from_ref(&rec(
+            "a",
+            "2026-07-13",
+            "glm-5.2",
+            "dev1",
+            100,
+            50,
+            1.0,
+        )))
+        .unwrap();
+        // Snapshot taken at recompute time: 1 usage row for the day. A
+        // concurrent collect lands a second row for the SAME day before the
+        // push's clear runs.
+        s.ingest_marking_dirty(std::slice::from_ref(&rec(
+            "b",
+            "2026-07-13",
+            "glm-5.2",
+            "dev1",
+            10,
+            20,
+            2.0,
+        )))
+        .unwrap();
+        s.clear_dirty_days_if_unchanged(&[("2026-07-13".into(), 1, 0)], "dev1")
+            .unwrap();
+        assert_eq!(
+            s.dirty_days().unwrap(),
+            vec!["2026-07-13".to_string()],
+            "day with a post-snapshot row stays dirty"
+        );
     }
 
     /// Turn ingest marks its days dirty on the collect path too (one shared
@@ -1323,9 +1469,13 @@ mod tests {
             s.dirty_days().unwrap(),
             vec!["2026-07-13".to_string(), "2026-07-14".to_string()]
         );
-        // Pull-path turn ingest does not flag.
-        s.clear_dirty_days(&["2026-07-13".into(), "2026-07-14".into()])
-            .unwrap();
+        // Pull-path turn ingest does not flag. (Snapshots still match — the
+        // turn count per day is 1.)
+        s.clear_dirty_days_if_unchanged(
+            &[("2026-07-13".into(), 0, 1), ("2026-07-14".into(), 0, 1)],
+            "d",
+        )
+        .unwrap();
         s.ingest_turn_durations(&[TurnDuration {
             uuid: "t3".into(),
             timestamp: "2026-07-15T10:00:00Z".into(),

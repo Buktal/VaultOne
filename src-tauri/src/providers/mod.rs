@@ -67,7 +67,8 @@ pub struct CollectResult {
 }
 
 /// Per-file incremental scan cursor. Persisted in `scan_progress`;
-/// replaceable — a lost cursor triggers a full rescan (the ledger dedups).
+/// replaceable — a lost cursor triggers a full rescan (the store's
+/// `(uuid, device_id)` ingest dedup absorbs the re-read rows).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FileCursor {
     /// File mtime (nanos) as last seen by this cursor.

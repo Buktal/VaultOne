@@ -470,6 +470,28 @@ pub(crate) fn has_changes(repo: &Repository) -> AppResult<bool> {
     Ok(!repo.statuses(None)?.is_empty())
 }
 
+/// Whether the local branch has commits the remote tip lacks — the state a
+/// failed push leaves behind: the commit landed locally, the worktree is clean,
+/// and `has_changes` alone would no-op the retry forever. An unborn HEAD or a
+/// never-fetched remote ref is conservatively "not ahead" (there is nothing
+/// pushable either way).
+fn is_ahead_of_origin(repo: &Repository) -> AppResult<bool> {
+    let Ok(head) = repo.head() else {
+        return Ok(false); // unborn HEAD: nothing to be ahead with
+    };
+    let local = head.peel_to_commit()?;
+    let remote_ref = format!(
+        "refs/remotes/origin/{}",
+        head.shorthand().unwrap_or("master")
+    );
+    let remote = match repo.find_reference(&remote_ref) {
+        Ok(r) => r.peel_to_commit()?,
+        Err(_) => return Ok(false),
+    };
+    let (ahead, _behind) = repo.graph_ahead_behind(local.id(), remote.id())?;
+    Ok(ahead > 0)
+}
+
 /// Pull the remote and import every device's JSONL Artifact into the Local
 /// Store (deduped by the store's `(uuid, device_id)` primary key). Synced-only.
 ///
@@ -509,11 +531,17 @@ pub fn pull_and_import(
     Ok(inserted.len() as u32)
 }
 
-/// Commit any local Artifact/config change and push it (push). A clean
-/// worktree is a no-op (returns `false`). `message` is the commit body — pass
-/// the semantic of the change so the log reads "vaultone: usage sync" vs
-/// "vaultone: library sync". Errors propagate; for daemon/exit paths that must
-/// not bubble, use [`commit_and_push_best_effort`]. Synced-only.
+/// Commit any local Artifact/config change and push it (push). A clean worktree
+/// AND no commits ahead of origin is a no-op (returns `false`). `message` is
+/// the commit body — pass the semantic of the change so the log reads
+/// "vaultone: usage sync" vs "vaultone: library sync". Errors propagate; for
+/// daemon/exit paths that must not bubble, use [`commit_and_push_best_effort`].
+/// Synced-only.
+///
+/// The "ahead of origin" half matters for retry: if a previous push failed
+/// after its commit landed, the worktree is clean but the local branch is
+/// ahead — skipping the push there would strand the commit until an unrelated
+/// change re-dirtied the worktree.
 pub fn commit_and_push(
     paths: &crate::config::Paths,
     cfg: &ConfigData,
@@ -521,11 +549,15 @@ pub fn commit_and_push(
 ) -> AppResult<bool> {
     let (url, token) = require_synced(cfg)?;
     let repo = open_or_clone(&url, &paths.repo, &token)?;
-    if !has_changes(&repo)? {
+    let changed = has_changes(&repo)?;
+    let ahead = is_ahead_of_origin(&repo)?;
+    if !changed && !ahead {
         return Ok(false);
     }
-    let email = author_email(cfg);
-    commit_all(&repo, message, &cfg.display_name, &email)?;
+    if changed {
+        let email = author_email(cfg);
+        commit_all(&repo, message, &cfg.display_name, &email)?;
+    }
     push(&repo, &token)?;
     Ok(true)
 }
@@ -552,6 +584,10 @@ pub fn commit_and_push_best_effort(paths: &crate::config::Paths, cfg: &ConfigDat
 /// leaves them dirty for the next retry). Synced-only; a no-op (`false`) when
 /// there is nothing dirty to recompute and nothing else to push.
 ///
+/// The clear is scoped to the recompute-time row counts: a collect that raced a
+/// new row into a day after its recompute keeps that day dirty, so the next
+/// push carries the row up (see [`crate::db::Store::clear_dirty_days_if_unchanged`]).
+///
 /// Library sync does NOT call this — it has no store/dirty-day concern and uses
 /// [`commit_and_push`] directly.
 pub fn push_usage(
@@ -560,16 +596,20 @@ pub fn push_usage(
     cfg: &ConfigData,
 ) -> AppResult<bool> {
     let dirty = store.dirty_days()?;
+    // (day, usage row count, turn row count) at recompute time — the clear
+    // boundary: rows that land AFTER these snapshots must keep their day dirty.
+    let mut snapshots: Vec<(String, usize, usize)> = Vec::with_capacity(dirty.len());
     for day in &dirty {
-        crate::ingest::recompute_usage_day(store, paths, &cfg.device_id, day)?;
-        crate::ingest::recompute_turns_day(store, paths, &cfg.device_id, day)?;
+        let usage = crate::ingest::recompute_usage_day(store, paths, &cfg.device_id, day)?;
+        let turns = crate::ingest::recompute_turns_day(store, paths, &cfg.device_id, day)?;
+        snapshots.push((day.clone(), usage, turns));
     }
     let pushed = commit_and_push(paths, cfg, "vaultone: usage sync")?;
     if pushed {
         // Push landed ⇒ the recomputed days are on the remote; drop them so the
         // next push only touches days with fresh local changes. A push failure
         // returns early via `?` above, leaving the days dirty for the retry.
-        store.clear_dirty_days(&dirty)?;
+        store.clear_dirty_days_if_unchanged(&snapshots, &cfg.device_id)?;
     }
     Ok(pushed)
 }
@@ -1202,6 +1242,113 @@ mod tests {
         let _repo = open_or_clone(&url, &paths.repo, "").unwrap();
         let pushed = commit_and_push(&paths, &cfg, "vaultone: usage sync").unwrap();
         assert!(!pushed, "clean worktree ⇒ no commit/push");
+    }
+
+    /// Regression (review): a push that failed after its commit landed leaves a
+    /// clean worktree whose branch is ahead of origin — the retry must still
+    /// push. The pre-review `has_changes`-only gate no-op'd the retry, stranding
+    /// the commit until an unrelated change re-dirtied the worktree.
+    #[test]
+    fn commit_and_push_retries_ahead_of_origin_with_clean_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = tmp.path().join("remote.git");
+        seed_remote(&remote);
+        let url = remote.to_string_lossy().to_string();
+        let paths = crate::config::Paths::resolve(&tmp.path().join("dev"));
+        let cfg = synced_cfg(&url, "tok");
+        let repo = open_or_clone(&url, &paths.repo, "").unwrap();
+
+        // A pushed commit: ships one day file to the remote.
+        let f1 = paths
+            .device_data_dir("aaaaaaaaaaaa")
+            .join("usage-2026-07-13.jsonl");
+        std::fs::create_dir_all(f1.parent().unwrap()).unwrap();
+        std::fs::write(&f1, "{\"uuid\":\"a-1\"}\n").unwrap();
+        assert!(commit_and_push(&paths, &cfg, "vaultone: usage sync").unwrap());
+
+        // Simulate the failed-push residue: a second commit that the remote
+        // never got — worktree clean, local branch ahead.
+        let f2 = paths
+            .device_data_dir("aaaaaaaaaaaa")
+            .join("usage-2026-07-14.jsonl");
+        std::fs::write(&f2, "{\"uuid\":\"a-2\"}\n").unwrap();
+        commit_all(
+            &repo,
+            "usage sync (push failed)",
+            "VaultOne",
+            "a@devices.vaultone",
+        )
+        .unwrap();
+        assert!(
+            !has_changes(&repo).unwrap(),
+            "worktree clean after the commit"
+        );
+        assert!(
+            is_ahead_of_origin(&repo).unwrap(),
+            "local branch ahead of origin"
+        );
+
+        // Retry: push must happen despite the clean worktree.
+        assert!(commit_and_push(&paths, &cfg, "vaultone: usage sync").unwrap());
+        assert!(
+            !is_ahead_of_origin(&repo).unwrap(),
+            "the stranded commit shipped"
+        );
+    }
+
+    /// Regression (review): push_usage recovers the same stranded-commit state
+    /// end to end — the retry ships the leftover commit, the recomputed day is
+    /// already on git, and the dirty day is cleared.
+    #[test]
+    fn push_usage_recovers_stranded_commit_and_clears_days() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = tmp.path().join("remote.git");
+        seed_remote(&remote);
+        let url = remote.to_string_lossy().to_string();
+        let paths = crate::config::Paths::resolve(&tmp.path().join("dev"));
+        let cfg = ConfigData {
+            repo_url: Some(url.clone()),
+            github_token: Some("tok".into()),
+            device_id: "aaaaaaaaaaaa".into(),
+            ..Default::default()
+        };
+        let repo = open_or_clone(&url, &paths.repo, "").unwrap();
+        let store = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
+
+        // Collect one row into the store (dirty, no file).
+        let book = crate::pricing::seed_book();
+        let rec = crate::ingest::recordify(&raw_usage("a-1"), "aaaaaaaaaaaa", &book);
+        store
+            .ingest_marking_dirty(std::slice::from_ref(&rec))
+            .unwrap();
+
+        // Stranded-commit state: the day file is committed but the push never
+        // landed (worktree clean, branch ahead).
+        let day_file = paths
+            .device_data_dir("aaaaaaaaaaaa")
+            .join("usage-2026-07-13.jsonl");
+        std::fs::create_dir_all(day_file.parent().unwrap()).unwrap();
+        std::fs::write(&day_file, "{\"uuid\":\"a-1\"}\n").unwrap();
+        commit_all(
+            &repo,
+            "usage sync (push failed)",
+            "VaultOne",
+            "a@devices.vaultone",
+        )
+        .unwrap();
+        assert!(!has_changes(&repo).unwrap());
+
+        // push_usage: recompute is byte-identical (no worktree churn), but the
+        // retry must still ship the stranded commit and clear the day.
+        assert!(push_usage(&store, &paths, &cfg).unwrap());
+        assert!(
+            store.dirty_days().unwrap().is_empty(),
+            "push landed ⇒ dirty day cleared"
+        );
+        assert!(
+            !is_ahead_of_origin(&repo).unwrap(),
+            "stranded commit shipped"
+        );
     }
 
     /// push_usage with no dirty days and a clean worktree is a no-op: it does not

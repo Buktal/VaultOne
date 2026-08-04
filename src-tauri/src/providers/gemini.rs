@@ -112,9 +112,9 @@ impl Provider for GeminiCliProvider {
     /// driver) is meaningful, and a gated file is re-parsed in full. The line
     /// cursor the driver advances is harmless: this provider's `parse_file`
     /// ignores `start_line` and parses the whole text every gate pass. The
-    /// ledger dedups already-seen message ids; a CLI rewrite that changes an
-    /// existing message's tokens is NOT re-costed (freeze + top-up only), which
-    /// matches the session-log contract.
+    /// store dedups already-seen message ids at ingest; a CLI rewrite that
+    /// changes an existing message's tokens is NOT re-costed (freeze + top-up
+    /// only), which matches the session-log contract.
     fn collect_incremental(
         &self,
         progress: &ScanProgress,
@@ -328,7 +328,7 @@ mod tests {
         assert_eq!(r2.events.len(), 0);
         assert!(delta2.is_empty());
         // Rewrite (new mtime) ⇒ full re-parse; the seen id is re-emitted (the
-        // ledger dedups at ingest, not here).
+        // store dedups at ingest, not here).
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(&path, json).unwrap();
         let (r3, _) = p.collect_incremental(&progress).unwrap();

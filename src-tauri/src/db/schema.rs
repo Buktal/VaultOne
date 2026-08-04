@@ -124,13 +124,24 @@ pub(super) const SCAN_PROGRESS_COLS_DDL: &str = "\
     last_modified INTEGER NOT NULL, \
     last_line_offset INTEGER NOT NULL DEFAULT 0";
 
+/// Dead tables dropped on every open, so an upgraded Local Store physically
+/// sheds them (idempotent: present ⇒ dropped, absent ⇒ no-op; safe to run on
+/// every startup, zero migration code — spec §5.3). `daily_rollups` was a
+/// derived cache nobody read; `ledger` duplicated the `(uuid, device_id)` dedup.
+const DEAD_TABLES_DROP: &str = "\
+    DROP TABLE IF EXISTS daily_rollups; \
+    DROP TABLE IF EXISTS ledger;";
+
 /// Assemble the full idempotent schema batch (`CREATE ... IF NOT EXISTS`) run on
 /// every open. Built from the constants above so the [`Store::open`] path and
-/// the `migrate_to_composite_pk` rebuild path can never drift apart.
+/// the `migrate_to_composite_pk` rebuild path can never drift apart. The dead
+/// tables are dropped FIRST — an old database physically cleans them before the
+/// fresh tables are created.
 ///
 /// [`Store::open`]: super::Store::open
 pub(super) fn schema_sql() -> String {
     [
+        DEAD_TABLES_DROP.to_string(),
         create_table("usage_records", USAGE_RECORDS_COLS_DDL),
         USAGE_RECORDS_INDEXES.to_string(),
         create_table("turn_durations", TURN_DURATIONS_COLS_DDL),
@@ -215,5 +226,29 @@ mod tests {
         ] {
             assert!(tables.contains(expected), "schema missing table {expected}");
         }
+    }
+
+    /// An upgraded Local Store that still physically holds the dead tables sheds
+    /// them on open — the idempotent DROP runs before the CREATEs, so the store
+    /// never keeps `daily_rollups` / `ledger` residue (spec §5.3).
+    #[test]
+    fn schema_drops_dead_tables_from_upgraded_db() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE daily_rollups (day TEXT PRIMARY KEY); \
+             CREATE TABLE ledger (uuid TEXT PRIMARY KEY);",
+        )
+        .unwrap();
+        conn.execute_batch(&schema_sql()).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+            .unwrap();
+        let tables: std::collections::HashSet<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(!tables.contains("daily_rollups"));
+        assert!(!tables.contains("ledger"));
     }
 }

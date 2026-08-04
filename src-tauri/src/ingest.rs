@@ -180,26 +180,30 @@ fn rewrite_day_file<T: serde::Serialize>(path: &Path, rows: &[T]) -> AppResult<(
 /// The push-side writer — collect no longer touches the Artifact; the store is
 /// the single source of truth and this materializes the derived snapshot a peer
 /// pulls. Byte-stable across pushes (uuid order + field declaration order).
+/// Returns the row count — the caller (push) uses it as the recompute-time
+/// snapshot to decide whether the day is still clearable after the push lands.
 pub fn recompute_usage_day(
     store: &Store,
     paths: &Paths,
     device_id: &str,
     day: &str,
-) -> AppResult<()> {
+) -> AppResult<usize> {
     let rows = store.usage_for_day_device(day, device_id)?;
-    rewrite_day_file(&day_path::<UsageGrain>(paths, device_id, day), &rows)
+    rewrite_day_file(&day_path::<UsageGrain>(paths, device_id, day), &rows)?;
+    Ok(rows.len())
 }
 
 /// Recompute one device's per-day turn-duration Artifact from the store (mirrors
-/// [`recompute_usage_day`] for the per-turn grain).
+/// [`recompute_usage_day`] for the per-turn grain; same row-count snapshot role).
 pub fn recompute_turns_day(
     store: &Store,
     paths: &Paths,
     device_id: &str,
     day: &str,
-) -> AppResult<()> {
+) -> AppResult<usize> {
     let rows = store.turns_for_day_device(day, device_id)?;
-    rewrite_day_file(&day_path::<TurnGrain>(paths, device_id, day), &rows)
+    rewrite_day_file(&day_path::<TurnGrain>(paths, device_id, day), &rows)?;
+    Ok(rows.len())
 }
 
 // ---------------- Test-only Artifact append fixtures ----------------

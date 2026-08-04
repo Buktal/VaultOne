@@ -194,7 +194,8 @@ fn parse_grok_notification(
     // prompt_id is the per-turn UUIDv7 (globally unique) — anchoring the dedup
     // key to it (not the file line) survives updates.jsonl rewrites: a rewind
     // truncation shifts surviving events' line numbers, but their prompt_id
-    // keys still hit the existing ledger rows instead of double-counting.
+    // keys still collide with the store's `(uuid, device_id)` primary key
+    // instead of double-counting.
     let turn_key = if prompt_id.is_empty() {
         format!("line{line_no}")
     } else {
