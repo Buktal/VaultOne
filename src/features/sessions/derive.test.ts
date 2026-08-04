@@ -56,6 +56,7 @@ describe("sessionTabFilter", () => {
       synced_group_id: null,
       from_ts: null,
       to_ts: null,
+      model: null,
     })
   })
 
@@ -68,6 +69,7 @@ describe("sessionTabFilter", () => {
       synced_group_id: null,
       from_ts: null,
       to_ts: null,
+      model: null,
     })
   })
 
@@ -93,6 +95,7 @@ describe("sessionTabFilter", () => {
       synced_group_id: null,
       from_ts: null,
       to_ts: null,
+      model: null,
     })
     expect(
       sessionTabFilter("favorites", "dev-self", { source: "codex_cli" }),
@@ -104,6 +107,7 @@ describe("sessionTabFilter", () => {
       synced_group_id: null,
       from_ts: null,
       to_ts: null,
+      model: null,
     })
   })
 
@@ -138,6 +142,18 @@ describe("sessionTabFilter", () => {
       sessionTabFilter("favorites", "dev-self", { deviceScope: "dev-peer" })
         .device_scope,
     ).toBe("dev-peer")
+  })
+
+  it("model arg narrows both tabs; empty string becomes null", () => {
+    expect(
+      sessionTabFilter("local", "dev-self", { model: "glm-5.2" }).model,
+    ).toBe("glm-5.2")
+    expect(
+      sessionTabFilter("favorites", "dev-self", { model: "glm-5.2" }).model,
+    ).toBe("glm-5.2")
+    expect(
+      sessionTabFilter("local", "dev-self", { model: "" }).model,
+    ).toBeNull()
   })
 })
 

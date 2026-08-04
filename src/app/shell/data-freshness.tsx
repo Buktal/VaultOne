@@ -3,6 +3,10 @@
 // has ever landed. The relative string is recomputed on each render; callers
 // that want it to tick over time can re-render on a timer (the CommandBar's
 // queries poll, so it refreshes often enough).
+//
+// Two layouts: `stacked` renders each time on its own line (the sidebar — one
+// line with both times overflows the 12rem column); the default single line
+// keeps the old log-toolbar look.
 
 import dayjs from "dayjs"
 import relativeTime from "dayjs/plugin/relativeTime"
@@ -15,7 +19,7 @@ import { useFreshness } from "@/hooks/use-freshness"
 // hard-coded here.
 dayjs.extend(relativeTime)
 
-export function DataFreshness() {
+export function DataFreshness({ stacked = false }: { stacked?: boolean }) {
   const { t } = useTranslation()
   const { state } = useFreshness()
   const collect = state.lastCollectAt
@@ -26,6 +30,30 @@ export function DataFreshness() {
       <span className="text-muted-foreground text-xs">
         {t("usage.freshness.firstRun")}
       </span>
+    )
+  }
+
+  if (stacked) {
+    return (
+      <div className="text-muted-foreground flex flex-col gap-1 text-[11px] leading-snug">
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className="relative flex size-1.5 shrink-0">
+            <span className="absolute inline-flex size-full animate-ping rounded-full bg-accent-brand opacity-75" />
+            <span className="relative inline-flex size-1.5 rounded-full bg-accent-brand" />
+          </span>
+          <span className="truncate">
+            {t("usage.freshness.collected", { ago: dayjs(collect).fromNow() })}
+          </span>
+        </span>
+        {sync ? (
+          // syncedPlain: no " · " prefix — the single-line variant uses it as a
+          // joiner, but on its own stacked line it reads as noise. pl-3 aligns
+          // this line's text with the collected line's (6px dot + 6px gap).
+          <span className="truncate pl-3">
+            {t("usage.freshness.syncedPlain", { ago: dayjs(sync).fromNow() })}
+          </span>
+        ) : null}
+      </div>
     )
   }
 

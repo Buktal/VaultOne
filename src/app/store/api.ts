@@ -91,6 +91,7 @@ export function sessionFilterId(f: SessionFilter): string {
     f.synced_group_id,
     f.from_ts,
     f.to_ts,
+    f.model,
   ].join("|")
 }
 
@@ -247,6 +248,10 @@ export const vaultApi = createApi({
      *  the forget-device dialog's migrate-vs-delete choice. Read-only probe. */
     libraryDeviceSummary: b.query<DeviceLibrarySummary, string>({
       queryFn: async (deviceId) => run(commands.libraryDeviceSummary(deviceId)),
+    }),
+    /** Themed text preview: `null` = not text (binary / over the size cap). */
+    libraryText: b.query<string | null, string>({
+      queryFn: async (relPath) => run(commands.readLibraryText(relPath)),
     }),
 
     // ---- device / repo config ----
@@ -449,6 +454,7 @@ export const {
   useDeleteFromLibraryMutation,
   useRenameInLibraryMutation,
   useLibraryDeviceSummaryQuery,
+  useLibraryTextQuery,
   useSetSyncRepoMutation,
   useVerifySyncRepoMutation,
   useClearSyncRepoMutation,

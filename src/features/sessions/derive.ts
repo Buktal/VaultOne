@@ -44,9 +44,10 @@ export interface GroupedSessions {
 /**
  * Extra filter dimensions the sessions toolbar exposes on top of the tab. All
  * optional — omitted/empty values mean "no constraint". Mirrors the logs view's
- * toolbar (time range · source · device) so the two data views filter the same
- * way; model filtering is intentionally absent (TODO — a session may span
- * several models, so the right grain is unclear).
+ * toolbar (time range · source · model · device) so the two data views filter
+ * the same way. Model is EXISTS semantics (a session that used the model at
+ * least once matches) — the model lives per-request on usage_records, never on
+ * the session row.
  */
 export interface SessionListFilter {
   /** Provider tag, e.g. "claude_code". */
@@ -60,6 +61,8 @@ export interface SessionListFilter {
    * on the Local tab — that tab is always this device.
    */
   deviceScope?: string | null
+  /** Session used this model at least once (EXISTS over usage_records). */
+  model?: string | null
 }
 
 /**
@@ -83,6 +86,7 @@ export function sessionTabFilter(
   const src = filter.source || null
   const fromTs = filter.fromTs || null
   const toTs = filter.toTs || null
+  const model = filter.model || null
   if (tab === "local") {
     return {
       device_scope: selfDeviceId,
@@ -92,6 +96,7 @@ export function sessionTabFilter(
       synced_group_id: null,
       from_ts: fromTs,
       to_ts: toTs,
+      model,
     }
   }
   // Favorites tab: deviceScope narrows from "all devices" to one.
@@ -103,6 +108,7 @@ export function sessionTabFilter(
     synced_group_id: null,
     from_ts: fromTs,
     to_ts: toTs,
+    model,
   }
 }
 

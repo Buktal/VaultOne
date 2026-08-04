@@ -347,5 +347,10 @@
   "usage.trend.total": "Total",
   "usage.collect.sync": "Sync",
   "usage.collect.syncing": "Syncing…",
-  "usage.collect.doneSync": "Synced: {{rows}} new (scanned {{files}} files)"
+  "usage.collect.doneSync": "Synced: {{rows}} new (scanned {{files}} files)",
+  "sessions.filter.model": "Model",
+  "sessions.filter.allModels": "All models",
+  "library.preview.notText": "Preview unavailable",
+  "library.preview.notTextDesc": "Binary files and files over 1 MB can’t be previewed as text — download to view",
+  "usage.freshness.syncedPlain": "Synced {{ago}}"
 }

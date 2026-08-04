@@ -1,9 +1,15 @@
-// Preview a Library entry in the webview via convertFileSrc. The browser
-// renders json / image / pdf / text natively; Markdown shows as source. The
-// iframe is sandboxed without scripts so an uploaded HTML file cannot execute.
+// Preview a Library entry in the webview. Images render natively with
+// Ctrl+wheel zoom; text files (json / md / txt / log) render theme-styled so
+// dark mode stays dark (the browser's default iframe rendering of these is
+// white — see shouldThemeRender); everything else (html / pdf / svg / unknown)
+// loads in a sandboxed iframe without scripts so an uploaded HTML file cannot
+// execute.
 
 import { convertFileSrc } from "@tauri-apps/api/core"
 import { useRef, useState } from "react"
+import { useTranslation } from "react-i18next"
+import { useLibraryTextQuery } from "@/app/store/api"
+import { QueryState } from "@/components/query-state"
 import {
   Sheet,
   SheetContent,
@@ -12,11 +18,22 @@ import {
 } from "@/components/ui/sheet"
 import { cn } from "@/lib/utils"
 import type { LibraryEntry } from "@/types/generated/bindings"
+import { shouldThemeRender } from "../derive"
 
 const IMAGE_EXTS = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"]
 
 function extOf(name: string) {
   return name.split(".").pop()?.toLowerCase() ?? ""
+}
+
+/** Pretty-print JSON with 2-space indent; any parse failure falls back to the
+ *  raw text (a .json file can be a JSONL stream or a non-JSON body). */
+function maybePrettyJson(text: string): string {
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2)
+  } catch {
+    return text
+  }
 }
 
 export function PreviewSheet({
@@ -26,8 +43,11 @@ export function PreviewSheet({
   entry: LibraryEntry
   onClose: () => void
 }) {
+  const { t } = useTranslation()
   const url = convertFileSrc(entry.abs_path)
   const isImage = IMAGE_EXTS.includes(extOf(entry.name))
+  const isText = shouldThemeRender(entry.name)
+  const textQuery = useLibraryTextQuery(entry.rel_path, { skip: !isText })
   const [scale, setScale] = useState(1)
   const [pos, setPos] = useState({ x: 0, y: 0 })
   const drag = useRef<{
@@ -94,6 +114,21 @@ export function PreviewSheet({
               )}
             />
           </div>
+        ) : isText ? (
+          /* Theme-styled text preview — json pretty-printed, everything else
+             as-is. QueryState handles loading / error / empty (binary or over
+             the size cap returns null from the backend). */
+          <QueryState
+            isLoading={textQuery.isLoading}
+            error={textQuery.error}
+            isEmpty={!textQuery.isLoading && !textQuery.data}
+            emptyLabel={t("library.preview.notText")}
+            emptyDescription={t("library.preview.notTextDesc")}
+          >
+            <pre className="border-border bg-muted/50 text-foreground min-h-[60vh] w-full flex-1 overflow-auto rounded-md border p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words">
+              {textQuery.data ? maybePrettyJson(textQuery.data) : ""}
+            </pre>
+          </QueryState>
         ) : (
           <iframe
             src={url}

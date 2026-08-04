@@ -1,29 +1,24 @@
 // ControlCard / ControlBar — shared meta-controls for the
-// data views. Time range · model · refresh, plus the primary action with a
-// data-freshness hint. Solid flat (no glass / no glow) — Pixso dark.
-//
-// Two layouts over the same controls + action:
-//   - <ControlCard/>  纵向卡片 (dashboard 右栏): label+值 三行 + 分隔 + 主按钮.
-//   - <ControlBar/>   横向条   (logs 顶部): chip 横排 + 主按钮居右.
-// The primary action is mode-adaptive: Standalone ⇒ 「采集」 (local collect),
-// Synced ⇒ 「同步」 (collect + pull + push — the full align). The run mode
-// decides what it means; the button is always "refresh my data".
+// data views. Time range · model · source · device filters only. The collect /
+// sync action and the data-freshness hint moved to the sidebar (single entry
+// point — see shell.tsx); these are pure filter surfaces now. Solid flat
+// (no glass / no glow) — Pixso dark.
 //
 // 横排 ControlBar 的 chip 走 bar (纯值 + 选中「全部」时显全称「全部模型 /
 // 全部来源 / 全部设备」自带身份, 与库一致), 纵卡 ControlCard 靠左 Row label,
 // chip 只显「全部」. 来源 (source) 维度在多来源 (sources.length > 0) 时才出现
 // —— 采到任意来源就显示, 与设备维度同理.
 
-import { Activity, CalendarRange, ChevronDown } from "lucide-react"
+import { CalendarRange, ChevronDown } from "lucide-react"
 import type { ReactNode } from "react"
 import { useTranslation } from "react-i18next"
-import { DataFreshness } from "@/app/shell/data-freshness"
 import {
   useDistinctModelsQuery,
   useDistinctSourcesQuery,
 } from "@/app/store/api"
 import { useAppDispatch, useAppSelector } from "@/app/store/hooks"
 import {
+  effectiveDays,
   type Preset,
   patchFilter,
   presetDays,
@@ -48,7 +43,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { useCollectAction } from "@/hooks/use-collect-action"
 import { usePersistedState } from "@/lib/persistence"
 import { cn } from "@/lib/utils"
 import { sourceLabel } from "../source-labels"
@@ -84,6 +78,9 @@ function DateRangeChip({ align = "end" }: { align?: "start" | "end" }) {
   const dispatch = useAppDispatch()
   const filter = useAppSelector((s) => s.filter.filter)
   const { range_preset, from_day, to_day } = filter
+  // The inputs show the EFFECTIVE days — a dynamic preset (e.g. "today"
+  // picked yesterday) renders the current day, not the frozen stored date.
+  const { from_day: effFrom, to_day: effTo } = effectiveDays(filter)
   const label =
     range_preset === "all"
       ? t("usage.control.allTime")
@@ -143,7 +140,7 @@ function DateRangeChip({ align = "end" }: { align?: "start" | "end" }) {
             </span>
             <input
               type="date"
-              value={from_day}
+              value={effFrom}
               onChange={(e) =>
                 dispatch(
                   patchFilter({
@@ -161,7 +158,7 @@ function DateRangeChip({ align = "end" }: { align?: "start" | "end" }) {
             </span>
             <input
               type="date"
-              value={to_day}
+              value={effTo}
               onChange={(e) =>
                 dispatch(
                   patchFilter({
@@ -268,11 +265,11 @@ function SourceChip({
   )
 }
 
-/** 纵向卡片版 — 看板右栏。标题行带主题切换 + 折叠。 */
+/** 纵向卡片版 — 看板右栏。标题行带主题切换 + 折叠。Filters only — the
+ *  collect action lives in the sidebar now. */
 export function ControlCard() {
   const { t } = useTranslation()
   const multiDevice = useDeviceOptions().length > 0
-  const { onCollect, collecting } = useCollectAction(multiDevice)
   const { data: sources = [] } = useDistinctSourcesQuery()
   const hasSources = sources.length > 0
   // Collapse persists across restarts (debounced write, flushed on unmount).
@@ -322,31 +319,15 @@ export function ControlCard() {
               <DeviceScopeControl align="end" />
             </Row>
           ) : null}
-          <div className="bg-border my-2 h-px" />
-          <Button className="w-full" disabled={collecting} onClick={onCollect}>
-            <Activity />
-            {collecting
-              ? t(
-                  multiDevice
-                    ? "usage.collect.syncing"
-                    : "usage.collect.collecting",
-                )
-              : t(multiDevice ? "usage.collect.sync" : "usage.collect.collect")}
-          </Button>
-          <div className="mt-3">
-            <DataFreshness />
-          </div>
         </CardContent>
       )}
     </Card>
   )
 }
 
-/** 横向条版 — 日志页顶部。 */
+/** 横向条版 — 日志页顶部。Filters only — the collect action lives in the
+ *  sidebar now. */
 export function ControlBar() {
-  const { t } = useTranslation()
-  const multiDevice = useDeviceOptions().length > 0
-  const { onCollect, collecting } = useCollectAction(multiDevice)
   const { data: sources = [] } = useDistinctSourcesQuery()
   const hasSources = sources.length > 0
   return (
@@ -355,18 +336,6 @@ export function ControlBar() {
       {hasSources ? <SourceChip bar /> : null}
       <ModelChip bar />
       <DeviceScopeControl bar />
-      <div className="flex-1" />
-      <DataFreshness />
-      <Button size="sm" disabled={collecting} onClick={onCollect}>
-        <Activity />
-        {collecting
-          ? t(
-              multiDevice
-                ? "usage.collect.syncing"
-                : "usage.collect.collecting",
-            )
-          : t(multiDevice ? "usage.collect.sync" : "usage.collect.collect")}
-      </Button>
     </div>
   )
 }

@@ -130,6 +130,8 @@ export const commands = {
 	exportFromLibrary: (relPath: string, targetDir: string) => typedError<null, AppError>(__TAURI_INVOKE("export_from_library", { relPath, targetDir })),
 	deleteFromLibrary: (relPath: string) => typedError<null, AppError>(__TAURI_INVOKE("delete_from_library", { relPath })),
 	renameInLibrary: (relPath: string, newName: string) => typedError<null, AppError>(__TAURI_INVOKE("rename_in_library", { relPath, newName })),
+	/**  Read a library entry as text for the themed preview (see [`read_text_entry`]). */
+	readLibraryText: (relPath: string) => typedError<string | null, AppError>(__TAURI_INVOKE("read_library_text", { relPath })),
 	/**
 	 *  File/folder counts for one device's library subtree — used by the
 	 *  forget-device dialog to show what would be migrated or deleted.
@@ -150,6 +152,12 @@ export const commands = {
 	from_ts: string | null,
 	/**  Inclusive upper bound on `last_active_at` (ISO8601). */
 	to_ts: string | null,
+	/**
+	 *  Scope to sessions that have at least one usage record with this model
+	 *  (EXISTS semantics — a session spanning several models matches any of
+	 *  them). The model lives on `usage_records`, not on the session row.
+	 */
+	model: string | null,
 } | null) => typedError<SessionRow[], AppError>(__TAURI_INVOKE("query_sessions_cmd", { filter })),
 	getSessionTranscriptCmd: (id: string, deviceId: string) => typedError<SessionMessage_Serialize[], AppError>(__TAURI_INVOKE("get_session_transcript_cmd", { id, deviceId })),
 	setSessionFavoritedCmd: (id: string, deviceId: string, favorited: boolean) => typedError<null, AppError>(__TAURI_INVOKE("set_session_favorited_cmd", { id, deviceId, favorited })),
@@ -434,6 +442,12 @@ export type SessionFilter = {
 	from_ts: string | null,
 	/**  Inclusive upper bound on `last_active_at` (ISO8601). */
 	to_ts: string | null,
+	/**
+	 *  Scope to sessions that have at least one usage record with this model
+	 *  (EXISTS semantics — a session spanning several models matches any of
+	 *  them). The model lives on `usage_records`, not on the session row.
+	 */
+	model: string | null,
 };
 
 /**  One group entry for the frontend, unified across the two tracks. */

@@ -31,9 +31,12 @@ import {
   useSetSessionSyncedGroupMutation,
 } from "@/app/store/api"
 import { useAppDispatch } from "@/app/store/hooks"
-import { type Preset, presetDays } from "@/app/store/slices/filterSlice"
+import {
+  effectiveDays,
+  type Preset,
+  presetDays,
+} from "@/app/store/slices/filterSlice"
 import { setView } from "@/app/store/slices/viewSlice"
-import { useCollectAction } from "@/hooks/use-collect-action"
 import { useMutateWithToast } from "@/hooks/use-toast-mutation"
 import { usePersistedState } from "@/lib/persistence"
 import type { SessionGroup, SessionRow } from "@/types/generated/bindings"
@@ -63,6 +66,7 @@ export function useSessionsBrowser() {
   const [tab, setTab] = usePersistedState<SessionTab>(TAB_KEY, "local")
   const [search, setSearch] = useState("")
   const [source, setSource] = useState("")
+  const [model, setModel] = useState("")
   // Time-range filter (mirrors the logs ControlBar): a dynamic preset (today /
   // 7d / 30d / all) is the source of truth — its day bounds are computed on
   // selection. "custom" keeps the user-picked days verbatim.
@@ -71,6 +75,8 @@ export function useSessionsBrowser() {
   const [toDay, setToDay] = useState("")
   // Device filter (Favorites tab only — narrows "all devices" to one).
   const [deviceScope, setDeviceScope] = useState("")
+  // Tick counter for the cross-midnight rollover interval (see below).
+  const [, setTick] = useState(0)
   const [selectedGroupId, setSelectedGroupId] = useState<string>(ALL_GROUPS)
   const [favOverrides, setFavOverrides] = useState<Record<string, boolean>>({})
   const [pendingGroup, setPendingGroup] = useState<string | null>(null)
@@ -111,8 +117,27 @@ export function useSessionsBrowser() {
     setToDay(d)
   }
   // Local-day range → inclusive ISO8601 timestamp bounds on last_active_at.
-  const fromTs = fromDay ? dayjs(fromDay).startOf("day").toISOString() : null
-  const toTs = toDay ? dayjs(toDay).endOf("day").toISOString() : null
+  // effectiveDays recomputes a dynamic preset (today/7d/30d) on every render,
+  // so a preset picked yesterday rolls to the current day — the stored days
+  // are only the frozen selection-time snapshot.
+  const effective = effectiveDays({
+    range_preset: rangePreset,
+    from_day: fromDay,
+    to_day: toDay,
+  })
+  const fromTs = effective.from_day
+    ? dayjs(effective.from_day).startOf("day").toISOString()
+    : null
+  const toTs = effective.to_day
+    ? dayjs(effective.to_day).endOf("day").toISOString()
+    : null
+  // Cross-midnight rollover: effectiveDays runs on render, but with no user
+  // input or query refetch there is no render — tick once a minute so the
+  // bounds flip to the new day without a reload.
+  useEffect(() => {
+    const id = setInterval(() => setTick((n) => n + 1), 60_000)
+    return () => clearInterval(id)
+  }, [])
 
   // Sessions for the active tab, narrowed by the toolbar filters (time / source
   // / device). All narrowing is backend-side (single source of truth) — the
@@ -125,6 +150,7 @@ export function useSessionsBrowser() {
       fromTs,
       toTs,
       deviceScope: deviceScope || null,
+      model: model || null,
     }),
     {
       skip: !selfDeviceId,
@@ -159,10 +185,6 @@ export function useSessionsBrowser() {
   const [renameSyncedMut] = useRenameSyncedGroupMutation()
   const [deleteSyncedMut] = useDeleteSyncedGroupMutation()
   const runWithToast = useMutateWithToast()
-  // Shared collect trigger — same path as the request-log ControlBar
-  // (architecture.md: 单一事实来源). The favorites tab spans devices but the
-  // button is "collect sessions", so it always reads as collect, never sync.
-  const { onCollect, collecting } = useCollectAction(false)
 
   // ---- derived read model (pure functions from ./derive) ----
   const trackGroups = useMemo(
@@ -378,13 +400,15 @@ export function useSessionsBrowser() {
   }
 
   return {
-    // tab / search / source / selection
+    // tab / search / source / model / selection
     tab,
     setTab,
     search,
     setSearch,
     source,
     setSource,
+    model,
+    setModel,
     selectedGroupId,
     setSelectedGroupId,
     effectiveTrack,
@@ -398,9 +422,6 @@ export function useSessionsBrowser() {
     deviceScope,
     setDeviceScope,
     deviceOptions,
-    // collect (shared trigger)
-    onCollect,
-    collecting,
     // data
     sessions,
     isLoading: sessionsQuery.isLoading,

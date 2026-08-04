@@ -63,6 +63,26 @@ export function presetDays(
   }
 }
 
+/** The EFFECTIVE day bounds for a filter: a dynamic preset (today / 7d / 30d)
+ *  is recomputed on the spot, so a preset picked yesterday still means "today"
+ *  when the app is left running across midnight (the stored from_day/to_day
+ *  are frozen at selection time and must not be trusted). "all" / "custom"
+ *  return the stored values verbatim — "all" stores empty bounds, "custom"
+ *  keeps the user-picked days. Single place that answers "what days does this
+ *  filter mean", shared by the query path and the date-input display. */
+export function effectiveDays(
+  f: Pick<FilterState, "range_preset" | "from_day" | "to_day">,
+): Pick<FilterState, "from_day" | "to_day"> {
+  if (
+    f.range_preset === "today" ||
+    f.range_preset === "7d" ||
+    f.range_preset === "30d"
+  ) {
+    return presetDays(f.range_preset)
+  }
+  return { from_day: f.from_day, to_day: f.to_day }
+}
+
 function isPreset(v: unknown): v is Preset {
   return (
     v === "today" || v === "7d" || v === "30d" || v === "all" || v === "custom"
@@ -109,13 +129,16 @@ export function loadPersistedFilter(): FilterState {
 
 /** Convert internal FilterState (empty = no constraint) → API UsageFilter (null). */
 export function toFilter(s: FilterState): UsageFilter {
+  const { from_day, to_day } = effectiveDays(s)
   return {
     // Local-day range → inclusive UTC timestamp bounds. The backend filters on
     // `timestamp` (UTC), not the UTC `day` bucket: a local "today" in UTC+8
     // straddles two UTC days, so we must widen to timestamps or the early-
     // morning rows (whose UTC day is still yesterday) vanish from "today".
-    from_ts: s.from_day ? dayjs(s.from_day).startOf("day").toISOString() : null,
-    to_ts: s.to_day ? dayjs(s.to_day).endOf("day").toISOString() : null,
+    // effectiveDays keeps a dynamic preset rolling to the current day instead
+    // of trusting the frozen stored dates (cross-midnight fix).
+    from_ts: from_day ? dayjs(from_day).startOf("day").toISOString() : null,
+    to_ts: to_day ? dayjs(to_day).endOf("day").toISOString() : null,
     model: s.model || null,
     source: s.source || null,
     device_scope: s.device_scope || null,
@@ -130,7 +153,12 @@ export function toFilter(s: FilterState): UsageFilter {
  */
 export function useUsageFilter(): UsageFilter {
   const filter = useAppSelector((s) => s.filter.filter)
-  return useMemo(() => toFilter(filter), [filter])
+  // `dayStr()` in the deps: the filter identity must flip at midnight so a
+  // dynamic preset re-queries the new day's data. Dropping the memo entirely
+  // would rebuild the object every render — request-log-table resets its page
+  // offset on filter identity change, so that would clobber pagination.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: dayStr() is the cross-midnight rollover trigger — a stable value within a day, a new identity after midnight (that is the point)
+  return useMemo(() => toFilter(filter), [filter, dayStr()])
 }
 
 /**

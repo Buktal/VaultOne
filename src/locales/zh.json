@@ -345,5 +345,10 @@
   "usage.trend.lastHours": "近 {{n}} 小时",
   "usage.trend.noData": "无数据",
   "usage.trend.title": "使用趋势",
-  "usage.trend.total": "合计"
+  "usage.trend.total": "合计",
+  "sessions.filter.model": "模型",
+  "sessions.filter.allModels": "全部模型",
+  "library.preview.notText": "无法预览",
+  "library.preview.notTextDesc": "二进制文件或超过 1 MB 的文件不支持文本预览，请下载后查看",
+  "usage.freshness.syncedPlain": "同步 {{ago}}"
 }

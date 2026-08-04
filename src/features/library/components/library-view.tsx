@@ -159,29 +159,33 @@ export function LibraryView() {
           </Select>
         ) : null}
 
-        <div className="ml-auto" />
+        {!atRoot ? (
+          /* Breadcrumb shares the back-button row — flex-1 pushes the Add
+             button to the right; each crumb truncates so a deep path can't
+             overflow the row. */
+          <div className="text-muted-foreground flex min-w-0 flex-1 items-center gap-1 text-xs">
+            {breadcrumb.map((c, i) => (
+              <span key={c.key} className="flex min-w-0 items-center gap-1">
+                {i > 0 ? <ChevronRight className="size-3 shrink-0" /> : null}
+                <button
+                  type="button"
+                  className="hover:text-foreground min-w-0 truncate"
+                  onClick={c.onClick}
+                >
+                  {c.label}
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : (
+          <div className="ml-auto" />
+        )}
+
         <Button size="sm" onClick={onAddFiles}>
           <FilePlus />
           {t("library.add")}
         </Button>
       </div>
-
-      {!atRoot ? (
-        <div className="text-muted-foreground flex flex-wrap items-center gap-1 text-xs">
-          {breadcrumb.map((c, i) => (
-            <span key={c.key} className="flex items-center gap-1">
-              {i > 0 ? <ChevronRight className="size-3" /> : null}
-              <button
-                type="button"
-                className="hover:text-foreground"
-                onClick={c.onClick}
-              >
-                {c.label}
-              </button>
-            </span>
-          ))}
-        </div>
-      ) : null}
 
       <Card
         className={cn(

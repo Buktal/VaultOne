@@ -8,6 +8,7 @@
 // 在宽屏铺满贴边 (窄内容如 settings 各自内部 max-w 居中)。
 
 import {
+  Activity,
   BookText,
   Gauge,
   Library,
@@ -30,8 +31,11 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { useDeviceOptions } from "@/features/usage/use-device-options"
+import { useCollectAction } from "@/hooks/use-collect-action"
 import { usePersistedState } from "@/lib/persistence"
 import { cn } from "@/lib/utils"
+import { DataFreshness } from "./data-freshness"
 import { TitleBar } from "./title-bar"
 import { UpdateIndicator } from "./update-card"
 import { useUpdateCheck } from "./use-update-check"
@@ -168,6 +172,21 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const modeLabel = t(synced ? "shell.synced" : "shell.standalone")
   const deviceName = info?.display_name || t("common.unnamed")
 
+  // Collect / sync — the single entry point now that the per-view ControlBar /
+  // ControlCard / sessions buttons were removed. multiDevice only tunes the
+  // success-toast wording (same semantics as the old ControlCard).
+  const multiDevice = useDeviceOptions().length > 0
+  const { onCollect, collecting } = useCollectAction(multiDevice)
+  const collectLabel = t(
+    collecting
+      ? multiDevice
+        ? "usage.collect.syncing"
+        : "usage.collect.collecting"
+      : multiDevice
+        ? "usage.collect.sync"
+        : "usage.collect.collect",
+  )
+
   return (
     <div className="bg-background text-foreground flex h-screen w-screen flex-col overflow-hidden">
       <TitleBar />
@@ -212,6 +231,42 @@ export function Shell({ children }: { children: React.ReactNode }) {
           </nav>
 
           <div className="mt-auto p-3">
+            {collapsed ? (
+              /* Icon-only collect — the freshness text can't fit a 16-wide
+                 sidebar; the device status dot already signals online. */
+              <div className="mb-3 flex flex-col items-center">
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        className="text-muted-foreground"
+                        disabled={collecting}
+                        onClick={onCollect}
+                        aria-label={collectLabel}
+                      />
+                    }
+                  >
+                    <Activity />
+                  </TooltipTrigger>
+                  <TooltipContent side="right">{collectLabel}</TooltipContent>
+                </Tooltip>
+              </div>
+            ) : (
+              <div className="mb-3 flex flex-col gap-2">
+                <DataFreshness stacked />
+                <Button
+                  size="sm"
+                  className="w-full"
+                  disabled={collecting}
+                  onClick={onCollect}
+                >
+                  <Activity />
+                  {collectLabel}
+                </Button>
+              </div>
+            )}
             <Separator className="mb-3" />
             {collapsed ? (
               <div className="flex flex-col items-center">

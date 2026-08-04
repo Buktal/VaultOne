@@ -21,6 +21,24 @@ export interface BreadcrumbCrumb {
   subpath: string
 }
 
+/** Text extensions rendered theme-side instead of in the browser's default
+ *  (white) iframe rendering — the reason the dark-mode preview looked white.
+ *  Case-insensitive; everything else (html / pdf / svg / unknown) keeps the
+ *  native iframe. */
+const THEME_TEXT_EXTS = new Set(["json", "md", "markdown", "txt", "log"])
+
+/**
+ * Whether a library file should render as theme-styled text (pre) instead of
+ * an iframe. JSON / Markdown / plain text / logs — the browser's native
+ * rendering of these is white-on-black-inverted-agnostic and breaks dark mode.
+ */
+export function shouldThemeRender(name: string): boolean {
+  const dot = name.lastIndexOf(".")
+  if (dot < 0) return false
+  const ext = name.slice(dot + 1).toLowerCase()
+  return THEME_TEXT_EXTS.has(ext)
+}
+
 /**
  * Split a library entry's rel_path (`<deviceId>/<rest...>`) into the owning
  * device id and the subpath below it. Drilling into a directory uses this to

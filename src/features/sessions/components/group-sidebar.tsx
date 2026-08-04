@@ -75,7 +75,11 @@ export function GroupSidebar({
           ? t("sessions.group.localTitle")
           : t("sessions.group.syncedTitle")}
       </div>
-      <ScrollArea className="flex-1">
+      {/* min-h-0: without it the ScrollArea grows with its content, pushing
+        the "+ New group" button (below the scroll region) out of the viewport
+        once the group list gets long. Mirrors the right Card's
+        `flex min-h-0 flex-1` pattern. */}
+      <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-0.5 pr-1">
           <SidebarItem
             label={t("sessions.group.all")}

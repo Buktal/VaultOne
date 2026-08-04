@@ -1,8 +1,10 @@
+import dayjs from "dayjs"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   dayStr,
   EMPTY_FILTER,
+  effectiveDays,
   FILTER_STORAGE_KEY,
   type FilterState,
   loadPersistedFilter,
@@ -13,6 +15,49 @@ import {
 const base = (over: Partial<FilterState> = {}): FilterState => ({
   ...EMPTY_FILTER,
   ...over,
+})
+
+describe("effectiveDays", () => {
+  it("recomputes a dynamic preset instead of trusting frozen stored dates", () => {
+    // The bug: a "today" picked yesterday stored yesterday's date; the app
+    // left running across midnight must still mean "today".
+    const f = base({
+      range_preset: "today",
+      from_day: "1999-01-01",
+      to_day: "1999-01-01",
+    })
+    expect(effectiveDays(f)).toEqual({ from_day: dayStr(), to_day: dayStr() })
+  })
+
+  it("recomputes 7d / 30d bounds ending today", () => {
+    const f7 = base({ range_preset: "7d", from_day: "1999-01-01" })
+    expect(effectiveDays(f7)).toEqual({
+      from_day: dayStr(-6),
+      to_day: dayStr(),
+    })
+    const f30 = base({ range_preset: "30d", to_day: "1999-01-01" })
+    expect(effectiveDays(f30)).toEqual({
+      from_day: dayStr(-29),
+      to_day: dayStr(),
+    })
+  })
+
+  it("returns stored bounds verbatim for all / custom", () => {
+    // "all" stores empty bounds; "custom" keeps the user-picked days.
+    expect(effectiveDays(base({ range_preset: "all" }))).toEqual({
+      from_day: "",
+      to_day: "",
+    })
+    const c = base({
+      range_preset: "custom",
+      from_day: "2026-01-15",
+      to_day: "2026-01-20",
+    })
+    expect(effectiveDays(c)).toEqual({
+      from_day: "2026-01-15",
+      to_day: "2026-01-20",
+    })
+  })
 })
 
 describe("toFilter", () => {
@@ -52,6 +97,23 @@ describe("toFilter", () => {
   it("omits the timestamp bound when the day is blank", () => {
     expect(toFilter(base({ to_day: "" })).to_ts).toBeNull()
     expect(toFilter(base({ from_day: "" })).from_ts).toBeNull()
+  })
+
+  it("recomputes a 'today' preset at query time, ignoring stale stored dates", () => {
+    // Cross-midnight: preset picked yesterday, app still running — the query
+    // bounds must roll to the current day (relative assertion, no hardcoded
+    // dates — same style as the existing local-day test).
+    const f = toFilter(
+      base({
+        range_preset: "today",
+        from_day: "1999-01-01",
+        to_day: "1999-01-01",
+      }),
+    )
+    const expectedFrom = dayjs(dayStr()).startOf("day").toISOString()
+    const expectedTo = dayjs(dayStr()).endOf("day").toISOString()
+    expect(f.from_ts).toBe(expectedFrom)
+    expect(f.to_ts).toBe(expectedTo)
   })
 })
 

@@ -7,7 +7,16 @@ import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip"
 import { cn } from "@/lib/utils"
 
 const TooltipProvider = TooltipPrimitive.Provider
-const Tooltip = TooltipPrimitive.Root
+
+/** Tooltip root. `trackCursorAxis` lets a wide trigger (e.g. a full-column
+ *  button) anchor the tooltip to the cursor instead of the trigger center —
+ *  pass "both" when the trigger is much wider than the hovered text. */
+function Tooltip({
+  trackCursorAxis = "none",
+  ...props
+}: TooltipPrimitive.Root.Props) {
+  return <TooltipPrimitive.Root trackCursorAxis={trackCursorAxis} {...props} />
+}
 
 function TooltipTrigger({
   className,

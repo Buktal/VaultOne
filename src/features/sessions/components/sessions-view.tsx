@@ -10,15 +10,10 @@
 
 import dayjs from "dayjs"
 import relativeTime from "dayjs/plugin/relativeTime"
-import {
-  Activity,
-  CalendarRange,
-  MessagesSquare,
-  Search,
-  Star,
-} from "lucide-react"
+import { CalendarRange, MessagesSquare, Search, Star } from "lucide-react"
 import { useTranslation } from "react-i18next"
-import type { Preset } from "@/app/store/slices/filterSlice"
+import { useDistinctModelsQuery } from "@/app/store/api"
+import { effectiveDays, type Preset } from "@/app/store/slices/filterSlice"
 import { QueryState } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -92,6 +87,7 @@ export function SessionsView() {
           onToDay={b.setToDay}
         />
         <SourceSelect value={b.source} onChange={b.setSource} />
+        <ModelSelect value={b.model} onChange={b.setModel} />
         {b.deviceOptions.length > 0 && b.tab === "favorites" ? (
           <DeviceSelect
             options={b.deviceOptions}
@@ -99,22 +95,7 @@ export function SessionsView() {
             onChange={b.setDeviceScope}
           />
         ) : null}
-        {/* TODO: model filter — a session may span several models (model lives
-            on each request in usage_records, not on the session row), so the
-            right session-level grain is unclear. Revisit once there is a clear
-            definition. */}
         <div className="ml-auto flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={b.onCollect}
-            disabled={b.collecting}
-          >
-            <Activity />
-            {b.collecting
-              ? t("sessions.collect.collecting")
-              : t("sessions.collect.collect")}
-          </Button>
           <div className="relative w-56">
             <Search className="text-muted-foreground absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
             <Input
@@ -235,10 +216,13 @@ function SessionsTable({
         <TableHeader>
           <TableRow>
             <TableHead className="w-10" />
-            {/* No width on the title column — it absorbs the remaining space
-              so the numeric columns keep their fixed narrow widths even when
-              the window is maximized. */}
-            <TableHead>{t("sessions.col.title")}</TableHead>
+            {/* The title column absorbs the remaining space (keeps the numeric
+              columns at their fixed narrow widths when maximized) but caps at
+              max-w so an ultra-wide window ellipsizes long titles instead of
+              stretching the column indefinitely. */}
+            <TableHead className="max-w-[24rem]">
+              {t("sessions.col.title")}
+            </TableHead>
             {showDeviceColumn ? (
               <TableHead className="w-28">{t("sessions.col.device")}</TableHead>
             ) : null}
@@ -298,7 +282,10 @@ function SessionsTable({
                   </Tooltip>
                 </TableCell>
                 <TableCell>
-                  <Tooltip>
+                  {/* trackCursorAxis: the trigger is the full column width, so
+                    a centered tooltip would float over the column's middle
+                    (wrong for short titles) — anchor it to the cursor. */}
+                  <Tooltip trackCursorAxis="both">
                     <TooltipTrigger
                       render={
                         <button
@@ -328,7 +315,7 @@ function SessionsTable({
                   </TableCell>
                 ) : null}
                 <TableCell className="text-muted-foreground text-xs">
-                  <Tooltip>
+                  <Tooltip trackCursorAxis="both">
                     <TooltipTrigger
                       render={<span className="block min-w-0 truncate" />}
                     >
@@ -420,6 +407,50 @@ function SourceSelect({
   )
 }
 
+/** "All models" sentinel for the model dropdown. */
+const ALL_MODELS = "__all__"
+
+/** Model dropdown — EXISTS semantics (a session that used the model at least
+ *  once matches). Options come from the same distinct-models query the request
+ *  log uses; the backend EXISTS filter narrows the session list itself. */
+function ModelSelect({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (v: string) => void
+}) {
+  const { t } = useTranslation()
+  const { data: models = [] } = useDistinctModelsQuery()
+  return (
+    <Select
+      value={value || ALL_MODELS}
+      onValueChange={(v) => onChange(v === ALL_MODELS ? "" : (v ?? ""))}
+    >
+      <SelectTrigger
+        className="h-8 w-40"
+        aria-label={t("sessions.filter.model")}
+      >
+        <SelectValue className="min-w-0">
+          {(val: string) =>
+            val === ALL_MODELS ? t("sessions.filter.allModels") : val
+          }
+        </SelectValue>
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value={ALL_MODELS}>
+          {t("sessions.filter.allModels")}
+        </SelectItem>
+        {models.map((m) => (
+          <SelectItem key={m} value={m}>
+            {m}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
+
 /** Selectable presets in the popover — "custom" is implied by manual date entry. */
 type SelectablePreset = Exclude<Preset, "custom">
 
@@ -449,6 +480,13 @@ function DateRangeChip({
   onToDay: (d: string) => void
 }) {
   const { t } = useTranslation()
+  // The date inputs show the EFFECTIVE days — a dynamic preset (e.g. "today"
+  // picked yesterday) renders the current day, not the frozen stored date.
+  const { from_day: effFrom, to_day: effTo } = effectiveDays({
+    range_preset: preset,
+    from_day: fromDay,
+    to_day: toDay,
+  })
   const label =
     preset === "all"
       ? t("sessions.filter.allTime")
@@ -501,7 +539,7 @@ function DateRangeChip({
             </span>
             <input
               type="date"
-              value={fromDay}
+              value={effFrom}
               onChange={(e) => onFromDay(e.target.value)}
               className="border-input bg-background h-8 rounded-md border px-2 text-xs"
             />
@@ -512,7 +550,7 @@ function DateRangeChip({
             </span>
             <input
               type="date"
-              value={toDay}
+              value={effTo}
               onChange={(e) => onToDay(e.target.value)}
               className="border-input bg-background h-8 rounded-md border px-2 text-xs"
             />
