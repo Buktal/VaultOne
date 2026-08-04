@@ -1,7 +1,9 @@
 // Pricing view (BLUEPRINT 成本定价): model pricing table with add /
 // edit / delete (via Dialog), LiteLLM upstream fetch, pricing.json read/write,
 // plus client-side search and single-column sort. Editing/删除 use icon buttons
-// with tooltips; the toolbar is an icon group to keep density high.
+// with tooltips; the toolbar is an icon group to keep density high. Table state
+// (data, search/sort/pagination, delete) lives in usePricingTable; this file is
+// just the render — dialog UI and the fetch/reload/save toolbar actions.
 
 import {
   ChevronUp,
@@ -13,12 +15,10 @@ import {
   Search,
   Trash2,
 } from "lucide-react"
-import { useMemo, useState } from "react"
+import { useState } from "react"
 import { useTranslation } from "react-i18next"
 import {
-  useDeletePricingMutation,
   useFetchLitellmMutation,
-  usePricingQuery,
   useReloadPricingMutation,
   useSavePricingToFileMutation,
 } from "@/app/store/api"
@@ -39,54 +39,41 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import {
-  filterAndSortPricing,
-  type PricingSortKey,
-} from "@/features/pricing/derive"
+import type { PricingSortKey } from "@/features/pricing/derive"
+import { usePricingTable } from "@/features/pricing/use-pricing-table"
 import { useMutateWithToast } from "@/hooks/use-toast-mutation"
 import { formatCost } from "@/lib/format"
-import { paginate } from "@/lib/pagination"
 
 import type { PricingEntry } from "@/types/generated/bindings"
 import { EntryEditorDialog, emptyEntry } from "./entry-editor-dialog"
 
-/** Client-side page size — the full list is already loaded; rendering all of
- * it at once jank-scrolls once it grows past a few hundred entries. */
-const PAGE_SIZE = 50
-
 export function PricingView() {
   const { t } = useTranslation()
-  const { data: entries = [], isLoading } = usePricingQuery()
-  const [remove] = useDeletePricingMutation()
   const [fetchLitellm, { isLoading: fetching }] = useFetchLitellmMutation()
   const [reloadFile, { isLoading: reloading }] = useReloadPricingMutation()
   const [saveFile, { isLoading: savingFile }] = useSavePricingToFileMutation()
   const runWithToast = useMutateWithToast()
 
-  const [search, setSearch] = useState("")
-  const [sortKey, setSortKey] = useState<PricingSortKey | null>(null)
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
+  const {
+    isLoading,
+    remove,
+    search,
+    setSearch,
+    sortKey,
+    sortDir,
+    onSort,
+    total,
+    page,
+    totalPages,
+    paged,
+    prevPage,
+    nextPage,
+    hasPrev,
+    hasNext,
+  } = usePricingTable()
+
   const [editing, setEditing] = useState<PricingEntry | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [offset, setOffset] = useState(0)
-
-  const filtered = useMemo(
-    () => filterAndSortPricing(entries, search, sortKey, sortDir),
-    [entries, search, sortKey, sortDir],
-  )
-
-  const total = filtered.length
-  const { totalPages, page } = paginate(total, offset, PAGE_SIZE)
-  const paged = filtered.slice(offset, offset + PAGE_SIZE)
-
-  function onSort(k: PricingSortKey) {
-    setOffset(0)
-    if (sortKey === k) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
-    else {
-      setSortKey(k)
-      setSortDir("asc")
-    }
-  }
 
   function openNew() {
     setEditing(emptyEntry())
@@ -129,10 +116,7 @@ export function PricingView() {
           <Search className="text-muted-foreground absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
           <Input
             value={search}
-            onChange={(e) => {
-              setSearch(e.target.value)
-              setOffset(0)
-            }}
+            onChange={(e) => setSearch(e.target.value)}
             placeholder={t("pricing.searchPlaceholder")}
             className="h-8 w-44 pl-7"
             aria-label={t("pricing.searchAria")}
@@ -257,7 +241,7 @@ export function PricingView() {
                     {t("common.loading")}
                   </TableCell>
                 </TableRow>
-              ) : filtered.length === 0 ? (
+              ) : total === 0 ? (
                 <TableRow>
                   <TableCell
                     colSpan={8}
@@ -338,16 +322,16 @@ export function PricingView() {
               <Button
                 variant="outline"
                 size="sm"
-                disabled={offset === 0}
-                onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+                disabled={!hasPrev}
+                onClick={prevPage}
               >
                 {t("usage.logs.prevPage")}
               </Button>
               <Button
                 variant="outline"
                 size="sm"
-                disabled={offset + PAGE_SIZE >= total}
-                onClick={() => setOffset(offset + PAGE_SIZE)}
+                disabled={!hasNext}
+                onClick={nextPage}
               >
                 {t("usage.logs.nextPage")}
               </Button>

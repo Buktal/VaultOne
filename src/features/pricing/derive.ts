@@ -38,3 +38,19 @@ export function filterAndSortPricing(
   }
   return list
 }
+
+/**
+ * Next sort state after clicking column `k`: the same column flips direction, a
+ * new column defaults to asc. Pure so the click decision is testable on its own
+ * — `usePricingTable` just applies the result and resets the offset.
+ */
+export function nextSortState(
+  sortKey: PricingSortKey | null,
+  sortDir: "asc" | "desc",
+  k: PricingSortKey,
+): { sortKey: PricingSortKey; sortDir: "asc" | "desc" } {
+  if (sortKey === k) {
+    return { sortKey: k, sortDir: sortDir === "asc" ? "desc" : "asc" }
+  }
+  return { sortKey: k, sortDir: "asc" }
+}

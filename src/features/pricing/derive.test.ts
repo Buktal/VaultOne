@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { filterAndSortPricing } from "@/features/pricing/derive"
+import { filterAndSortPricing, nextSortState } from "@/features/pricing/derive"
 
 import type { PricingEntry } from "@/types/generated/bindings"
 
@@ -49,5 +49,31 @@ describe("filterAndSortPricing", () => {
     const copy = [...rows]
     filterAndSortPricing(rows, "", "input_per_million", "desc")
     expect(rows.map((e) => e.model_key)).toEqual(copy.map((e) => e.model_key))
+  })
+})
+
+describe("nextSortState", () => {
+  it("flips direction when the same column is clicked again", () => {
+    expect(
+      nextSortState("input_per_million", "asc", "input_per_million"),
+    ).toEqual({ sortKey: "input_per_million", sortDir: "desc" })
+    expect(
+      nextSortState("input_per_million", "desc", "input_per_million"),
+    ).toEqual({ sortKey: "input_per_million", sortDir: "asc" })
+  })
+
+  it("defaults a new column to asc", () => {
+    // coming from a different column, even if it was desc
+    expect(nextSortState("model_key", "desc", "input_per_million")).toEqual({
+      sortKey: "input_per_million",
+      sortDir: "asc",
+    })
+  })
+
+  it("starts asc when no column was sorted yet", () => {
+    expect(nextSortState(null, "asc", "display_name")).toEqual({
+      sortKey: "display_name",
+      sortDir: "asc",
+    })
   })
 })
