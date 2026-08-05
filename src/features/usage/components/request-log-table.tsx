@@ -32,6 +32,7 @@ import { paginate } from "@/lib/pagination"
 import { tokenTotal } from "@/lib/usage"
 import { cn } from "@/lib/utils"
 import type { UsageFilter } from "@/types/generated/bindings"
+import { sourceLabel } from "../source-labels"
 import { useDeviceLabelMap } from "../use-device-options"
 
 const PAGE_SIZE = 50
@@ -212,20 +213,11 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
 }
 
 function providerLabel(source: string): string {
-  switch (source) {
-    case "claude_code":
-      return "Claude (Session)"
-    case "codex_cli":
-      return "Codex (Session)"
-    case "gemini_cli":
-      return "Gemini CLI (Session)"
-    case "opencode":
-      return "OpenCode (Session)"
-    case "grok_cli":
-      return "Grok (Session)"
-    default:
-      return source || "—"
-  }
+  // 平台名复用单一来源 `sourceLabel` —— 不在此重抄映射表 (上一份副本就把
+  // claude_code 抄成 "Claude"、漏了 "Code"). "(Session)" 后缀是日志页语义
+  // (一行 ≈ 一个 session), 留给调用方组合, 不进共享映射.
+  if (!source) return "—"
+  return `${sourceLabel(source)} (Session)`
 }
 
 function StopReasonCell({ value }: { value: string }) {

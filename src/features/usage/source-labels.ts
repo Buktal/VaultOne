@@ -4,8 +4,8 @@
 // "claude_code" / "codex_cli"). 筛选下拉显示可读名而非 snake_case 原值,
 // 未知 tag 原样回退, 保证未来新增 provider 在补映射前也能正常显示.
 //
-// 这里只给"平台名". request-log-table.tsx 的 providerLabel() 自带 "(Session)"
-// 后缀 —— 那是日志页语义 (一行 ≈ 一个 session), 不在此共享.
+// 这里只给"平台名". request-log-table.tsx 的 providerLabel() 复用本表 + 自行
+// 拼 "(Session)" 后缀 (日志页语义: 一行 ≈ 一个 session), 不在此重抄映射.
 
 const SOURCE_LABELS: Record<string, string> = {
   claude_code: "Claude Code",
