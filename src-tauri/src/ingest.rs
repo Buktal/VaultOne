@@ -474,6 +474,7 @@ pub fn append_session_transcript(
 /// Read one device's transcript for a session. A missing file (a non-favorited
 /// session, or one never synced here) returns an empty Vec — the transcript's
 /// absence is a normal state, not an error.
+#[allow(dead_code)] // kept for the jsonl double-write tests; removed once the push path derives the jsonl snapshot and the double-write is dropped
 pub fn read_session_transcript(
     paths: &Paths,
     device_id: &str,
@@ -499,46 +500,13 @@ pub fn read_session_transcript(
     }
 }
 
-/// Read every device's transcript for a session and merge by message uuid (the
-/// `get_session_transcript` command's read path: own device first, then peers'
-/// pulled-in files). Dedup keeps the first occurrence per uuid (own device
-/// wins on conflict — it is the source of truth for a session it collected).
-pub fn read_all_transcripts(paths: &Paths, session_id: &str) -> Vec<SessionMessage> {
-    let mut out: Vec<SessionMessage> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let root = &paths.repo_data;
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return out;
-    };
-    // Own device first so its messages win dedup; then peers in stable order.
-    let mut device_ids: Vec<String> = Vec::new();
-    for entry in entries.flatten() {
-        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            continue;
-        }
-        if let Some(name) = entry.file_name().to_str() {
-            if crate::config::is_valid_device_id(name) {
-                device_ids.push(name.to_string());
-            }
-        }
-    }
-    device_ids.sort();
-    for did in device_ids {
-        if let Ok(msgs) = read_session_transcript(paths, &did, session_id) {
-            for m in msgs {
-                if seen.insert(m.uuid.clone()) {
-                    out.push(m);
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Ingest a provider's session output: refresh system data in the SQLite table
-/// (UPSERT preserves user data) and append transcripts for favorited sessions
-/// only. Local-only in this phase — the cross-device sync shape (per-session
-/// files, favorites-only) lands with the session phase.
+/// Ingest a provider's session output:
+///   1. Refresh system data in the `sessions` table (UPSERT preserves user data).
+///   2. Write ALL transcript messages to `session_messages` (db single source of
+///      truth — favorited or not) and mark their sessions dirty for the push path.
+///   3. Append to `sessions/<id>.jsonl` for FAVORITED sessions only — a
+///      double-write during the expand phase, dropped once the read path and the
+///      derived-snapshot push path are in place.
 pub fn ingest_sessions(
     store: &Store,
     paths: &Paths,
@@ -556,10 +524,20 @@ pub fn ingest_sessions(
         store.upsert_session(device_id, s)?;
     }
 
-    // Transcripts: group messages by session, append ONLY for favorited ones.
-    // The invariant "原文仅 favorited 才采集" is enforced here — a session must
-    // be favorited in the DB (just refreshed above with preserved user data)
-    // before its messages land in `sessions/<id>.jsonl`.
+    // All transcript messages → db. EVERY session lands here (favorited or not):
+    // SQLite is the single source of truth for 原文, and only the derived jsonl
+    // snapshot is favorites-gated. Sessions with new rows are flagged dirty in
+    // the same transaction so the push path recomputes their snapshots.
+    if !messages.is_empty() {
+        store.ingest_session_messages_marking_dirty(device_id, messages)?;
+    }
+
+    // Derived jsonl snapshot: append ONLY for favorited sessions. Double-write
+    // during the expand phase — this keeps the existing read path working until
+    // the contract phase moves it to db and recomputes it from `session_messages`
+    // at push time. The invariant "原文 only enters git when favorited" holds
+    // here: a session must be favorited in the DB before its messages land in
+    // `sessions/<id>.jsonl`.
     if !messages.is_empty() {
         let mut by_session: std::collections::HashMap<String, Vec<SessionMessage>> =
             std::collections::HashMap::new();
@@ -1062,5 +1040,44 @@ mod tests {
                 .is_empty(),
             "non-favorited session collected NO transcript"
         );
+    }
+
+    /// All transcript messages land in the db (`session_messages`), favorited or
+    /// not — SQLite is the single source of truth for 原文. Only the derived
+    /// jsonl snapshot is favorites-gated (previous test); the db holds every
+    /// session so a non-favorited session can still be read.
+    #[test]
+    fn ingest_sessions_writes_all_messages_to_db_regardless_of_favorite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let dev = "0123456789ab";
+
+        let fav = sys_session("fav", "2026-08-01T01:00:00.000Z");
+        let plain = sys_session("plain", "2026-08-01T01:00:00.000Z");
+        ingest_sessions(
+            &store,
+            &paths,
+            dev,
+            &[fav, plain],
+            &[msg("m1", "fav", "hello"), msg("m2", "plain", "world")],
+        )
+        .unwrap();
+
+        // Neither session is favorited, yet BOTH land in the db.
+        assert_eq!(
+            store.query_session_messages(dev, "fav").unwrap().len(),
+            1,
+            "favorited session's messages in db"
+        );
+        assert_eq!(
+            store.query_session_messages(dev, "plain").unwrap().len(),
+            1,
+            "non-favorited session's messages ALSO in db (原文 for all sessions)"
+        );
+        // Both flagged dirty so the push path recomputes their snapshots.
+        let dirty = store.dirty_sessions().unwrap();
+        assert!(dirty.contains(&"fav".to_string()));
+        assert!(dirty.contains(&"plain".to_string()));
     }
 }

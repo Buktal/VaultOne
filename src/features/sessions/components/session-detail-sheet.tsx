@@ -16,7 +16,6 @@ import {
   Info,
   Loader2,
   Star,
-  StarOff,
   Terminal,
   User as UserIcon,
   Wrench,
@@ -164,7 +163,7 @@ export function SessionDetailSheet(props: SessionDetailSheetProps) {
               size="sm"
               onClick={onToggleFavorite}
             >
-              {favorited ? <Star /> : <StarOff />}
+              <Star className={cn("size-4", favorited && "fill-current")} />
               {favorited
                 ? t("sessions.row.unfavorite")
                 : t("sessions.row.favorite")}

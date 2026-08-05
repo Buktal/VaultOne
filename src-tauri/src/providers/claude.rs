@@ -295,9 +295,9 @@ impl Provider for ClaudeCodeProvider {
         let mut messages = Vec::new();
         let mut skipped = 0u32;
         for file in files {
-            let text = match std::fs::read_to_string(file) {
-                Ok(t) => t,
-                Err(_) => {
+            let text = match super::read_source_lossy(file) {
+                Some(t) => t,
+                None => {
                     skipped += 1;
                     continue;
                 }
@@ -830,7 +830,7 @@ mod tests {
         let (result, delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
         assert_eq!(result.events.len(), 1, "first run is a full parse");
         assert_eq!(delta.len(), 1, "a cursor is recorded for the file");
-        let key = file.to_string_lossy().into_owned();
+        let key = crate::providers::scan_progress_key(&file);
         let cursor = delta.get(&key).unwrap();
         assert!(cursor.last_line_offset >= 1);
         assert!(cursor.last_modified > 0);
@@ -912,12 +912,52 @@ mod tests {
         }
         let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
         let (r1, delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
-        let key = file.to_string_lossy().into_owned();
+        let key = crate::providers::scan_progress_key(&file);
         let cursor = delta.get(&key).unwrap();
         // 2 lines visible (1 complete + 1 partial), but no trailing newline ⇒
         // cursor stops at line 1, leaving the partial line for next collect.
         assert_eq!(cursor.last_line_offset, 1);
         assert_eq!(r1.events.len(), 1, "complete line parsed, partial skipped");
+    }
+
+    /// A session log flushed mid-write can end on a partial multi-byte UTF-8
+    /// sequence (an active Chinese session: "中" = E4 B8 AD, only E4 B8
+    /// landed). `read_to_string` rejects the WHOLE file on that, so the
+    /// session never collected and the cursor never advanced (the `continue`
+    /// before `delta.insert`). Lossy reads the complete line before the tail,
+    /// skips the partial line, and advances the cursor — the regression pinned
+    /// here. See `read_source_lossy` in `super`.
+    #[test]
+    fn incremental_tolerates_partial_utf8_at_write_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("s.jsonl");
+        let complete = assistant_line("u1", "msg_A", 10);
+        {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&file).unwrap();
+            writeln!(f, "{complete}").unwrap();
+            // Partial "中": only the first two of three bytes — invalid UTF-8.
+            f.write_all(&[0xE4, 0xB8]).unwrap();
+        }
+        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let (result, delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
+        assert_eq!(
+            result.events.len(),
+            1,
+            "complete line before the partial tail parses"
+        );
+        assert_eq!(
+            result.sessions.len(),
+            1,
+            "session meta extracted from the complete line"
+        );
+        // Cursor recorded + advanced past the complete line. Before the lossy
+        // fix, read_to_string errored → `continue` → delta stayed empty.
+        let (_, cursor) = delta.iter().next().expect("cursor advanced");
+        assert_eq!(
+            cursor.last_line_offset, 1,
+            "partial last line left for the next collect"
+        );
     }
 
     // ---- session + transcript extraction (Claude only, this phase) ----

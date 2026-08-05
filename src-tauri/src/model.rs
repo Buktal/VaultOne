@@ -269,6 +269,34 @@ pub enum SessionMessageRole {
     System,
 }
 
+impl SessionMessageRole {
+    /// The lowercase string form persisted in `session_messages.role` and used
+    /// everywhere a role crosses a text boundary. Kept in lockstep with the
+    /// `#[serde(rename_all = "lowercase")]` mapping above so the DB, the JSONL
+    /// snapshot, and serde all agree on one spelling per variant.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SessionMessageRole::User => "user",
+            SessionMessageRole::Assistant => "assistant",
+            SessionMessageRole::Tool => "tool",
+            SessionMessageRole::System => "system",
+        }
+    }
+
+    /// Inverse of [`Self::as_str`]. An unknown string defaults to `User` (the
+    /// enum default) rather than failing — a malformed stored row should not
+    /// crash a transcript read.
+    #[allow(dead_code)] // expand phase: unused while the read path still reads the jsonl artifact (see Store::query_session_messages)
+    pub fn parse_str(s: &str) -> Self {
+        match s {
+            "assistant" => SessionMessageRole::Assistant,
+            "tool" => SessionMessageRole::Tool,
+            "system" => SessionMessageRole::System,
+            _ => SessionMessageRole::User,
+        }
+    }
+}
+
 /// One transcript line. Single source of truth across three roles: provider
 /// output (`RawSessionMessage` concept), the per-session JSONL Artifact
 /// (`sessions/<id>.jsonl`), and the DTO crossing to the frontend. The shape is

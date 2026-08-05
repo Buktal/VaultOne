@@ -97,9 +97,9 @@ impl Provider for CodexProvider {
         let mut messages = Vec::new();
         let mut skipped = 0u32;
         for file in files {
-            let text = match std::fs::read_to_string(file) {
-                Ok(t) => t,
-                Err(_) => {
+            let text = match super::read_source_lossy(file) {
+                Some(t) => t,
+                None => {
                     skipped += 1;
                     continue;
                 }

@@ -66,7 +66,7 @@ export function SessionsView() {
   const preview = b.preview
 
   return (
-    <div className="flex flex-1 flex-col gap-3">
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
       {/* Control row — tabs + filter chips on the left; collect · search on
         the right. Mirrors the request-log ControlBar's chip layout. */}
       <div className="flex flex-wrap items-center gap-2">
