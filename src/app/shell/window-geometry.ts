@@ -32,7 +32,7 @@
 // `flushPendingWrites()` on unmount, and the persistence module flushes on
 // `beforeunload`, so the trailing debounced value is never lost to a close.
 
-import { debouncedLocalStorageWrite } from "@/lib/persistence"
+import { debouncedLocalStorageWrite, readPersisted } from "@/lib/persistence"
 import { ENTRY_DOCK_Y } from "./lightweight-geometry"
 
 export type FullGeom = {
@@ -67,21 +67,17 @@ let cached: WindowGeometry | undefined
 
 function load(): WindowGeometry {
   if (cached) return cached
-  try {
-    const raw = localStorage.getItem(KEY)
-    if (raw) {
-      const p = JSON.parse(raw) as Partial<WindowGeometry>
-      cached = {
+  // Disk read funnels through the shared persistence primitive — the save*
+  // helpers already mirror writes through it, so reads must not hand-roll a
+  // second localStorage path. A null / unparseable record falls back to defaults.
+  const p = readPersisted<Partial<WindowGeometry> | null>(KEY, null)
+  cached = p
+    ? {
         full: p.full ?? null,
         expanded: { y: p.expanded?.y ?? ENTRY_DOCK_Y },
         tucked: { y: p.tucked?.y ?? ENTRY_DOCK_Y },
       }
-      return cached
-    }
-  } catch {
-    // fall through to defaults
-  }
-  cached = defaults()
+    : defaults()
   return cached
 }
 

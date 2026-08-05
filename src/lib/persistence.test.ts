@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   debouncedLocalStorageWrite,
   flushPendingWrites,
+  readPersisted,
 } from "@/lib/persistence"
 
 // Minimal in-memory localStorage stub (node test env has none). Stores the
@@ -128,5 +129,26 @@ describe("flushPendingWrites", () => {
     for (let i = 0; i < 100; i++) debouncedLocalStorageWrite("geom", i)
     flushPendingWrites()
     expect(localStorage.getItem("geom")).toBe("99")
+  })
+})
+
+describe("readPersisted", () => {
+  it("returns the initial value on a miss", () => {
+    expect(readPersisted("missing", { x: 1 })).toEqual({ x: 1 })
+  })
+
+  it("parses a stored JSON value back", () => {
+    localStorage.setItem("k", '{"a":1}')
+    expect(readPersisted<{ a: number }>("k", { a: 0 })).toEqual({ a: 1 })
+  })
+
+  it("falls back to initial on unparseable storage", () => {
+    localStorage.setItem("bad", "not-json")
+    expect(readPersisted("bad", "fallback")).toBe("fallback")
+  })
+
+  it("treats an empty raw string as a miss (JSON.parse would throw)", () => {
+    localStorage.setItem("empty", "")
+    expect(readPersisted("empty", null)).toBeNull()
   })
 })
