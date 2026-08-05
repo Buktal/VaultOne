@@ -304,8 +304,6 @@ pub fn touch_self(store: &Store, cfg: &ConfigData) -> AppResult<()> {
     store.upsert_device(&cfg.device_id, &cfg.display_name, true)
 }
 
-
-
 /// Register THIS device on boot: a row in the Local Store and the published
 /// name artifact. Both best-effort — boot must not fail on these (the original
 /// boot block ran two independent `let _ =`). The Store row is authoritative

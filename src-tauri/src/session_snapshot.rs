@@ -15,8 +15,10 @@ use std::path::Path;
 use crate::config::Paths;
 use crate::db::Store;
 use crate::error::{AppError, AppResult};
-use crate::jsonl::rewrite_day_file;
-use crate::model::{SessionMessage, SessionSnapshotLine, SessionSnapshotMeta, SESSION_SNAPSHOT_VERSION};
+use crate::jsonl::rewrite_jsonl_file;
+use crate::model::{
+    SessionMessage, SessionSnapshotLine, SessionSnapshotMeta, SESSION_SNAPSHOT_VERSION,
+};
 
 /// Recompute one session's derived snapshot from the store: the meta line first
 /// (system data + favorited + synced_group_id), then every message in
@@ -37,13 +39,15 @@ pub fn recompute_session_snapshot(
     let count = messages.len();
     let meta = store
         .get_session_snapshot_meta(device_id, session_id)?
-        .ok_or_else(|| AppError::Internal(format!("recompute session {session_id}: no meta row")))?;
+        .ok_or_else(|| {
+            AppError::Internal(format!("recompute session {session_id}: no meta row"))
+        })?;
     let mut lines: Vec<SessionSnapshotLine> = Vec::with_capacity(count + 1);
     lines.push(SessionSnapshotLine::Session(meta));
     for m in messages {
         lines.push(SessionSnapshotLine::Message(m));
     }
-    rewrite_day_file(&paths.session_snapshot_path(device_id, session_id), &lines)?;
+    rewrite_jsonl_file(&paths.session_snapshot_path(device_id, session_id), &lines)?;
     Ok(count)
 }
 

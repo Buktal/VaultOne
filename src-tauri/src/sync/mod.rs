@@ -12,8 +12,8 @@
 //! or an env var. Public API is re-exported below so command-layer callers keep
 //! using `crate::sync::*` unchanged.
 
-mod git;
 mod flow;
+mod git;
 
 // The remote probe (Settings「测试连接」) is an independent feature with its own
 // types (`VerifyReport`) and error model (a failed probe is `ok: false`, never
@@ -50,14 +50,14 @@ use crate::error::AppError;
 #[cfg(test)]
 use crate::snapshot_policy::presence_mismatches;
 #[cfg(test)]
-use git2::{Repository, ResetType};
+use flow::commit_and_push;
 #[cfg(test)]
 use git::{
     commit_all, ensure_repo, has_changes, is_ahead_of_origin, open_or_clone, pull, push,
-    PullOutcome, rebase_and_push, require_synced,
+    rebase_and_push, require_synced, PullOutcome,
 };
 #[cfg(test)]
-use flow::commit_and_push;
+use git2::{Repository, ResetType};
 
 #[cfg(test)]
 mod tests {
@@ -875,7 +875,9 @@ mod tests {
             presence_mismatches(&still_present, &peer_favorited).favorites_without_files;
         assert_eq!(to_unfavorite, vec!["s3".to_string()]);
 
-        store.bulk_unfavorite_sessions(peer, &to_unfavorite).unwrap();
+        store
+            .bulk_unfavorite_sessions(peer, &to_unfavorite)
+            .unwrap();
         assert_eq!(
             store.favorited_session_ids(peer).unwrap(),
             vec!["s1".to_string(), "s2".to_string()],
