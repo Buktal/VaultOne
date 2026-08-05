@@ -27,6 +27,7 @@ use git2::{
 
 use crate::config::ConfigData;
 use crate::error::{AppError, AppResult};
+use crate::snapshot_policy::{decide_snapshot_action, presence_mismatches, SnapshotAction};
 
 // The remote probe (Settings「测试连接」) is an independent feature with its own
 // types (`VerifyReport`) and error model (a failed probe is `ok: false`, never
@@ -557,11 +558,19 @@ fn import_peer_sessions(
             .insert(snap.meta.id.clone());
         store.import_session_snapshot(&snap.device_id, &snap.meta, &snap.messages)?;
     }
-    // Reconcile every peer with a favorited row — including ones that shipped no
-    // files this pull (they may have un-favorited everything).
+    // Reconcile every peer with a favorited row — including ones that shipped
+    // no files this pull (they may have un-favorited everything). The sessions
+    // to un-favorite here = the peer's favorited sessions whose snapshot file
+    // vanished, computed by the shared snapshot_policy oracle so push and pull
+    // agree on what "in sync" means (the push path enforces the same invariant
+    // for this device via `decide_snapshot_action`).
     for peer in store.favorited_session_devices(self_device_id)? {
-        let still = per_device.remove(&peer).unwrap_or_default();
-        store.reconcile_peer_unfavorited(&peer, &still)?;
+        let still_present = per_device.remove(&peer).unwrap_or_default();
+        let peer_favorited: std::collections::BTreeSet<String> =
+            store.favorited_session_ids(&peer)?.into_iter().collect();
+        let to_unfavorite =
+            presence_mismatches(&still_present, &peer_favorited).favorites_without_files;
+        store.bulk_unfavorite_sessions(&peer, &to_unfavorite)?;
     }
     Ok(())
 }
@@ -654,16 +663,22 @@ pub fn push_usage(
         let favorited = store
             .get_session_favorited(&cfg.device_id, sid)?
             .unwrap_or(false);
-        if favorited {
-            let count =
-                crate::ingest::recompute_session_snapshot(store, paths, &cfg.device_id, sid)?;
-            recomputed.push((sid.clone(), count));
-        } else {
-            let path = crate::ingest::transcript_path(paths, &cfg.device_id, sid);
-            if path.exists() {
-                std::fs::remove_file(path)?;
+        match decide_snapshot_action(favorited) {
+            // favorited ⇒ the snapshot must exist: recompute it from the store.
+            SnapshotAction::Write => {
+                let count =
+                    crate::ingest::recompute_session_snapshot(store, paths, &cfg.device_id, sid)?;
+                recomputed.push((sid.clone(), count));
             }
-            removed.push(sid.clone());
+            // not favorited ⇒ the snapshot must not exist. Idempotent: a
+            // never-favorited session has no file to remove.
+            SnapshotAction::Remove => {
+                let path = crate::ingest::transcript_path(paths, &cfg.device_id, sid);
+                if path.exists() {
+                    std::fs::remove_file(path)?;
+                }
+                removed.push(sid.clone());
+            }
         }
     }
 
@@ -1537,6 +1552,82 @@ mod tests {
                 .unwrap()
                 .is_empty(),
             "shared messages dropped on un-favorite"
+        );
+    }
+
+    /// Fast (no-git) check of the pull un-favorite composition: a peer's
+    /// favorited sessions whose snapshot file is absent this pull are exactly
+    /// what `presence_mismatches` flags, and `bulk_unfavorite_sessions` clears
+    /// those (favorited flag + shared messages) while leaving the still-filed
+    /// ones alone. Mirrors `import_peer_sessions`'s per-peer loop without a real
+    /// git round-trip.
+    #[test]
+    fn pull_unfavorite_matches_presence_mismatches_without_git() {
+        use crate::model::{SessionMessage, SessionMessageRole, SessionSystemData};
+
+        let store = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let peer = "peerdevice01";
+
+        fn sys(id: &str) -> SessionSystemData {
+            SessionSystemData {
+                id: id.into(),
+                source: "claude_code".into(),
+                project_dir: "/p".into(),
+                title_orig: id.into(),
+                started_at: "2026-08-01T00:00:00.000Z".into(),
+                last_active_at: "2026-08-02T00:00:00.000Z".into(),
+            }
+        }
+        fn msg(uuid: &str, sid: &str) -> SessionMessage {
+            SessionMessage {
+                uuid: uuid.into(),
+                session_id: sid.into(),
+                role: SessionMessageRole::User,
+                ts: "2026-08-01T10:00:00.000Z".into(),
+                model: None,
+                name: None,
+                content: format!("body {uuid}"),
+            }
+        }
+
+        // Three favorited sessions; each carries one shared message.
+        for sid in ["s1", "s2", "s3"] {
+            store.upsert_session(peer, &sys(sid)).unwrap();
+            store.set_session_favorited(peer, sid, true).unwrap();
+            store
+                .ingest_session_messages_marking_dirty(
+                    peer,
+                    std::slice::from_ref(&msg(&format!("u-{sid}"), sid)),
+                )
+                .unwrap();
+        }
+
+        // Only s1 and s2 still have a snapshot file this pull → s3 was un-favorited.
+        let still_present: std::collections::BTreeSet<String> =
+            ["s1".to_string(), "s2".to_string()].into_iter().collect();
+        let peer_favorited: std::collections::BTreeSet<String> = store
+            .favorited_session_ids(peer)
+            .unwrap()
+            .into_iter()
+            .collect();
+        let to_unfavorite =
+            presence_mismatches(&still_present, &peer_favorited).favorites_without_files;
+        assert_eq!(to_unfavorite, vec!["s3".to_string()]);
+
+        store.bulk_unfavorite_sessions(peer, &to_unfavorite).unwrap();
+        assert_eq!(
+            store.favorited_session_ids(peer).unwrap(),
+            vec!["s1".to_string(), "s2".to_string()],
+            "s3 un-favorited; s1/s2 kept"
+        );
+        assert!(
+            store.query_session_messages(peer, "s3").unwrap().is_empty(),
+            "s3 shared messages dropped"
+        );
+        assert_eq!(
+            store.query_session_messages(peer, "s1").unwrap().len(),
+            1,
+            "untouched session keeps its message"
         );
     }
 

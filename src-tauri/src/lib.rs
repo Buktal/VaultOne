@@ -29,6 +29,7 @@ mod pricing;
 mod providers;
 mod proxy;
 mod sessions;
+mod snapshot_policy;
 mod sync;
 mod time;
 mod window_geom;

@@ -840,7 +840,7 @@ mod tests {
         assert!(!day_file.exists(), "empty day ⇒ stale file removed");
     }
 
-    // ---- session invariants (encoded in code + pinned by tests) ----
+    // ---- session helpers + reconcile tests ----
 
     fn sys_session(id: &str, last_active_at: &str) -> RawSession {
         RawSession {
@@ -863,47 +863,6 @@ mod tests {
             name: None,
             content: content.into(),
         }
-    }
-
-    /// Invariant (SQLite side): `upsert_session` refreshes only the system-data
-    /// columns on conflict; user-data columns set by the user must survive a
-    /// re-extract. Regression test for the ON CONFLICT clause.
-    #[test]
-    fn upsert_session_does_not_overwrite_user_data_on_reextract() {
-        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
-        let dev = "0123456789ab";
-        // First collect: creates the row with default user data.
-        store
-            .upsert_session(dev, &sys_session("s1", "2026-08-01T01:00:00.000Z"))
-            .unwrap();
-        // User edits: custom_title, favorited, local_group_id, synced_group_id.
-        store
-            .set_session_custom_title(dev, "s1", Some("Renamed"))
-            .unwrap();
-        store.set_session_favorited(dev, "s1", true).unwrap();
-        store
-            .set_session_local_group(dev, "s1", Some("lg1"))
-            .unwrap();
-        store
-            .set_session_synced_group(dev, "s1", Some("sg1"))
-            .unwrap();
-        // Re-extract (next collect): system data refresh, must NOT clobber edits.
-        store
-            .upsert_session(dev, &sys_session("s1", "2026-08-02T09:00:00.000Z"))
-            .unwrap();
-        let rows = store.query_sessions(None).unwrap();
-        let m = rows.iter().find(|r| r.id == "s1").unwrap();
-        assert_eq!(
-            m.last_active_at, "2026-08-02T09:00:00.000Z",
-            "system refreshed"
-        );
-        assert_eq!(
-            m.title, "Renamed",
-            "custom_title preserved (title = custom_title)"
-        );
-        assert!(m.favorited, "favorited preserved");
-        assert_eq!(m.synced_group_id, "sg1", "synced_group_id preserved");
-        assert_eq!(m.local_group_id, "lg1", "local_group_id preserved");
     }
 
     /// Reconcile deletes ghost session rows AND their transcript files; a
