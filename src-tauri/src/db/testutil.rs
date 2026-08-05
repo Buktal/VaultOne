@@ -30,7 +30,7 @@ pub fn rec(
         timestamp: format!("{day}T10:00:00.000Z"),
         day: day.into(),
         model: model.into(),
-        pricing_model: crate::model::normalize_pricing_key(model),
+        pricing_model: crate::model::normalize_model_key(model),
         source: "claude_code".into(),
         session_id: String::new(),
         device_id: device.into(),
