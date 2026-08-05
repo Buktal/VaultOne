@@ -49,6 +49,16 @@ export function formatDuration(ms: number | null | undefined): string {
   return `${m}m${sec.toString().padStart(2, "0")}s`
 }
 
+/** Bytes → `1.2 KB` / `3.4 MB` / `5.67 GB`. Em-dash when absent / non-finite. */
+export function formatSize(bytes: number | null | undefined): string {
+  const v = Number(bytes ?? 0)
+  if (!Number.isFinite(v) || v <= 0) return "—"
+  if (v < 1024) return `${Math.round(v)} B`
+  if (v < 1024 ** 2) return `${(v / 1024).toFixed(1)} KB`
+  if (v < 1024 ** 3) return `${(v / 1024 ** 2).toFixed(1)} MB`
+  return `${(v / 1024 ** 3).toFixed(2)} GB`
+}
+
 /** ISO timestamp → `MM/DD HH:mm`. Falls back to the raw string on bad input. */
 export function formatTime(ts: string | null | undefined): string {
   if (!ts) return "—"

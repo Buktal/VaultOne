@@ -62,8 +62,7 @@ export function TokenHero({ filter }: { filter: UsageFilter }) {
                   deltaPct >= 0 ? "text-primary" : "text-destructive"
                 }`}
               >
-                {deltaPct >= 0 ? "↑" : "↓"}{" "}
-                {Math.abs(deltaPct * 100).toFixed(1)}%
+                {deltaPct >= 0 ? "↑" : "↓"} {formatPct(Math.abs(deltaPct))}
                 <span className="text-muted-foreground font-normal">
                   {t("usage.hero.vsStart")}
                 </span>

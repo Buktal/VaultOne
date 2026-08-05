@@ -6,7 +6,7 @@
 //
 // Pure rendering only — all state, queries, mutations and navigation live in
 // useLibraryBrowser (./use-library-browser). This component owns JSX, styles,
-// i18n, and the pure display helpers (kindIcon / formatSize).
+// i18n, and the pure display helper (kindIcon).
 
 import dayjs from "dayjs"
 import relativeTime from "dayjs/plugin/relativeTime"
@@ -51,6 +51,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { formatSize } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import { ALL, useLibraryBrowser } from "../use-library-browser"
 import { PreviewSheet } from "./preview-sheet"
@@ -67,15 +68,6 @@ function kindIcon(name: string, isDir: boolean) {
   if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"].includes(ext))
     return ImageIcon
   return FileIcon
-}
-
-function formatSize(bytes: number | null): string {
-  if (!bytes) return "—"
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  if (bytes < 1024 * 1024 * 1024)
-    return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
 }
 
 export function LibraryView() {
