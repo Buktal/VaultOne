@@ -4,8 +4,9 @@
 //!
 //! This is an independent feature with its own types (`VerifyReport`) and its
 //! own error model (a failed probe is a business result `ok: false`, never an
-//! `AppError`). The git primitives live in [`super`]; this module only borrows
-//! [`super::build_callbacks`] to inject the PAT into the one-shot connection.
+//! `AppError`). The git primitives live in [`super::git`]; this module only
+//! borrows [`super::git::build_callbacks`] to inject the PAT into the one-shot
+//! connection.
 
 use git2::{Direction, ProxyOptions, Repository};
 
@@ -108,7 +109,7 @@ fn try_verify_remote(url: &str, token: &str) -> Result<(), git2::Error> {
     });
     remote.connect_auth(
         Direction::Fetch,
-        Some(super::build_callbacks(token)),
+        Some(super::git::build_callbacks(token)),
         proxy_opts,
     )?;
     Ok(())
