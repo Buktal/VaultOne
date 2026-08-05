@@ -86,8 +86,6 @@
   "sessions.detail.renameHint": "クリックして名前変更",
   "sessions.detail.transcriptCollecting": "トランスクリプトを収集中",
   "sessions.detail.transcriptCollectingHint": "原文は次回の収集で書き込まれます（約30秒）。届いたら更新してください。",
-  "sessions.detail.transcriptLocked": "完全な会話を読むにはお気に入りに追加",
-  "sessions.detail.transcriptLockedHint": "原文はお気に入り登録されたセッションのみ収集されます。お気に入りに追加して同期・閲覧できます。",
   "sessions.empty.desc": "セッションはローカル CLI ログから収集されます。対応 CLI（Claude Code）を実行し、次回収集後に戻ってください。",
   "sessions.empty.title": "セッションなし",
   "sessions.filter.all": "すべて",

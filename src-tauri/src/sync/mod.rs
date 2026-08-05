@@ -526,11 +526,44 @@ pub fn pull_and_import(
     // Per-turn durations (separate grain, uuid-deduped).
     let turns = crate::ingest::read_all_turn_artifacts(paths)?;
     store.ingest_turn_durations(&turns)?;
-    // Sessions stay local in this phase — the per-session sync shape lands
-    // with the session phase.
+    // Sessions: import peers' snapshots (self is local-authoritative, skipped
+    // on read) and propagate cross-device un-favorites.
+    import_peer_sessions(store, paths, &cfg.device_id)?;
     // Device-name registry: pull may have added/updated config/devices/*.json.
     crate::devices::reload_devices_into_store(store, paths, cfg)?;
     Ok(inserted.len() as u32)
+}
+
+/// Import peers' session snapshots into the store and propagate cross-device
+/// un-favorites. Self's own snapshots are skipped on read
+/// ([`crate::ingest::read_all_session_snapshots`]), so self's rows are never
+/// overwritten by a possibly-stale git copy of itself. For every peer that has
+/// (or had) a favorited session row, sessions whose snapshot file vanished since
+/// the last pull are un-favorited and their shared messages dropped — the
+/// pull-side counterpart to the push-side jsonl deletion.
+fn import_peer_sessions(
+    store: &crate::db::Store,
+    paths: &crate::config::Paths,
+    self_device_id: &str,
+) -> AppResult<()> {
+    let snapshots = crate::ingest::read_all_session_snapshots(paths, self_device_id)?;
+    // still-favorited ids per peer = the snapshot files that exist this pull.
+    let mut per_device: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    for snap in &snapshots {
+        per_device
+            .entry(snap.device_id.clone())
+            .or_default()
+            .insert(snap.meta.id.clone());
+        store.import_session_snapshot(&snap.device_id, &snap.meta, &snap.messages)?;
+    }
+    // Reconcile every peer with a favorited row — including ones that shipped no
+    // files this pull (they may have un-favorited everything).
+    for peer in store.favorited_session_devices(self_device_id)? {
+        let still = per_device.remove(&peer).unwrap_or_default();
+        store.reconcile_peer_unfavorited(&peer, &still)?;
+    }
+    Ok(())
 }
 
 /// Commit any local Artifact/config change and push it (push). A clean worktree
@@ -577,20 +610,25 @@ pub fn commit_and_push_best_effort(paths: &crate::config::Paths, cfg: &ConfigDat
     }
 }
 
-/// Usage sync: materialize this device's un-pushed days from the store, then
-/// commit + push, clearing those days from `dirty_days` only once the push
-/// lands. This is the push-side counterpart to collect's store-only writes:
-/// collect flags days dirty; this recomputes each dirty day's per-day Artifact
-/// from the store (`recompute_usage_day` / `recompute_turns_day`), commits the
-/// rewritten files, pushes, and on success clears the days (a failed push
+/// Sync push: materialize this device's un-pushed days AND session snapshots
+/// from the store, then commit + push, clearing the dirty flags only once the
+/// push lands. This is the push-side counterpart to collect's store-only
+/// writes: collect flags days/sessions dirty; this recomputes each dirty day's
+/// per-day Artifact (`recompute_usage_day` / `recompute_turns_day`) and each
+/// dirty session's jsonl snapshot (`recompute_session_snapshot`), commits the
+/// rewritten files, pushes, and on success clears the flags (a failed push
 /// leaves them dirty for the next retry). Synced-only; a no-op (`false`) when
 /// there is nothing dirty to recompute and nothing else to push.
 ///
-/// The clear is scoped to the recompute-time row counts: a collect that raced a
-/// new row into a day after its recompute keeps that day dirty, so the next
-/// push carries the row up (see [`crate::db::Store::clear_dirty_days_if_unchanged`]).
+/// The session favorites gate lives HERE (not in collect): a favorited dirty
+/// session gets its snapshot rewritten; a non-favorited dirty session gets any
+/// leftover `sessions/<id>.jsonl` removed — the local half of un-favorite
+/// propagation (a peer pulling sees the file vanish). The clear is scoped to
+/// recompute-time row/message counts so a raced new row/message keeps its
+/// day/session dirty (see [`crate::db::Store::clear_dirty_days_if_unchanged`] /
+/// [`crate::db::Store::clear_dirty_sessions_if_unchanged`]).
 ///
-/// Library sync does NOT call this — it has no store/dirty-day concern and uses
+/// Library sync does NOT call this — it has no store/dirty concern and uses
 /// [`commit_and_push`] directly.
 pub fn push_usage(
     store: &crate::db::Store,
@@ -600,18 +638,42 @@ pub fn push_usage(
     let dirty = store.dirty_days()?;
     // (day, usage row count, turn row count) at recompute time — the clear
     // boundary: rows that land AFTER these snapshots must keep their day dirty.
-    let mut snapshots: Vec<(String, usize, usize)> = Vec::with_capacity(dirty.len());
+    let mut day_snapshots: Vec<(String, usize, usize)> = Vec::with_capacity(dirty.len());
     for day in &dirty {
         let usage = crate::ingest::recompute_usage_day(store, paths, &cfg.device_id, day)?;
         let turns = crate::ingest::recompute_turns_day(store, paths, &cfg.device_id, day)?;
-        snapshots.push((day.clone(), usage, turns));
+        day_snapshots.push((day.clone(), usage, turns));
     }
-    let pushed = commit_and_push(paths, cfg, "vaultone: usage sync")?;
+
+    // Sessions: recompute a derived jsonl per favorited dirty session; delete
+    // any leftover jsonl for non-favorited dirty sessions (un-favorite local).
+    let dirty_sessions = store.dirty_sessions()?;
+    let mut recomputed: Vec<(String, usize)> = Vec::with_capacity(dirty_sessions.len());
+    let mut removed: Vec<String> = Vec::new();
+    for sid in &dirty_sessions {
+        let favorited = store
+            .get_session_favorited(&cfg.device_id, sid)?
+            .unwrap_or(false);
+        if favorited {
+            let count =
+                crate::ingest::recompute_session_snapshot(store, paths, &cfg.device_id, sid)?;
+            recomputed.push((sid.clone(), count));
+        } else {
+            let path = crate::ingest::transcript_path(paths, &cfg.device_id, sid);
+            if path.exists() {
+                std::fs::remove_file(path)?;
+            }
+            removed.push(sid.clone());
+        }
+    }
+
+    let pushed = commit_and_push(paths, cfg, "vaultone: sync")?;
     if pushed {
-        // Push landed ⇒ the recomputed days are on the remote; drop them so the
-        // next push only touches days with fresh local changes. A push failure
-        // returns early via `?` above, leaving the days dirty for the retry.
-        store.clear_dirty_days_if_unchanged(&snapshots, &cfg.device_id)?;
+        // Push landed ⇒ the recomputed days/sessions are on the remote; drop
+        // them so the next push only touches things with fresh local changes.
+        // A push failure returns early via `?` above, leaving flags dirty.
+        store.clear_dirty_days_if_unchanged(&day_snapshots, &cfg.device_id)?;
+        store.clear_dirty_sessions_if_unchanged(&recomputed, &cfg.device_id, &removed)?;
     }
     Ok(pushed)
 }
@@ -1369,6 +1431,113 @@ mod tests {
         let pushed = push_usage(&store, &paths, &cfg).unwrap();
         assert!(!pushed, "no dirty days + clean worktree ⇒ no push");
         assert!(store.dirty_days().unwrap().is_empty());
+    }
+
+    /// Session snapshots round-trip across devices and un-favorite propagates:
+    /// A favorites + pushes a snapshot; B pulls it in (meta + favorited +
+    /// message); A un-favorites + pushes (the file vanishes from git); B pulls
+    /// again and the un-favorite propagates (favorited clears, shared messages
+    /// drop). Exercises the whole 3b-2/3 loop end to end.
+    #[test]
+    fn session_snapshots_roundtrip_and_unfavorite_propagates() {
+        use crate::model::{SessionMessage, SessionMessageRole, SessionSystemData};
+
+        fn dev_cfg(url: &str, dev: &str) -> ConfigData {
+            let mut cfg = synced_cfg(url, "tok");
+            cfg.device_id = dev.to_string();
+            cfg
+        }
+        fn sys(id: &str) -> SessionSystemData {
+            SessionSystemData {
+                id: id.into(),
+                source: "claude_code".into(),
+                project_dir: "/p".into(),
+                title_orig: format!("Title {id}"),
+                started_at: "2026-08-01T00:00:00.000Z".into(),
+                last_active_at: "2026-08-02T00:00:00.000Z".into(),
+            }
+        }
+        fn msg(uuid: &str, sid: &str) -> SessionMessage {
+            SessionMessage {
+                uuid: uuid.into(),
+                session_id: sid.into(),
+                role: SessionMessageRole::User,
+                ts: "2026-08-01T10:00:00.000Z".into(),
+                model: None,
+                name: None,
+                content: format!("body {uuid}"),
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = tmp.path().join("remote.git");
+        seed_remote(&remote);
+        let url = remote.to_string_lossy().to_string();
+        let dev_a = "aabbccddeeff";
+        let dev_b = "bbccddee0011";
+
+        // Device A: collect a favorited session + message, then push its snapshot.
+        let paths_a = crate::config::Paths::resolve(&tmp.path().join("a"));
+        let cfg_a = dev_cfg(&url, dev_a);
+        let _repo_a = open_or_clone(&url, &paths_a.repo, "").unwrap();
+        let store_a = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
+        crate::ingest::ingest_sessions(&store_a, dev_a, &[sys("sx")], &[msg("u1", "sx")]).unwrap();
+        store_a.set_session_favorited(dev_a, "sx", true).unwrap();
+        assert!(
+            push_usage(&store_a, &paths_a, &cfg_a).unwrap(),
+            "A pushed the snapshot"
+        );
+        assert!(
+            crate::ingest::transcript_path(&paths_a, dev_a, "sx").exists(),
+            "snapshot written"
+        );
+
+        // Device B: pull → imports A's session (meta + favorited + message). B's
+        // own snapshot dir stays empty (B favorited nothing, so it pushes nothing).
+        let paths_b = crate::config::Paths::resolve(&tmp.path().join("b"));
+        let cfg_b = dev_cfg(&url, dev_b);
+        let store_b = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
+        pull_and_import(&store_b, &paths_b, &cfg_b).unwrap();
+        let b_sx = store_b
+            .query_sessions(None)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == "sx")
+            .expect("B sees A's session");
+        assert_eq!(b_sx.device_id, dev_a);
+        assert!(b_sx.favorited, "favorited rode the snapshot meta line");
+        assert_eq!(b_sx.title, "Title sx");
+        assert_eq!(
+            store_b.query_session_messages(dev_a, "sx").unwrap().len(),
+            1,
+            "message imported"
+        );
+
+        // A un-favorites + pushes → the snapshot file vanishes from git.
+        store_a.set_session_favorited(dev_a, "sx", false).unwrap();
+        assert!(push_usage(&store_a, &paths_a, &cfg_a).unwrap());
+        assert!(
+            !crate::ingest::transcript_path(&paths_a, dev_a, "sx").exists(),
+            "A removed the snapshot on un-favorite"
+        );
+
+        // B pulls again → un-favorite propagates: favorited clears, shared
+        // messages drop (the cross-device un-favorite path).
+        pull_and_import(&store_b, &paths_b, &cfg_b).unwrap();
+        let b_sx2 = store_b
+            .query_sessions(None)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == "sx")
+            .expect("meta row kept");
+        assert!(!b_sx2.favorited, "un-favorite propagated to B");
+        assert!(
+            store_b
+                .query_session_messages(dev_a, "sx")
+                .unwrap()
+                .is_empty(),
+            "shared messages dropped on un-favorite"
+        );
     }
 
     #[test]

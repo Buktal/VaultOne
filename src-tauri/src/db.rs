@@ -19,8 +19,9 @@ use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection, O
 use crate::error::{AppError, AppResult};
 use crate::model::{
     LocalGroup, LogsQuery, ModelStatsRow, PricingEntry, SessionFilter, SessionMessage,
-    SessionMessageRole, SessionRow, SessionSystemData, TokenCounts, TrendBucket, TrendPoint,
-    TurnDuration, UsageFilter, UsageLogRow, UsageRecord, UsageStats,
+    SessionMessageRole, SessionRow, SessionSnapshotMeta, SessionSystemData, TokenCounts,
+    TrendBucket, TrendPoint, TurnDuration, UsageFilter, UsageLogRow, UsageRecord, UsageStats,
+    SESSION_SNAPSHOT_VERSION,
 };
 use crate::pricing::{ModelPricing, PricingBook};
 use crate::providers::{FileCursor, ScanProgress, ScanProgressDelta};
@@ -697,19 +698,27 @@ impl Store {
         Ok(fav)
     }
 
-    /// Set a session's favorited flag (user action). Only mutates the column;
-    /// the transcript is collected on the next collect pass, not here.
+    /// Set a session's favorited flag (user action). The push path materializes
+    /// the session's jsonl snapshot when this is true and REMOVES it when false,
+    /// so the toggle must flag the session dirty in the SAME transaction —
+    /// otherwise a favorite (or un-favorite) would never reach git (the exact
+    /// "miss git" failure the same-tx marking guards against for usage rows).
     pub fn set_session_favorited(
         &self,
         device_id: &str,
         session_id: &str,
         favorited: bool,
     ) -> AppResult<()> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
-        conn.execute(
+        let mut conn = self.conn.lock().expect("db mutex poisoned");
+        let tx = conn.transaction()?;
+        tx.execute(
             "UPDATE sessions SET favorited = ?3 WHERE id = ?1 AND device_id = ?2",
             params![session_id, device_id, favorited as i64],
         )?;
+        let mut dirty = std::collections::BTreeSet::new();
+        dirty.insert(session_id.to_string());
+        mark_sessions_dirty(&tx, &dirty)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -746,19 +755,26 @@ impl Store {
         Ok(())
     }
 
-    /// Set/clear a session's synced group (cross-device via grain).
+    /// Set/clear a session's synced group (cross-device — the synced_group_id
+    /// rides the jsonl snapshot's meta line, so a change must flag the session
+    /// dirty in the same transaction to reach git on the next push).
     pub fn set_session_synced_group(
         &self,
         device_id: &str,
         session_id: &str,
         group_id: Option<&str>,
     ) -> AppResult<()> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut conn = self.conn.lock().expect("db mutex poisoned");
         let g = group_id.unwrap_or("");
-        conn.execute(
+        let tx = conn.transaction()?;
+        tx.execute(
             "UPDATE sessions SET synced_group_id = ?3 WHERE id = ?1 AND device_id = ?2",
             params![session_id, device_id, g],
         )?;
+        let mut dirty = std::collections::BTreeSet::new();
+        dirty.insert(session_id.to_string());
+        mark_sessions_dirty(&tx, &dirty)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -816,12 +832,12 @@ impl Store {
         Ok(inserted)
     }
 
-    /// The session ids holding un-pushed message changes, in deterministic order
-    /// (sorted). Drives the push path's per-session jsonl recompute. Read-only —
-    /// it does NOT clear: clearing happens only after a push lands (the push
-    /// path's `clear_dirty_sessions_if_unchanged`), so a failed push retries on
+    /// The session ids holding un-pushed changes, in deterministic order (sorted).
+    /// Drives the push path's per-session jsonl recompute (a recompute WRITES the
+    /// snapshot for a favorited session, DELETES it for a non-favorited one).
+    /// Read-only — it does NOT clear: clearing happens only after a push lands
+    /// ([`Self::clear_dirty_sessions_if_unchanged`]), so a failed push retries on
     /// the next attempt. Pure local state: makes no claim about the git worktree.
-    #[allow(dead_code)] // expand phase: collect writes here; the push path reads it once session-snapshot recompute lands
     pub fn dirty_sessions(&self) -> AppResult<Vec<String>> {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let mut stmt = conn.prepare("SELECT session_id FROM dirty_sessions ORDER BY session_id")?;
@@ -830,11 +846,214 @@ impl Store {
             .map_err(AppError::from)
     }
 
+    /// The meta line the push path writes as the first line of a session's jsonl
+    /// snapshot, read straight from the sessions row (system data + the two
+    /// favorites-track user fields). `None` when the session is not in the table
+    /// — the caller treats that as "nothing to snapshot".
+    pub fn get_session_snapshot_meta(
+        &self,
+        device_id: &str,
+        session_id: &str,
+    ) -> AppResult<Option<SessionSnapshotMeta>> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let row = conn
+            .query_row(
+                "SELECT id, source, project_dir, title_orig, started_at, last_active_at,
+                        favorited, synced_group_id
+                 FROM sessions WHERE id = ?1 AND device_id = ?2",
+                params![session_id, device_id],
+                |r| {
+                    Ok(SessionSnapshotMeta {
+                        v: SESSION_SNAPSHOT_VERSION,
+                        id: r.get(0)?,
+                        source: r.get(1)?,
+                        project_dir: r.get(2)?,
+                        title_orig: r.get(3)?,
+                        started_at: r.get(4)?,
+                        last_active_at: r.get(5)?,
+                        favorited: r.get::<_, i64>(6)? != 0,
+                        synced_group_id: r.get(7)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Clear the dirty flag for each session whose store contents still match the
+    /// recompute-time snapshot — i.e. exactly the sessions the last push committed.
+    /// A collect that raced in a new message since (count grew) keeps the session
+    /// dirty so the next push carries it up; a blind delete would silently strand
+    /// it. `recomputed` are favorited sessions that had a snapshot written (cleared
+    /// only when their message count is unchanged); `removed` are non-favorited
+    /// sessions whose leftover snapshot was deleted (cleared unconditionally —
+    /// deletion is idempotent, and a raced re-favorite re-marks the session dirty
+    /// in `set_session_favorited`). The check and the delete run in ONE transaction,
+    /// so the flag can never drop after new messages land between the two.
+    pub fn clear_dirty_sessions_if_unchanged(
+        &self,
+        recomputed: &[(String, usize)],
+        device_id: &str,
+        removed: &[String],
+    ) -> AppResult<()> {
+        if recomputed.is_empty() && removed.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn.lock().expect("db mutex poisoned");
+        let tx = conn.transaction()?;
+        for (sid, expected) in recomputed {
+            let count: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM session_messages WHERE device_id = ?1 AND session_id = ?2",
+                params![device_id, sid],
+                |r| r.get(0),
+            )?;
+            if count == *expected as i64 {
+                tx.execute(
+                    "DELETE FROM dirty_sessions WHERE session_id = ?1",
+                    params![sid],
+                )?;
+            }
+        }
+        for sid in removed {
+            tx.execute(
+                "DELETE FROM dirty_sessions WHERE session_id = ?1",
+                params![sid],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Import a peer's session snapshot into the store (pull path). UPSERTs the
+    /// session row keyed by `(meta.id, device_id)`; the peer's `favorited` and
+    /// `synced_group_id` (carried by the snapshot) overwrite — the peer is
+    /// authoritative for its own row's favorites-track fields. System fields
+    /// refresh on conflict; `custom_title` / `local_group_id` are device-local
+    /// and never carried by the snapshot. Messages land deduped by
+    /// `(device_id, uuid)`, NOT marked dirty (pull data is already on git — the
+    /// same split as `ingest` vs `ingest_marking_dirty` for usage rows).
+    pub fn import_session_snapshot(
+        &self,
+        device_id: &str,
+        meta: &SessionSnapshotMeta,
+        messages: &[SessionMessage],
+    ) -> AppResult<()> {
+        let mut conn = self.conn.lock().expect("db mutex poisoned");
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO sessions
+             (id, device_id, source, project_dir, title_orig, started_at, last_active_at,
+              custom_title, favorited, synced_group_id, local_group_id)
+             VALUES (?1,?2,?3,?4,?5,?6,?7, ?8,?9,?10, ?11)
+             ON CONFLICT(id, device_id) DO UPDATE SET
+               source=excluded.source,
+               project_dir=excluded.project_dir,
+               title_orig=excluded.title_orig,
+               started_at=excluded.started_at,
+               last_active_at=excluded.last_active_at,
+               favorited=excluded.favorited,
+               synced_group_id=excluded.synced_group_id",
+            params![
+                meta.id,
+                device_id,
+                meta.source,
+                meta.project_dir,
+                meta.title_orig,
+                meta.started_at,
+                meta.last_active_at,
+                "",
+                meta.favorited as i64,
+                meta.synced_group_id,
+                "",
+            ],
+        )?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO session_messages
+                 (device_id, session_id, uuid, role, ts, model, name, content)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+                 ON CONFLICT (device_id, uuid) DO NOTHING",
+            )?;
+            for m in messages {
+                stmt.execute(params![
+                    device_id,
+                    m.session_id,
+                    m.uuid,
+                    m.role.as_str(),
+                    m.ts,
+                    m.model.as_deref().unwrap_or(""),
+                    m.name.as_deref().unwrap_or(""),
+                    m.content,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The peer devices that currently have a favorited session row, excluding
+    /// self. Drives the un-favorite propagation's "which peers to reconcile"
+    /// loop — a peer that ships NO snapshot files this pull still needs its rows
+    /// checked, because it may have un-favorited everything.
+    pub fn favorited_session_devices(&self, self_device_id: &str) -> AppResult<Vec<String>> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT device_id FROM sessions \
+             WHERE favorited = 1 AND device_id != ?1 ORDER BY device_id",
+        )?;
+        let rows = stmt.query_map(params![self_device_id], |r| r.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(AppError::from)
+    }
+
+    /// Cross-device un-favorite propagation: for `peer_device`, any session the
+    /// store still marks favorited whose id is NOT in `still_favorited_ids` (the
+    /// peer's snapshot files that actually exist on disk this pull) has been
+    /// un-favorited on the peer. Clear its favorited flag and drop its shared
+    /// messages (they no longer have a git home). The meta row stays — its system
+    /// data is harmless, and self may hold its own row for the same session. NOT
+    /// marked dirty: a pull-side reconciliation is not a local change to push.
+    pub fn reconcile_peer_unfavorited(
+        &self,
+        peer_device: &str,
+        still_favorited_ids: &std::collections::BTreeSet<String>,
+    ) -> AppResult<usize> {
+        let mut conn = self.conn.lock().expect("db mutex poisoned");
+        let tx = conn.transaction()?;
+        let json = serde_json::to_string(still_favorited_ids)
+            .map_err(|e| AppError::Internal(format!("reconcile peer favorited: {e}")))?;
+        let unfavorited: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT id FROM sessions WHERE device_id = ?1 AND favorited = 1 \
+                 AND id NOT IN (SELECT value FROM json_each(?2))",
+            )?;
+            let rows = stmt.query_map(params![peer_device, json], |r| r.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        if unfavorited.is_empty() {
+            // No writes happened; the transaction drops and rolls back harmlessly.
+            return Ok(0);
+        }
+        let ujson = serde_json::to_string(&unfavorited)
+            .map_err(|e| AppError::Internal(format!("reconcile peer unfavorited: {e}")))?;
+        tx.execute(
+            "UPDATE sessions SET favorited = 0 \
+             WHERE device_id = ?1 AND id IN (SELECT value FROM json_each(?2))",
+            params![peer_device, ujson],
+        )?;
+        tx.execute(
+            "DELETE FROM session_messages \
+             WHERE device_id = ?1 AND session_id IN (SELECT value FROM json_each(?2))",
+            params![peer_device, ujson],
+        )?;
+        tx.commit()?;
+        Ok(unfavorited.len())
+    }
+
     /// Read one session's transcript messages for a device, in chronological
     /// order (`ts`, then `uuid` as a stable tiebreaker). The transcript read
     /// path's per-device lookup; the command layer merges across devices. The
     /// empty-string `model`/`name` stored for `None` round-trips back to `None`.
-    #[allow(dead_code)] // expand phase: consumed once push recomputes per-session snapshots from db
     pub fn query_session_messages(
         &self,
         device_id: &str,
@@ -1045,6 +1264,18 @@ impl Store {
                  WHERE device_id = ?1 AND source = ?2 \
                    AND id NOT IN (SELECT value FROM json_each(?3))",
                 params![device_id, source, json],
+            )?;
+            // A ghost session's messages are dead weight too — drop them in the
+            // same transaction so the row and its transcript never split apart.
+            // `session_messages` has no `source` column, so scope by device plus
+            // the ghost id set (the very rows just deleted from `sessions`).
+            let ghost_json = serde_json::to_string(&ghosts)
+                .map_err(|e| AppError::Internal(format!("reconcile ghost ids: {e}")))?;
+            tx.execute(
+                "DELETE FROM session_messages \
+                 WHERE device_id = ?1 \
+                   AND session_id IN (SELECT value FROM json_each(?2))",
+                params![device_id, ghost_json],
             )?;
         }
         tx.commit()?;
@@ -2424,6 +2655,28 @@ mod tests {
         s.set_session_local_group("dev", "real", Some("lg1"))
             .unwrap();
 
+        // Messages for both sessions; the ghost's messages must be dropped in
+        // the same transaction as its row — a session and its transcript are
+        // one unit, never split.
+        s.ingest_session_messages_marking_dirty(
+            "dev",
+            &[
+                msg(
+                    "u-real",
+                    "real",
+                    SessionMessageRole::User,
+                    "2026-08-15T10:00:00Z",
+                ),
+                msg(
+                    "u-ghost",
+                    "ghost",
+                    SessionMessageRole::User,
+                    "2026-08-10T10:00:00Z",
+                ),
+            ],
+        )
+        .unwrap();
+
         let ghosts = s
             .reconcile_sessions("dev", "claude_code", &["real".to_string()])
             .unwrap();
@@ -2435,6 +2688,16 @@ mod tests {
         assert_eq!(rows[0].title, "Renamed", "custom_title preserved");
         assert!(rows[0].favorited, "favorited preserved");
         assert_eq!(rows[0].local_group_id, "lg1", "group preserved");
+
+        assert_eq!(
+            s.query_session_messages("dev", "real").unwrap().len(),
+            1,
+            "survivor's messages kept"
+        );
+        assert!(
+            s.query_session_messages("dev", "ghost").unwrap().is_empty(),
+            "ghost's messages dropped with its row"
+        );
     }
 
     #[test]

@@ -323,6 +323,44 @@ pub struct SessionMessage {
     pub content: String,
 }
 
+/// Format version of a session snapshot Artifact (`sessions/<id>.jsonl`). Bumped
+/// only on an incompatible line-shape change; pull refuses a snapshot whose
+/// version is higher than the running binary supports (the §10 upgrade gate)
+/// rather than importing partially-understood data and corrupting state.
+pub const SESSION_SNAPSHOT_VERSION: u32 = 1;
+
+/// The meta line of a session snapshot — always the FIRST line of
+/// `sessions/<id>.jsonl`. Carries the session's system data plus the two
+/// favorites-track user fields (`favorited`, `synced_group_id`) so a peer that
+/// pulls the snapshot can reconstruct the full row (the favorites tab is
+/// cross-device: a peer's favorited session must surface with its title and
+/// group, not just its messages). `v` is the §10 upgrade gate.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SessionSnapshotMeta {
+    pub v: u32,
+    pub id: String,
+    pub source: String,
+    pub project_dir: String,
+    pub title_orig: String,
+    pub started_at: String,
+    pub last_active_at: String,
+    pub favorited: bool,
+    pub synced_group_id: String,
+}
+
+/// One line of a session snapshot Artifact. The first line is always
+/// [`SessionSnapshotLine::Session`]; the rest are
+/// [`SessionSnapshotLine::Message`] in `(ts, uuid)` order. The tagged enum makes
+/// every line self-describing — the pull reader dispatches on `type` rather than
+/// trusting line position, so a future shape change only has to add a variant
+/// and bump `v`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SessionSnapshotLine {
+    Session(SessionSnapshotMeta),
+    Message(SessionMessage),
+}
+
 /// One session row for the frontend list. Aggregates (request_count /
 /// total_tokens / total_cost_usd) are computed live by `GROUP BY session_id`
 /// over `usage_records` at query time — they are NOT stored on the session, so

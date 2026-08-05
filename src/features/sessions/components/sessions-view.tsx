@@ -129,7 +129,7 @@ export function SessionsView() {
           <CardHeader>
             <CardTitle>{t("sessions.title")}</CardTitle>
           </CardHeader>
-          <CardContent className="flex min-h-0 flex-1 flex-col p-0">
+          <CardContent className="flex min-h-0 flex-1 flex-col">
             <QueryState
               isLoading={b.isLoading}
               error={b.error}
@@ -208,7 +208,7 @@ function SessionsTable({
 }) {
   const { t } = useTranslation()
   return (
-    <div className="overflow-y-auto">
+    <div className="min-h-0 flex-1 -mr-2.5 overflow-auto pr-2.5">
       {/* table-fixed: column widths come from the header row, so the narrow
           numeric columns (w-20/w-24) are never stretched by extra horizontal
           space — the title column (no explicit width) absorbs the remainder. */}

@@ -90,11 +90,11 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
   }
 
   return (
-    <Card>
+    <Card className="min-h-0 flex-1">
       <CardHeader>
         <CardTitle>{t("usage.logs.title")}</CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="flex min-h-0 flex-1 flex-col">
         <QueryState
           isLoading={isLoading}
           error={error}
@@ -109,7 +109,7 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
             disabled: collecting,
           }}
         >
-          <div className="overflow-x-auto">
+          <div className="min-h-0 flex-1 -mr-2.5 overflow-auto pr-2.5">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -179,7 +179,7 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
           </div>
         </QueryState>
 
-        <div className="text-muted-foreground mt-3 flex items-center justify-between text-xs">
+        <div className="text-muted-foreground mt-3 flex shrink-0 items-center justify-between text-xs">
           <span>
             {t("usage.logs.pageInfo", {
               page,
