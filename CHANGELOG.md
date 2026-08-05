@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-08-06
+
+### Added
+
+- **Sessions browser** — a new side-navigation entry that turns the raw session logs your AI CLIs write into a browsable, searchable history. Every session sits under its project directory with its full transcript, per-session token breakdown, and cost (computed live from the usage records — nothing is double-stored). Filter by time range, source, model, and device; search titles and paths; rename a session in place; open any session in a detail panel with a color-coded transcript (assistant model badges, distinct user turns, collapsible tool calls).
+- **Two tabs, two ways to organize** — a **Local** tab lists every session collected on this machine, sorted into private groups that never leave it; a **Favorites** tab lists the sessions you favorited across all devices, sorted into synced groups shared everywhere, each entry marked with its source device. The same session can sit in different groups in each tab.
+- **Favorites sync across devices** — starring a session publishes its transcript and synced-group placement through your sync repo; unstarring removes it everywhere. Only favorited sessions ever leave your machine — everything else stays local.
+- **Transcripts for every session, instantly** — all conversation text is stored in the local database at collect time, so any session — favorited or not — opens its full transcript without re-reading a log file that may still be mid-write.
+- **Faster collection** — a 5-second collect interval joins the scheduler presets for near-real-time dashboards.
+
+### Changed
+
+- **Sync rebuilt on dirty-day tracking** — collect now writes the local store only and marks each affected day dirty in the same transaction; push regenerates that day's artifact deterministically from the store (byte-stable, not append) and clears the dirty marks only after the push lands. The old JSONL-first write order, the with-own-data snapshot/restore protection, and the artifact-gap reconciler are gone — one write path, so two devices can never disagree on a file's content.
+- **Session snapshots are derived, not written** — a favorited session's synced snapshot is recomputed from the store on push; a session whose source log has vanished is reclaimed automatically on every device (local rows and synced snapshot both removed).
+- **Sync scope narrowed** — the optional sync repo now carries usage, favorited sessions, and library files only. The Sync-config feature (syncing app settings through the repo) shipped in 1.5.x is removed; settings are per-device again.
+- **Smarter project grouping** — a session's project directory is derived from the most frequent working directory across its events (the mode, not the first entry), so a session that starts inside a subdirectory is grouped under the real project root.
+
+### Fixed
+
+- **Session collection robustness** — a log file that ends mid-character (a session still being written, e.g. in Chinese) is read lossily instead of dropped, so an in-progress session no longer loses its whole file; the scan cursor advances correctly, titles follow renames, and missing sessions are recovered.
+- **Unfavorited sessions can now be viewed** — previously opening one asked you to favorite it first, because its transcript lived only in the favorited snapshot; the transcript now comes from the local database, so every session opens, favorited or not.
+- **Favorite state no longer flickers** — a refetch no longer falls back to a stale snapshot, so a session you just favorited stays favorited, and the star icon matches the table row.
+- **Session layout** — the "New group" button stays visible and the group sidebar no longer overflows its area.
+
+### Internal
+
+- **The largest architecture batch yet** — the db god-module was split into domain modules (`store_*`), 22 commands migrated out of domain modules into `commands.rs`, and single sources of truth were consolidated across the board (model normalization, price matching, device registry, provider parsing, UI formatting, date-range chips); the sync god-module was split into git primitives + flow orchestration, and a review pass cleaned up remaining drift. No user-visible change — the dashboard's code is measurably simpler to extend.
+
 ## [1.5.1] - 2026-07-31
 
 ### Fixed
@@ -15,6 +43,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Usage rows no longer silently drop out of sync** — ingest wrote SQLite before the JSONL Artifact and treated the Artifact as a mere backup, swallowing append errors. A row that hit the DB but missed the Artifact (a transient append failure, or residue from ≤1.3.x) was then locked out forever — the ledger dedup silenced every later collect, so peers pulling the Artifact never saw it (one device showed ~24M tokens while a peer showed ~30M under the same filter). Ingest now appends the JSONL Artifact first and idempotently, and propagates append errors, so a failed append leaves the scan cursor untouched and the next collect re-parses the same source lines from the AI CLI logs. A new pre-collect reconcile also clears the cursors when the store holds rows the Artifact is missing, so a single rescan backfills pre-existing gaps — devices converge without manual repair.
 
 ## [1.5.0] - 2026-07-31
+
+### Added
+
+- **Grok CLI** — reads token usage from Grok Build's session logs, making it the fifth supported AI CLI (overlooked in this release's notes; documented retroactively).
 
 ### Changed
 
@@ -118,7 +150,8 @@ First public, open-source release.
 - **macOS**: Apple Silicon (arm64) only; builds are unsigned — right-click → **Open** on first launch (or `xattr -dr com.apple.quarantine /Applications/VaultOne.app`). Intel Mac users can build from source.
 - **Providers**: Claude Code only; additional providers (Codex, Cursor, …) are planned.
 
-[Unreleased]: https://github.com/Buktal/VaultOne/compare/v1.5.1...HEAD
+[Unreleased]: https://github.com/Buktal/VaultOne/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.6.0
 [1.5.1]: https://github.com/Buktal/VaultOne/releases/tag/v1.5.1
 [1.5.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.5.0
 [1.4.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.4.0

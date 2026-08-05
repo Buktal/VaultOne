@@ -32,7 +32,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
-          corepack: true
+          # Note: the `corepack` input was removed from setup-node@v4;
+          # corepack is enabled explicitly in the step below instead.
+
+      - name: Enable Corepack (pinned Yarn 4)
+        run: corepack enable
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable

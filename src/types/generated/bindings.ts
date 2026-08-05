@@ -130,7 +130,10 @@ export const commands = {
 	exportFromLibrary: (relPath: string, targetDir: string) => typedError<null, AppError>(__TAURI_INVOKE("export_from_library", { relPath, targetDir })),
 	deleteFromLibrary: (relPath: string) => typedError<null, AppError>(__TAURI_INVOKE("delete_from_library", { relPath })),
 	renameInLibrary: (relPath: string, newName: string) => typedError<null, AppError>(__TAURI_INVOKE("rename_in_library", { relPath, newName })),
-	/**  Read a library entry as text for the themed preview (see [`read_text_entry`]). */
+	/**
+	 *  Read a library entry as text for the themed preview (see
+	 *  [`library::read_text_entry`]).
+	 */
 	readLibraryText: (relPath: string) => typedError<string | null, AppError>(__TAURI_INVOKE("read_library_text", { relPath })),
 	/**
 	 *  File/folder counts for one device's library subtree — used by the
@@ -462,10 +465,10 @@ export type SessionGroup = {
 
 /**
  *  One transcript line. Single source of truth across three roles: provider
- *  output (`RawSessionMessage` concept), the per-session JSONL Artifact
- *  (`sessions/<id>.jsonl`), and the DTO crossing to the frontend. The shape is
- *  identical for all three, so one struct (single source of truth) — the
- *  `RawSessionMessage` name the design doc uses is a role, not a separate type.
+ *  output, the per-session JSONL Artifact (`sessions/<id>.jsonl`), and the DTO
+ *  crossing to the frontend. The shape is identical for all three, so one
+ *  struct (single source of truth) — a provider-emitted message is this same
+ *  shape, not a separate type.
  */
 export type SessionMessage = SessionMessage_Serialize | SessionMessage_Deserialize;
 
@@ -477,10 +480,10 @@ export type SessionMessageRole = "user" | "assistant" | "tool" | "system";
 
 /**
  *  One transcript line. Single source of truth across three roles: provider
- *  output (`RawSessionMessage` concept), the per-session JSONL Artifact
- *  (`sessions/<id>.jsonl`), and the DTO crossing to the frontend. The shape is
- *  identical for all three, so one struct (single source of truth) — the
- *  `RawSessionMessage` name the design doc uses is a role, not a separate type.
+ *  output, the per-session JSONL Artifact (`sessions/<id>.jsonl`), and the DTO
+ *  crossing to the frontend. The shape is identical for all three, so one
+ *  struct (single source of truth) — a provider-emitted message is this same
+ *  shape, not a separate type.
  */
 export type SessionMessage_Deserialize = {
 	/**  Source event uuid (dedup key within one session's transcript file). */
@@ -504,10 +507,10 @@ export type SessionMessage_Deserialize = {
 
 /**
  *  One transcript line. Single source of truth across three roles: provider
- *  output (`RawSessionMessage` concept), the per-session JSONL Artifact
- *  (`sessions/<id>.jsonl`), and the DTO crossing to the frontend. The shape is
- *  identical for all three, so one struct (single source of truth) — the
- *  `RawSessionMessage` name the design doc uses is a role, not a separate type.
+ *  output, the per-session JSONL Artifact (`sessions/<id>.jsonl`), and the DTO
+ *  crossing to the frontend. The shape is identical for all three, so one
+ *  struct (single source of truth) — a provider-emitted message is this same
+ *  shape, not a separate type.
  */
 export type SessionMessage_Serialize = {
 	/**  Source event uuid (dedup key within one session's transcript file). */

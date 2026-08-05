@@ -6,6 +6,56 @@ VaultOne 的所有显著变更记录于此。
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-08-06
+
+### 新增
+
+- **会话浏览器** —— 侧边栏新增入口，把你 AI CLI 写下的原始会话日志变成可浏览、可搜索的历史。每个会话归在其项目目录下，展示完整对话原文、逐会话 token 明细与成本（从用量记录现场求和，不重复存储）。支持按时间范围 / 来源 / 模型 / 设备筛选，按标题与路径搜索；可原地重命名；任意会话都能在详情面板中打开，正文按角色着色（assistant 带模型徽标、user 独立色调、tool 行可折叠）。
+- **双 tab、两套组织方式** —— **本地** tab 罗列本机采集的全部会话，归入绝不离开本机的私有分组；**收藏** tab 罗列跨设备收藏的会话，归入全局一致的收藏分组，每个条目带来源设备标记。同一会话在两个 tab 可归不同组。
+- **收藏跨设备同步** —— 点亮星标会把该会话的原文与收藏分组位置经你的同步仓库发布到所有设备；取消收藏处处生效。只有收藏的会话才会离开你的机器——其余全部留在本地。
+- **所有会话的原文即时可看** —— 对话原文在采集时全部写入本地数据库，因此任何会话——无论是否收藏——都能立刻打开完整原文，不再重读可能正在写入的日志文件。
+- **更快的采集** —— 调度预设新增 5 秒档，看板近乎实时。
+
+### 变更
+
+- **同步重建为脏日追踪** —— collect 只写本地存储，并在同一事务里把受影响的天标脏；push 时从存储确定性重算当天产物（字节稳定、非 append），push 落地后才清脏。旧的 JSONL-first 写序、with-own-data 快照/还原保护与 artifact 缺口对账器全部移除——只剩一条写路径，两台设备永远不会对同一文件的内容产生分歧。
+- **会话快照改为派生而非直写** —— 收藏会话的同步快照在 push 时从存储重算；源日志已消失的会话在所有设备上自动回收（本地行与同步快照一并删除）。
+- **同步范围收窄** —— 可选同步仓库现在只承载用量、收藏会话与库文件。1.5.x 的 Sync-config 功能（经仓库同步应用设置）已移除；设置重新回到每台设备私有。
+- **更聪明的项目归类** —— 会话的项目目录取该会话事件中出现次数最多的工作目录（众数而非首条），因此从子目录开始的会话会被归到真正的项目根下。
+
+### 修复
+
+- **会话采集健壮性** —— 以半个字符结尾的日志文件（会话正在写入，如中文）改为宽容读取而非整文件丢弃，进行中的会话不再整文件丢失；扫描游标正常前进、标题随重命名刷新、缺失会话自动补回。
+- **未收藏会话现在可以查看** —— 此前打开未收藏会话会提示先收藏，因为原文只存在收藏快照里；原文现改为读本地数据库，任何会话都能打开。
+- **收藏状态不再闪回** —— 重新拉取不再回落到旧快照，刚收藏的会话保持收藏态；星标图标与表格行一致。
+- **会话布局** —— "新建分组"按钮常驻可见，分组侧栏不再溢出其区域。
+
+### 内部
+
+- **迄今最大的一次架构批次** —— db god-module 拆分为按域 module（`store_*`）；22 个 command 从域 module 迁入 `commands.rs`；模型归一化、定价匹配、设备注册表、provider 解析、UI 格式化、日期范围 chip 等单一事实来源全面收口；sync god-module 拆成 git 原语 + flow 编排两层；评审清理收尾。无用户可见变化——看板代码更易于扩展。
+
+## [1.5.1] - 2026-07-31
+
+### 修复
+
+- **本地提交重复远端补丁时同步自愈** —— 1.5.0 的 rebase 自愈在本地提交重复了远端已有补丁时会中止（例如两台机器各自跑过同一轮设备清理），报 `rebase onto remote tip would conflict ... this patch has already been applied`，设备再次卡在分叉状态。`pull` 现在在 rebase 时丢弃已应用过的提交并继续，分叉自愈不再卡死。
+- **用量行不再静默掉出同步** —— ingest 此前先写 SQLite 再写 JSONL Artifact、把 Artifact 当作纯备份、吞掉追加错误。写进 db 但漏进 Artifact 的行（一次瞬时追加失败，或 ≤1.3.x 的残留）此后被永久锁死——账本去重静默掉每一次后续 collect，拉取 Artifact 的对端永远看不到它（同一筛选下，一台设备显示约 24M token、对端显示约 30M）。ingest 现在先幂等地追加 JSONL Artifact，并传播追加错误：追加失败时扫描游标不动，下次 collect 重新解析同一批源行。新增的 collect 前对账还会在「存储有行而 Artifact 缺行」时清游标，一次重扫即回填历史缺口——设备无需手工修复即可收敛。
+
+## [1.5.0] - 2026-07-31
+
+### 新增
+
+- **Grok CLI** —— 从 Grok Build 的会话日志读取 token 用量，成为第五个受支持的 AI CLI（本版本发布说明遗漏，此处补记）。
+
+### 变更
+
+- **设置布局** —— 独立的 Cloud-config 区块并入 Sync："Sync config" 按钮与冲突解决器现在与 "Sync now" 一起放在同一张 Sync 卡片下。区块顺序为 General / This machine / Devices / Sync / Maintenance，"Sync cloud config" 按钮改称 "Sync config"。
+
+### 修复
+
+- **分叉 push 后同步自愈** —— 当一台设备在 push 竞速中落败（另一台设备在其 pull 与 push 之间抢先推送），每次 "Sync now" / "Sync config" 都报 `pull would diverge on 'main'; refusing to auto-merge` 且无法自行恢复，看板停留在旧数据。`pull` 现在把设备本地独有提交 rebase 到远端 tip 再 push，自动治愈分叉。设备隔离（`data/<deviceId>/`）保证 rebase 无冲突，两台设备的数据都在远端并存——软/仅重置修复会原样重放本地树、冲掉对端数据。
+- **单日历史趋势图** —— 选中单个过去日期（如 2026-07-30 → 2026-07-30）会把用量趋势压成一条平零线：图表按 *今天* 的小时补零而不是所选日期，真实记录永远匹配不上。现在按所选日期铺满 24 小时轴（00:00 → 23:00；当天则到当前小时为止）。
+
 ## [1.4.0] - 2026-07-30
 
 ### 新增
@@ -99,7 +149,10 @@ VaultOne 的所有显著变更记录于此。
 - **macOS**：仅 Apple Silicon（arm64）；构建未签名——首次启动右键 →「打开」（或 `xattr -dr com.apple.quarantine /Applications/VaultOne.app`）。Intel Mac 用户可从源码构建。
 - **Provider**：当前仅 Claude Code；更多 provider（Codex、Cursor 等）规划中。
 
-[Unreleased]: https://github.com/Buktal/VaultOne/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/Buktal/VaultOne/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.6.0
+[1.5.1]: https://github.com/Buktal/VaultOne/releases/tag/v1.5.1
+[1.5.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.5.0
 [1.4.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.4.0
 [1.3.1]: https://github.com/Buktal/VaultOne/releases/tag/v1.3.1
 [1.3.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.3.0
