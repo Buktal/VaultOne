@@ -7,6 +7,17 @@
 use super::schema;
 use super::*;
 
+/// Recompute-time row counts for one day — exactly what the push materialized
+/// from the store. `clear_dirty_days_if_unchanged` re-checks these counts
+/// before dropping the day's dirty flag, so a row that raced in after the
+/// snapshot keeps the day dirty (a blind delete would strand it on the
+/// local-only side of git forever).
+pub struct DaySnapshot {
+    pub day: String,
+    pub usage_rows: usize,
+    pub turn_rows: usize,
+}
+
 impl super::Store {
     // ---------------- Dirty days (sync recompute driver) ----------------
 
@@ -36,7 +47,7 @@ impl super::Store {
     /// one day, so it never hides a mismatch.
     pub fn clear_dirty_days_if_unchanged(
         &self,
-        snapshots: &[(String, usize, usize)],
+        snapshots: &[DaySnapshot],
         device_id: &str,
     ) -> AppResult<()> {
         if snapshots.is_empty() {
@@ -44,19 +55,19 @@ impl super::Store {
         }
         let mut conn = self.conn.lock().expect("db mutex poisoned");
         let tx = conn.transaction()?;
-        for (day, expected_usage, expected_turns) in snapshots {
+        for s in snapshots {
             let usage: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM usage_records WHERE day = ?1 AND device_id = ?2",
-                params![day, device_id],
+                params![s.day, device_id],
                 |r| r.get(0),
             )?;
             let turns: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM turn_durations WHERE day = ?1 AND device_id = ?2",
-                params![day, device_id],
+                params![s.day, device_id],
                 |r| r.get(0),
             )?;
-            if usage == *expected_usage as i64 && turns == *expected_turns as i64 {
-                tx.execute("DELETE FROM dirty_days WHERE day = ?1", params![day])?;
+            if usage == s.usage_rows as i64 && turns == s.turn_rows as i64 {
+                tx.execute("DELETE FROM dirty_days WHERE day = ?1", params![s.day])?;
             }
         }
         tx.commit()?;
@@ -211,8 +222,15 @@ mod tests {
         let r = rec("a", "2026-07-13", "glm-5.2", "dev1", 100, 50, 1.0);
         s.ingest_marking_dirty(std::slice::from_ref(&r)).unwrap();
         // Snapshot (1 usage row, 0 turns) still matches ⇒ cleared.
-        s.clear_dirty_days_if_unchanged(&[("2026-07-13".into(), 1, 0)], "dev1")
-            .unwrap();
+        s.clear_dirty_days_if_unchanged(
+            &[DaySnapshot {
+                day: "2026-07-13".into(),
+                usage_rows: 1,
+                turn_rows: 0,
+            }],
+            "dev1",
+        )
+        .unwrap();
         // Same uuid again ⇒ no new row ⇒ no dirty flag.
         s.ingest_marking_dirty(std::slice::from_ref(&r)).unwrap();
         assert!(s.dirty_days().unwrap().is_empty());
@@ -249,8 +267,15 @@ mod tests {
             2.0,
         )))
         .unwrap();
-        s.clear_dirty_days_if_unchanged(&[("2026-07-13".into(), 1, 0)], "dev1")
-            .unwrap();
+        s.clear_dirty_days_if_unchanged(
+            &[DaySnapshot {
+                day: "2026-07-13".into(),
+                usage_rows: 1,
+                turn_rows: 0,
+            }],
+            "dev1",
+        )
+        .unwrap();
         assert_eq!(
             s.dirty_days().unwrap(),
             vec!["2026-07-13".to_string()],
@@ -287,7 +312,18 @@ mod tests {
         // Pull-path turn ingest does not flag. (Snapshots still match — the
         // turn count per day is 1.)
         s.clear_dirty_days_if_unchanged(
-            &[("2026-07-13".into(), 0, 1), ("2026-07-14".into(), 0, 1)],
+            &[
+                DaySnapshot {
+                    day: "2026-07-13".into(),
+                    usage_rows: 0,
+                    turn_rows: 1,
+                },
+                DaySnapshot {
+                    day: "2026-07-14".into(),
+                    usage_rows: 0,
+                    turn_rows: 1,
+                },
+            ],
             "d",
         )
         .unwrap();

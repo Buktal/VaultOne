@@ -151,17 +151,21 @@ fn reconcile_session_data(
     // alongside push's `decide_snapshot_action` and pull's
     // `presence_mismatches` — shares the one definition of "snapshot file
     // exists ⇔ favorited"; a future change to what `Remove` means then can't
-    // silently skip collect.
-    let ghost_action = decide_snapshot_action(false);
-    for id in &ghosts {
-        if ghost_action == SnapshotAction::Remove {
-            // Best-effort, on purpose: an unlink failure (permissions, etc.)
-            // must not fail the collect — the row is already gone; the orphan
-            // file is retried next pass. Push handles the same `Remove` by
-            // failing loud (`?`) because a push can retry; the two error
-            // semantics differ by design.
-            let _ = std::fs::remove_file(paths.session_snapshot_path(device_id, id));
+    // silently skip collect. Matching (not an `if`) forces this site to
+    // reconsider whenever a new action is added.
+    match decide_snapshot_action(false) {
+        SnapshotAction::Remove => {
+            for id in &ghosts {
+                // Best-effort, on purpose: an unlink failure (permissions, etc.)
+                // must not fail the collect — the row is already gone; the orphan
+                // file is retried next pass. Push handles the same `Remove` by
+                // failing loud (`?`) because a push can retry; the two error
+                // semantics differ by design.
+                let _ = std::fs::remove_file(paths.session_snapshot_path(device_id, id));
+            }
         }
+        // A ghost row is never favorited, so Write is unreachable today.
+        SnapshotAction::Write => {}
     }
     if !ghosts.is_empty() {
         eprintln!(

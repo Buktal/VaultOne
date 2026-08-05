@@ -73,7 +73,7 @@ impl SessionMessageRole {
     /// Inverse of [`Self::as_str`]. An unknown string defaults to `User` (the
     /// enum default) rather than failing — a malformed stored row should not
     /// crash a transcript read.
-    #[allow(dead_code)] // expand phase: unused while the read path still reads the jsonl artifact (see Store::query_session_messages)
+    #[allow(dead_code)] // unused while transcript reads still come from the jsonl artifact (see Store::query_session_messages)
     pub fn parse_str(s: &str) -> Self {
         match s {
             "assistant" => SessionMessageRole::Assistant,
@@ -85,10 +85,10 @@ impl SessionMessageRole {
 }
 
 /// One transcript line. Single source of truth across three roles: provider
-/// output (`RawSessionMessage` concept), the per-session JSONL Artifact
-/// (`sessions/<id>.jsonl`), and the DTO crossing to the frontend. The shape is
-/// identical for all three, so one struct (single source of truth) — the
-/// `RawSessionMessage` name the design doc uses is a role, not a separate type.
+/// output, the per-session JSONL Artifact (`sessions/<id>.jsonl`), and the DTO
+/// crossing to the frontend. The shape is identical for all three, so one
+/// struct (single source of truth) — a provider-emitted message is this same
+/// shape, not a separate type.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct SessionMessage {
     /// Source event uuid (dedup key within one session's transcript file).
@@ -112,8 +112,8 @@ pub struct SessionMessage {
 
 /// Format version of a session snapshot Artifact (`sessions/<id>.jsonl`). Bumped
 /// only on an incompatible line-shape change; pull refuses a snapshot whose
-/// version is higher than the running binary supports (the §10 upgrade gate)
-/// rather than importing partially-understood data and corrupting state.
+/// version is higher than the running binary supports rather than importing
+/// partially-understood data and corrupting state.
 pub const SESSION_SNAPSHOT_VERSION: u32 = 1;
 
 /// The meta line of a session snapshot — always the FIRST line of
@@ -121,7 +121,8 @@ pub const SESSION_SNAPSHOT_VERSION: u32 = 1;
 /// favorites-track user fields (`favorited`, `synced_group_id`) so a peer that
 /// pulls the snapshot can reconstruct the full row (the favorites tab is
 /// cross-device: a peer's favorited session must surface with its title and
-/// group, not just its messages). `v` is the §10 upgrade gate.
+/// group, not just its messages). `v` is the upgrade gate — readers refuse a
+/// version higher than they support.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionSnapshotMeta {
     pub v: u32,

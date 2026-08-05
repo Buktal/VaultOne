@@ -10,12 +10,12 @@
 
 import { CalendarRange } from "lucide-react"
 import { useTranslation } from "react-i18next"
-import { effectiveDays, type Preset } from "@/app/store/slices/filterSlice"
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
+import { effectiveDays, type Preset } from "@/lib/date-range"
 import { cn } from "@/lib/utils"
 
 /** 可选预设 —— "custom" 由手填日期隐式触发, 永不作为按钮出现. */

@@ -31,13 +31,9 @@ import {
   useSetSessionSyncedGroupMutation,
 } from "@/app/store/api"
 import { useAppDispatch } from "@/app/store/hooks"
-import {
-  effectiveDays,
-  type Preset,
-  presetDays,
-} from "@/app/store/slices/filterSlice"
 import { setView } from "@/app/store/slices/viewSlice"
 import { useMutateWithToast } from "@/hooks/use-toast-mutation"
+import { effectiveDays, type Preset, presetDays } from "@/lib/date-range"
 import { usePersistedState } from "@/lib/persistence"
 import type { SessionGroup, SessionRow } from "@/types/generated/bindings"
 import {

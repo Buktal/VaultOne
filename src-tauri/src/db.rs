@@ -30,6 +30,9 @@ mod store_transcript;
 #[cfg(test)]
 mod testutil;
 
+pub use store_dirty_days::DaySnapshot;
+pub use store_transcript::SessionCounts;
+
 use std::sync::Mutex;
 
 use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection, OptionalExtension};

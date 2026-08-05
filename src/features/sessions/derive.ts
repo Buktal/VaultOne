@@ -263,8 +263,9 @@ export function withoutFavOverride(
 
 /**
  * May a new group be created on this track? Local groups are always allowed
- * (SQLite, device-private); synced (Favorites-tab) groups need a bound Git repo
- * (ADR 0002) — without one the create would silently fail or hang.
+ * (SQLite, device-private); synced (Favorites-tab) groups live in git
+ * (`data/<deviceId>/groups.json`), so they need a bound Git repo — without one
+ * the create would silently fail or hang.
  */
 export function canCreateSyncedGroup(
   track: GroupTrack,

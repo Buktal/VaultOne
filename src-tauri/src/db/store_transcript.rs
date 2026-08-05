@@ -8,6 +8,16 @@
 use super::store_sessions::{upsert_session_row, SessionUpsertPolicy};
 use super::*;
 
+/// Recompute-time message count for one session — what the push wrote.
+/// `clear_dirty_sessions_if_unchanged` re-checks it before dropping the
+/// session's dirty flag, so a message that raced in after the snapshot keeps
+/// the session dirty (a blind delete would strand it on the local-only side
+/// of git forever).
+pub struct SessionCounts {
+    pub session_id: String,
+    pub message_rows: usize,
+}
+
 impl super::Store {
     // ---------------- Session messages (transcript 原文, db source of truth) ----
 
@@ -123,7 +133,7 @@ impl super::Store {
     /// so the flag can never drop after new messages land between the two.
     pub fn clear_dirty_sessions_if_unchanged(
         &self,
-        recomputed: &[(String, usize)],
+        recomputed: &[SessionCounts],
         device_id: &str,
         removed: &[String],
     ) -> AppResult<()> {
@@ -132,16 +142,16 @@ impl super::Store {
         }
         let mut conn = self.conn.lock().expect("db mutex poisoned");
         let tx = conn.transaction()?;
-        for (sid, expected) in recomputed {
+        for s in recomputed {
             let count: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM session_messages WHERE device_id = ?1 AND session_id = ?2",
-                params![device_id, sid],
+                params![device_id, s.session_id],
                 |r| r.get(0),
             )?;
-            if count == *expected as i64 {
+            if count == s.message_rows as i64 {
                 tx.execute(
                     "DELETE FROM dirty_sessions WHERE session_id = ?1",
-                    params![sid],
+                    params![s.session_id],
                 )?;
             }
         }

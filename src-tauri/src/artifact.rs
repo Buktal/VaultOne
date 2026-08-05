@@ -14,9 +14,9 @@ use std::path::Path;
 use crate::config::Paths;
 use crate::db::Store;
 use crate::error::AppResult;
-use crate::jsonl::{read_jsonl_file_of, rewrite_day_file};
 #[cfg(test)]
-use crate::jsonl::write_jsonl_day;
+use crate::jsonl::write_jsonl_file;
+use crate::jsonl::{read_jsonl_file_of, rewrite_jsonl_file};
 use crate::model::{TurnDuration, UsageRecord};
 
 /// One JSONL Artifact grain: its row type and file-name prefix. The per-day
@@ -63,7 +63,7 @@ pub fn recompute_usage_day(
     day: &str,
 ) -> AppResult<usize> {
     let rows = store.usage_for_day_device(day, device_id)?;
-    rewrite_day_file(&day_path::<UsageGrain>(paths, device_id, day), &rows)?;
+    rewrite_jsonl_file(&day_path::<UsageGrain>(paths, device_id, day), &rows)?;
     Ok(rows.len())
 }
 
@@ -76,7 +76,7 @@ pub fn recompute_turns_day(
     day: &str,
 ) -> AppResult<usize> {
     let rows = store.turns_for_day_device(day, device_id)?;
-    rewrite_day_file(&day_path::<TurnGrain>(paths, device_id, day), &rows)?;
+    rewrite_jsonl_file(&day_path::<TurnGrain>(paths, device_id, day), &rows)?;
     Ok(rows.len())
 }
 
@@ -163,7 +163,7 @@ pub(crate) fn append_jsonl(
         if missing.is_empty() {
             continue;
         }
-        write_jsonl_day(&path, &missing)?;
+        write_jsonl_file(&path, &missing)?;
     }
     Ok(())
 }

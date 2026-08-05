@@ -5,14 +5,14 @@
 //! and the store stays pure SQL. Best-effort wrappers (`*_best_effort`) swallow
 //! errors for background/exit paths; their fallible counterparts propagate.
 
-use crate::config::{ConfigData, Paths};
-use crate::db::Store;
-use crate::error::AppResult;
-use crate::snapshot_policy::{decide_snapshot_action, presence_mismatches, SnapshotAction};
 use super::git::{
     author_email, commit_all, has_changes, is_ahead_of_origin, open_or_clone, pull, push,
     rebase_and_push, require_synced, PullOutcome,
 };
+use crate::config::{ConfigData, Paths};
+use crate::db::{DaySnapshot, SessionCounts, Store};
+use crate::error::AppResult;
+use crate::snapshot_policy::{decide_snapshot_action, presence_mismatches, SnapshotAction};
 
 // ---------------------------------------------------------------------------
 // High-level sync flow: pull → import JSONL → commit → push
@@ -26,11 +26,7 @@ use super::git::{
 /// not the Artifact, so unpushed rows live in SQLite (flagged in `dirty_days`)
 /// and the next push recomputes this device's files from the store. The old
 /// snapshot/restore mechanism existed only to protect collect appends.
-pub fn pull_and_import(
-    store: &Store,
-    paths: &Paths,
-    cfg: &ConfigData,
-) -> AppResult<u32> {
+pub fn pull_and_import(store: &Store, paths: &Paths, cfg: &ConfigData) -> AppResult<u32> {
     let (url, token) = require_synced(cfg)?;
     let repo = open_or_clone(&url, &paths.repo, &token)?;
     // Two-step sync: pull (fetch + fast-forward), then — only on diverge —
@@ -67,11 +63,7 @@ pub fn pull_and_import(
 /// (or had) a favorited session row, sessions whose snapshot file vanished since
 /// the last pull are un-favorited and their shared messages dropped — the
 /// pull-side counterpart to the push-side jsonl deletion.
-fn import_peer_sessions(
-    store: &Store,
-    paths: &Paths,
-    self_device_id: &str,
-) -> AppResult<()> {
+fn import_peer_sessions(store: &Store, paths: &Paths, self_device_id: &str) -> AppResult<()> {
     let snapshots = crate::session_snapshot::read_all_session_snapshots(paths, self_device_id)?;
     // still-favorited ids per peer = the snapshot files that exist this pull.
     let mut per_device: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
@@ -103,7 +95,7 @@ fn import_peer_sessions(
 /// Commit any local Artifact/config change and push it (push). A clean worktree
 /// AND no commits ahead of origin is a no-op (returns `false`). `message` is
 /// the commit body — pass the semantic of the change so the log reads
-/// "vaultone: usage sync" vs "vaultone: library sync". Errors propagate; for
+/// "vaultone: sync" vs "vaultone: library sync". Errors propagate; for
 /// daemon/exit paths that must not bubble, use [`commit_and_push_best_effort`].
 /// Synced-only.
 ///
@@ -162,19 +154,23 @@ pub fn commit_and_push_best_effort(paths: &Paths, cfg: &ConfigData, message: &st
 /// [`commit_and_push`] directly.
 pub fn push_usage(store: &Store, paths: &Paths, cfg: &ConfigData) -> AppResult<bool> {
     let dirty = store.dirty_days()?;
-    // (day, usage row count, turn row count) at recompute time — the clear
-    // boundary: rows that land AFTER these snapshots must keep their day dirty.
-    let mut day_snapshots: Vec<(String, usize, usize)> = Vec::with_capacity(dirty.len());
+    // Recompute-time row counts — the clear boundary: rows that land AFTER
+    // these snapshots must keep their day dirty.
+    let mut day_snapshots: Vec<DaySnapshot> = Vec::with_capacity(dirty.len());
     for day in &dirty {
         let usage = crate::artifact::recompute_usage_day(store, paths, &cfg.device_id, day)?;
         let turns = crate::artifact::recompute_turns_day(store, paths, &cfg.device_id, day)?;
-        day_snapshots.push((day.clone(), usage, turns));
+        day_snapshots.push(DaySnapshot {
+            day: day.clone(),
+            usage_rows: usage,
+            turn_rows: turns,
+        });
     }
 
     // Sessions: recompute a derived jsonl per favorited dirty session; delete
     // any leftover jsonl for non-favorited dirty sessions (un-favorite local).
     let dirty_sessions = store.dirty_sessions()?;
-    let mut recomputed: Vec<(String, usize)> = Vec::with_capacity(dirty_sessions.len());
+    let mut recomputed: Vec<SessionCounts> = Vec::with_capacity(dirty_sessions.len());
     let mut removed: Vec<String> = Vec::new();
     for sid in &dirty_sessions {
         let favorited = store
@@ -189,7 +185,10 @@ pub fn push_usage(store: &Store, paths: &Paths, cfg: &ConfigData) -> AppResult<b
                     &cfg.device_id,
                     sid,
                 )?;
-                recomputed.push((sid.clone(), count));
+                recomputed.push(SessionCounts {
+                    session_id: sid.clone(),
+                    message_rows: count,
+                });
             }
             // not favorited ⇒ the snapshot must not exist. Idempotent: a
             // never-favorited session has no file to remove.

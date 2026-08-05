@@ -51,36 +51,22 @@ pub(super) fn build_callbacks(token: &str) -> RemoteCallbacks {
     cb
 }
 
-/// Declare a `FetchOptions` (named `$fo`) wired with the PAT callback AND the
-/// system proxy discovered at this instant. A macro, not a function: libgit2's
-/// `ProxyOptions` borrows the proxy URL by reference, so the URL must outlive
-/// the options — expanding inline keeps the borrowed URL and the options in the
-/// caller's scope, where the subsequent `fetch` / `clone` consumes them before
-/// either can drop.
-macro_rules! fetch_options_with_proxy {
-    ($fo:ident, $token:expr) => {
-        let mut $fo = FetchOptions::new();
-        $fo.remote_callbacks(build_callbacks($token));
+/// Declare libgit2 transport options (`FetchOptions` or `PushOptions`, named
+/// `$opt`) wired with the PAT callback AND the system proxy discovered at this
+/// instant. A macro, not a function: libgit2's `ProxyOptions` borrows the
+/// proxy URL by reference, so the URL must outlive the options — expanding
+/// inline keeps the borrowed URL and the options in the caller's scope, where
+/// the subsequent `fetch` / `clone` / `push` consumes them before either can
+/// drop.
+macro_rules! options_with_proxy {
+    ($opt:ident, $type:ty, $token:expr) => {
+        let mut $opt = <$type>::new();
+        $opt.remote_callbacks(build_callbacks($token));
         let __proxy_url = crate::proxy::discover_system_proxy();
         if let Some(ref __pu) = __proxy_url {
             let mut __p = ProxyOptions::new();
             __p.url(__pu);
-            $fo.proxy_options(__p);
-        }
-    };
-}
-
-/// Declare a `PushOptions` (named `$po`) wired with the PAT callback AND the
-/// live system proxy. Same lifetime rationale as `fetch_options_with_proxy!`.
-macro_rules! push_options_with_proxy {
-    ($po:ident, $token:expr) => {
-        let mut $po = PushOptions::new();
-        $po.remote_callbacks(build_callbacks($token));
-        let __proxy_url = crate::proxy::discover_system_proxy();
-        if let Some(ref __pu) = __proxy_url {
-            let mut __p = ProxyOptions::new();
-            __p.url(__pu);
-            $po.proxy_options(__p);
+            $opt.proxy_options(__p);
         }
     };
 }
@@ -116,7 +102,7 @@ fn open_or_clone_impl(repo_url: &str, local: &Path, token: &str) -> AppResult<Re
     if dir_has_entries {
         return init_with_remote(repo_url, local, token);
     }
-    fetch_options_with_proxy!(fo, token);
+    options_with_proxy!(fo, FetchOptions, token);
     let mut builder = RepoBuilder::new();
     builder.fetch_options(fo);
     let repo = builder.clone(repo_url, local)?;
@@ -162,7 +148,7 @@ fn init_with_remote(repo_url: &str, local: &Path, token: &str) -> AppResult<Repo
     repo.config()?.set_str("core.autocrlf", "false")?;
     {
         let mut remote = repo.remote("origin", repo_url)?;
-        fetch_options_with_proxy!(fo, token);
+        options_with_proxy!(fo, FetchOptions, token);
         remote.fetch(
             &["+refs/heads/*:refs/remotes/origin/*"],
             Some(&mut fo),
@@ -257,7 +243,7 @@ pub fn pull<'a>(repo: &'a Repository, token: &str) -> AppResult<PullOutcome<'a>>
         }
         Err(e) => return Err(e.into()),
     };
-    fetch_options_with_proxy!(fo, token);
+    options_with_proxy!(fo, FetchOptions, token);
     repo.find_remote("origin")?.fetch(
         &["+refs/heads/*:refs/remotes/origin/*"],
         Some(&mut fo),
@@ -404,7 +390,7 @@ pub fn push(repo: &Repository, token: &str) -> AppResult<()> {
         .name()
         .ok_or_else(|| AppError::Sync("HEAD has no symbolic name; cannot push".into()))?;
     let refspec = format!("{refname}:{refname}");
-    push_options_with_proxy!(po, token);
+    options_with_proxy!(po, PushOptions, token);
     repo.find_remote("origin")?
         .push(&[&refspec], Some(&mut po))?;
     Ok(())

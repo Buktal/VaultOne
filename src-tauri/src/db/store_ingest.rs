@@ -107,8 +107,8 @@ impl super::Store {
 
     /// Insert per-turn durations, deduping by uuid (INSERT OR IGNORE). Separate
     /// grain from per-call usage_records. Returns the newly inserted subset
-    /// (mirrors `ingest`) so only new rows are appended to the JSONL Artifact.
-    /// Pull path — does not flag days dirty; see [`Self::ingest_turn_durations_marking_dirty`].
+    /// (mirrors `ingest`). Pull path — does not flag days dirty; see
+    /// [`Self::ingest_turn_durations_marking_dirty`].
     pub fn ingest_turn_durations(&self, tds: &[TurnDuration]) -> AppResult<Vec<TurnDuration>> {
         self.ingest_turn_durations_impl(tds, false)
     }

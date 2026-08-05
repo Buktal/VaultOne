@@ -2,13 +2,16 @@
 //! exists exactly when the session is favorited, and the action that enforces
 //! it. Pure — no IO, no knowledge of sync (git transport) or db (SQLite).
 //!
-//! Two enforcement sites consult this one definition of "in sync" so they
+//! Three enforcement sites consult this one definition of "in sync" so they
 //! cannot drift apart:
 //! - **push** (this device): for each dirty session, `decide_snapshot_action`
 //!   says whether to write or remove *this device's* snapshot file.
 //! - **pull** (a peer): `presence_mismatches` says which of a peer's favorited
 //!   sessions have no snapshot file this pull — i.e. the peer un-favorited
 //!   them — so the local rows can be cleared.
+//! - **collect** (this device): the ghost-session reconcile routes its unlink
+//!   through `decide_snapshot_action` too, so a vanished source file and an
+//!   un-favorite can never drift apart on the write side.
 
 use std::collections::BTreeSet;
 

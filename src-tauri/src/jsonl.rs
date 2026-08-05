@@ -18,7 +18,7 @@ use crate::error::AppResult;
 /// in a deterministic order and serde emits fields in declaration order, so the
 /// same rows always serialize to the same bytes. An empty row set means the file
 /// should not exist, so it is removed rather than left empty.
-pub(crate) fn rewrite_day_file<T: serde::Serialize>(path: &Path, rows: &[T]) -> AppResult<()> {
+pub(crate) fn rewrite_jsonl_file<T: serde::Serialize>(path: &Path, rows: &[T]) -> AppResult<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -57,10 +57,13 @@ pub(crate) fn read_jsonl_file_of<T: serde::de::DeserializeOwned>(path: &Path) ->
 
 /// Open once in append mode, serialize + writeln each row. Test-fixture only:
 /// production writes derived snapshots via the full-rewrite path
-/// ([`rewrite_day_file`]); this append helper survives for tests that stand a
+/// ([`rewrite_jsonl_file`]); this append helper survives for tests that stand a
 /// file up directly.
 #[cfg(test)]
-pub(crate) fn write_jsonl_day<T: serde::Serialize>(path: &Path, rows: &[&T]) -> std::io::Result<()> {
+pub(crate) fn write_jsonl_file<T: serde::Serialize>(
+    path: &Path,
+    rows: &[&T],
+) -> std::io::Result<()> {
     use std::fs::OpenOptions;
     use std::io::Write;
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;

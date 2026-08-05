@@ -17,7 +17,7 @@ import {
   useDistinctSourcesQuery,
 } from "@/app/store/api"
 import { useAppDispatch, useAppSelector } from "@/app/store/hooks"
-import { patchFilter, presetDays } from "@/app/store/slices/filterSlice"
+import { patchFilter } from "@/app/store/slices/filterSlice"
 import {
   type DateRangePreset,
   DateRangeChip as SharedDateRangeChip,
@@ -37,6 +37,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { presetDays } from "@/lib/date-range"
 import { usePersistedState } from "@/lib/persistence"
 import { cn } from "@/lib/utils"
 import { sourceLabel } from "../source-labels"
