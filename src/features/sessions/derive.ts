@@ -199,3 +199,77 @@ export function selectSessions(
     grouped.groups.find((g) => g.group.id === selectedGroupId)?.sessions ?? []
   )
 }
+
+// --------------------------------------------------------------- favorites --
+
+/**
+ * Composite identity key for a session — `device_id/id`. A session is uniquely
+ * (device_id, id): the same id can exist on two devices. Shared by the favorite
+ * override map and the preview lookup so both resolve the same row.
+ */
+export function favKey(s: { device_id: string; id: string }): string {
+  return `${s.device_id}/${s.id}`
+}
+
+/**
+ * A session's effective favorite: a pending optimistic override wins over the
+ * query value, falling back to the row's `favorited` when no override exists.
+ * The override map is keyed by `favKey`.
+ */
+export function effectiveFavorite(
+  s: SessionRow,
+  overrides: Record<string, boolean>,
+): boolean {
+  const k = favKey(s)
+  return k in overrides ? overrides[k] : s.favorited
+}
+
+/**
+ * The value to optimistically stamp (and send to the mutation) for a favorite
+ * toggle: the negation of the effective state.
+ */
+export function nextFavValue(
+  s: SessionRow,
+  overrides: Record<string, boolean>,
+): boolean {
+  return !effectiveFavorite(s, overrides)
+}
+
+/**
+ * Stamp an optimistic favorite override. Returns a NEW map — never mutates the
+ * input (React state updates must be pure).
+ */
+export function withFavOverride(
+  overrides: Record<string, boolean>,
+  s: { device_id: string; id: string },
+  value: boolean,
+): Record<string, boolean> {
+  return { ...overrides, [favKey(s)]: value }
+}
+
+/**
+ * Drop a favorite override (rollback after a failed toggle). Returns a NEW map
+ * without the key — the effective value then falls back to the row's
+ * `favorited`.
+ */
+export function withoutFavOverride(
+  overrides: Record<string, boolean>,
+  s: { device_id: string; id: string },
+): Record<string, boolean> {
+  const next = { ...overrides }
+  delete next[favKey(s)]
+  return next
+}
+
+/**
+ * May a new group be created on this track? Local groups are always allowed
+ * (SQLite, device-private); synced (Favorites-tab) groups live in git
+ * (`data/<deviceId>/groups.json`), so they need a bound Git repo — without one
+ * the create would silently fail or hang.
+ */
+export function canCreateSyncedGroup(
+  track: GroupTrack,
+  synced: boolean,
+): boolean {
+  return track !== "synced" || synced
+}

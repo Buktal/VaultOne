@@ -66,7 +66,7 @@ impl PricingBook {
     pub fn from_iter<I: IntoIterator<Item = ModelPricing>>(iter: I) -> Self {
         let mut by_key = HashMap::new();
         for p in iter {
-            by_key.insert(crate::model::normalize_pricing_key(&p.model_key), p);
+            by_key.insert(crate::model::normalize_model_key(&p.model_key), p);
         }
         Self { by_key }
     }
@@ -151,7 +151,7 @@ fn dec(s: &str) -> Decimal {
 /// Ordered candidates to try: full normalized key, then progressively shorter
 /// `-`-delimited prefixes (prefix fallback).
 fn normalization_candidates(model: &str) -> Vec<String> {
-    let norm = crate::model::normalize_pricing_key(model);
+    let norm = crate::model::normalize_model_key(model);
     let mut out = vec![norm.clone()];
     let parts: Vec<&str> = norm.split('-').collect();
     // build prefixes by dropping trailing segments (keep ≥1 segment)

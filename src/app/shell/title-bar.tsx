@@ -21,11 +21,14 @@ import { cn } from "@/lib/utils"
 
 export function TitleBar() {
   const { t } = useTranslation()
-  const appWindow = getCurrentWindow()
   const dispatch = useAppDispatch()
   const [maximized, setMaximized] = useState(false)
 
+  // getCurrentWindow() is fetched lazily inside the effect / onClick handlers
+  // (not in the render body), so importing / rendering this component does not
+  // blow up a non-Tauri (vitest) environment — same pattern as use-tuck-drag.
   useEffect(() => {
+    const appWindow = getCurrentWindow()
     void appWindow.isMaximized().then(setMaximized)
     const unlisten = appWindow.onResized(() => {
       void appWindow.isMaximized().then(setMaximized)
@@ -33,7 +36,7 @@ export function TitleBar() {
     return () => {
       unlisten.then((u) => u())
     }
-  }, [appWindow])
+  }, [])
 
   return (
     <div
@@ -64,13 +67,13 @@ export function TitleBar() {
         <AlignHorizontalJustifyEnd className="size-3.5" />
       </CtrlButton>
       <CtrlButton
-        onClick={() => appWindow.minimize()}
+        onClick={() => getCurrentWindow().minimize()}
         label={t("titlebar.minimize")}
       >
         <Minus className="size-3.5" />
       </CtrlButton>
       <CtrlButton
-        onClick={() => appWindow.toggleMaximize()}
+        onClick={() => getCurrentWindow().toggleMaximize()}
         label={t("titlebar.maximize")}
       >
         {maximized ? (
@@ -80,7 +83,7 @@ export function TitleBar() {
         )}
       </CtrlButton>
       <CtrlButton
-        onClick={() => appWindow.close()}
+        onClick={() => getCurrentWindow().close()}
         label={t("titlebar.close")}
         className="hover:bg-destructive hover:text-white"
       >

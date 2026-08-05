@@ -1,4 +1,5 @@
-//! Session management — synced groups I/O + the Tauri command surface.
+//! Session management — the domain logic behind the sessions Tauri commands
+//! (the command layer itself lives in `commands`).
 //!
 //! Two group tracks:
 //! - **Local** (`local_groups` SQLite table): device-private, CRUD immediate,
@@ -9,20 +10,15 @@
 //!   (`<deviceId>-<8hex>`) so they are globally unique without coordination.
 //!
 //! Session CRUD (favorited / custom_title / group membership / list / transcript
-//! read) is here too, layered over `db::Store` (sessions table) + `ingest`
-//! (transcript I/O). Write commands emit `"sessions_changed"` so the frontend
-//! refreshes its session queries.
+//! read) is layered over `db::Store` (sessions table) + `ingest` (transcript
+//! I/O). The `commands` module's write commands call the `*_owned` operations
+//! here and emit `"sessions_changed"` so the frontend refreshes its queries.
 
 use std::path::PathBuf;
 
-use tauri::{Emitter, State};
-
-use crate::commands::AppState;
 use crate::config::{ConfigData, Paths};
 use crate::error::{AppError, AppResult};
-use crate::model::{
-    LocalGroup, SessionFilter, SessionGroup, SessionMessage, SessionRow, SyncedGroup,
-};
+use crate::model::{SessionGroup, SyncedGroup};
 
 /// Per-device synced-groups file: `repo/data/<deviceId>/groups.json`.
 fn groups_json_path(paths: &Paths, device_id: &str) -> PathBuf {
@@ -53,24 +49,10 @@ fn read_device_synced_groups(paths: &Paths, device_id: &str) -> Vec<SyncedGroup>
 /// up as a groups source. This is the read-side of the per-device-write pattern
 /// (mirrors `devices::read_all_device_artifacts`).
 pub fn read_all_synced_groups(paths: &Paths) -> Vec<SyncedGroup> {
-    let root = &paths.repo_data;
     let mut by_id: std::collections::HashMap<String, SyncedGroup> =
         std::collections::HashMap::new();
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return Vec::new();
-    };
-    for entry in entries.flatten() {
-        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            continue;
-        }
-        let name_owned = entry.file_name();
-        let Some(name) = name_owned.to_str() else {
-            continue;
-        };
-        if !crate::config::is_valid_device_id(name) {
-            continue;
-        }
-        for g in read_device_synced_groups(paths, name) {
+    for name in crate::devices::iter_data_device_ids(paths).unwrap_or_default() {
+        for g in read_device_synced_groups(paths, &name) {
             let existing = by_id.get(&g.id);
             let take = existing
                 .map(|e| e.updated_at < g.updated_at)
@@ -190,7 +172,10 @@ pub fn delete_synced_group_owned(paths: &Paths, cfg: &ConfigData, id: &str) -> A
 }
 
 /// Build the unified `SessionGroup` DTO list (local + synced tracks).
-fn list_groups_dto(store: &crate::db::Store, paths: &Paths) -> AppResult<Vec<SessionGroup>> {
+pub(crate) fn list_groups_dto(
+    store: &crate::db::Store,
+    paths: &Paths,
+) -> AppResult<Vec<SessionGroup>> {
     let mut out = Vec::new();
     for lg in store.list_local_groups()? {
         out.push(SessionGroup {
@@ -211,232 +196,9 @@ fn list_groups_dto(store: &crate::db::Store, paths: &Paths) -> AppResult<Vec<Ses
     Ok(out)
 }
 
-/// Emit `sessions_changed` so the frontend's session queries invalidate.
-fn emit_sessions_changed(app_handle: &tauri::AppHandle) {
-    let _ = app_handle.emit("sessions_changed", ());
-}
-
-// ---------------------------------------------------------------------------
-// Tauri commands
-// ---------------------------------------------------------------------------
-
-#[tauri::command]
-#[specta::specta]
-pub fn query_sessions_cmd(
-    state: State<'_, AppState>,
-    filter: Option<SessionFilter>,
-) -> AppResult<Vec<SessionRow>> {
-    state.store.query_sessions(filter.as_ref())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn get_session_transcript_cmd(
-    state: State<'_, AppState>,
-    id: String,
-    device_id: String,
-) -> AppResult<Vec<SessionMessage>> {
-    // The transcript lives in the db (`session_messages`) for every session —
-    // favorited or not — so this read no longer depends on the favorites-only
-    // jsonl snapshot. `device_id` is the own device; its rows win on uuid
-    // conflict (it is the source of truth for a session it collected), then
-    // peers' pulled-in rows fill the gaps.
-    state.store.query_session_transcript(&id, &device_id)
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn set_session_favorited_cmd(
-    state: State<'_, AppState>,
-    app_handle: tauri::AppHandle,
-    id: String,
-    device_id: String,
-    favorited: bool,
-) -> AppResult<()> {
-    state
-        .store
-        .set_session_favorited(&device_id, &id, favorited)?;
-    emit_sessions_changed(&app_handle);
-    Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn set_session_custom_title_cmd(
-    state: State<'_, AppState>,
-    app_handle: tauri::AppHandle,
-    id: String,
-    device_id: String,
-    title: Option<String>,
-) -> AppResult<()> {
-    state
-        .store
-        .set_session_custom_title(&device_id, &id, title.as_deref())?;
-    emit_sessions_changed(&app_handle);
-    Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn set_session_local_group_cmd(
-    state: State<'_, AppState>,
-    app_handle: tauri::AppHandle,
-    id: String,
-    device_id: String,
-    group_id: Option<String>,
-) -> AppResult<()> {
-    state
-        .store
-        .set_session_local_group(&device_id, &id, group_id.as_deref())?;
-    emit_sessions_changed(&app_handle);
-    Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn set_session_synced_group_cmd(
-    state: State<'_, AppState>,
-    app_handle: tauri::AppHandle,
-    id: String,
-    device_id: String,
-    group_id: Option<String>,
-) -> AppResult<()> {
-    state
-        .store
-        .set_session_synced_group(&device_id, &id, group_id.as_deref())?;
-    emit_sessions_changed(&app_handle);
-    Ok(())
-}
-
-// ---- local groups ----
-
-#[tauri::command]
-#[specta::specta]
-pub fn list_local_groups_cmd(state: State<'_, AppState>) -> AppResult<Vec<LocalGroup>> {
-    state.store.list_local_groups()
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn create_local_group_cmd(
-    state: State<'_, AppState>,
-    app_handle: tauri::AppHandle,
-    name: String,
-) -> AppResult<LocalGroup> {
-    let id = generate_local_group_id();
-    let created_at = crate::time::now_iso();
-    state
-        .store
-        .create_local_group(&id, name.trim(), &created_at)?;
-    emit_sessions_changed(&app_handle);
-    Ok(LocalGroup {
-        id,
-        name: name.trim().to_string(),
-        created_at,
-    })
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn rename_local_group_cmd(
-    state: State<'_, AppState>,
-    app_handle: tauri::AppHandle,
-    id: String,
-    name: String,
-) -> AppResult<()> {
-    state.store.rename_local_group(&id, name.trim())?;
-    emit_sessions_changed(&app_handle);
-    Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn delete_local_group_cmd(
-    state: State<'_, AppState>,
-    app_handle: tauri::AppHandle,
-    id: String,
-) -> AppResult<()> {
-    state.store.delete_local_group(&id)?;
-    emit_sessions_changed(&app_handle);
-    Ok(())
-}
-
-// ---- synced groups ----
-
-#[tauri::command]
-#[specta::specta]
-pub fn list_synced_groups_cmd(state: State<'_, AppState>) -> AppResult<Vec<SyncedGroup>> {
-    Ok(read_all_synced_groups(&state.config.paths()))
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn create_synced_group_cmd(
-    state: State<'_, AppState>,
-    app_handle: tauri::AppHandle,
-    name: String,
-) -> AppResult<SyncedGroup> {
-    let config = state.config.clone();
-    let group = tauri::async_runtime::spawn_blocking(move || -> AppResult<SyncedGroup> {
-        let cfg = config.get();
-        let paths = config.paths();
-        create_synced_group_owned(&paths, &cfg, &name)
-    })
-    .await
-    .map_err(|e| AppError::Internal(format!("create_synced_group task failed: {e}")))??;
-    emit_sessions_changed(&app_handle);
-    Ok(group)
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn rename_synced_group_cmd(
-    state: State<'_, AppState>,
-    app_handle: tauri::AppHandle,
-    id: String,
-    name: String,
-) -> AppResult<()> {
-    let config = state.config.clone();
-    tauri::async_runtime::spawn_blocking(move || -> AppResult<()> {
-        let cfg = config.get();
-        let paths = config.paths();
-        rename_synced_group_owned(&paths, &cfg, &id, &name)
-    })
-    .await
-    .map_err(|e| AppError::Internal(format!("rename_synced_group task failed: {e}")))??;
-    emit_sessions_changed(&app_handle);
-    Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn delete_synced_group_cmd(
-    state: State<'_, AppState>,
-    app_handle: tauri::AppHandle,
-    id: String,
-) -> AppResult<()> {
-    let config = state.config.clone();
-    tauri::async_runtime::spawn_blocking(move || -> AppResult<()> {
-        let cfg = config.get();
-        let paths = config.paths();
-        delete_synced_group_owned(&paths, &cfg, &id)
-    })
-    .await
-    .map_err(|e| AppError::Internal(format!("delete_synced_group task failed: {e}")))??;
-    emit_sessions_changed(&app_handle);
-    Ok(())
-}
-
-/// Unified groups list (local + synced) for one-shot UI fetch.
-#[tauri::command]
-#[specta::specta]
-pub fn list_groups_cmd(state: State<'_, AppState>) -> AppResult<Vec<SessionGroup>> {
-    list_groups_dto(&state.store, &state.config.paths())
-}
-
 /// Local group id: 8 hex chars. Device-private, so no prefix is needed (unlike
 /// synced groups, which carry a device prefix for cross-device uniqueness).
-fn generate_local_group_id() -> String {
+pub(crate) fn generate_local_group_id() -> String {
     use rand::Rng;
     let bytes: [u8; 4] = rand::thread_rng().gen();
     bytes.iter().map(|b| format!("{b:02x}")).collect()

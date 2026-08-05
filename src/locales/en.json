@@ -274,7 +274,6 @@
   "usage.collect.collecting": "Collecting…",
   "usage.collect.collectLocal": "Collect local logs",
   "usage.collect.done": "Collect done: {{rows}} new (scanned {{files}} files)",
-  "usage.collect.doneShort": "Collect done: {{count}} new",
   "usage.collect.failed": "Collect failed",
   "usage.control.all": "All",
   "usage.control.allSource": "All sources",

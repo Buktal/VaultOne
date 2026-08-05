@@ -55,6 +55,17 @@ impl Paths {
         self.repo_data.join(device_id)
     }
 
+    /// One session's derived snapshot: `repo/data/<deviceId>/sessions/<sessionId>.jsonl`.
+    /// One file per session (a conversation spans days, so per-day files would
+    /// shatter it). Shared across both altitudes — the push writer, the pull
+    /// reader, and collect's ghost-session reconcile all reach for it — so it
+    /// lives with the rest of the layout here, not inside any one caller.
+    pub fn session_snapshot_path(&self, device_id: &str, session_id: &str) -> PathBuf {
+        self.device_data_dir(device_id)
+            .join("sessions")
+            .join(format!("{session_id}.jsonl"))
+    }
+
     /// Local pricing config: `<root>/pricing.json`. Sits next to `config.json`,
     /// never enters the repo — pricing is a per-device local concern (each device
     /// freezes cost with its own prices at collect time). `save_pricing_to_file`

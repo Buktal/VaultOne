@@ -33,7 +33,7 @@ pub fn collect_into(store: &Store, config: &ConfigStore) -> AppResult<IngestRepo
     let cfg = config.get();
     let paths = config.paths();
     let progress = store.load_scan_progress()?;
-    store.upsert_device(&cfg.device_id, &cfg.display_name, true)?;
+    crate::devices::touch_self(store, &cfg)?;
     let book = store.load_pricing_book()?;
 
     let mut merged = IngestReport::default();

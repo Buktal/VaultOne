@@ -16,7 +16,6 @@ import { openUrl } from "@tauri-apps/plugin-opener"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { check, type Update } from "@tauri-apps/plugin-updater"
 import { useCallback, useEffect, useRef } from "react"
-import { useTranslation } from "react-i18next"
 
 import { useAppDispatch } from "@/app/store/hooks"
 import {
@@ -28,7 +27,7 @@ import {
   setReady,
   setUpToDate,
 } from "@/app/store/slices/updateSlice"
-import { describeError } from "@/lib/error"
+import { toStructuredError } from "@/lib/error"
 import { usePersistedState } from "@/lib/persistence"
 
 const LAST_CHECK_KEY = "vaultone:update-last-check"
@@ -49,7 +48,6 @@ let startupProbed = false
 
 export function useUpdateCheck() {
   const dispatch = useAppDispatch()
-  const { t } = useTranslation()
   // Guard against a probe already in flight (startup fire + manual click).
   const inFlight = useRef(false)
   // 24h-throttle stamp for the silent startup probe. Plain number →
@@ -105,10 +103,16 @@ export function useUpdateCheck() {
       dispatch(setReady())
       await update.close()
     } catch (e) {
-      // Manual Fallback: surface the "go to GitHub" card.
-      dispatch(setFailed({ error: describeError(e, t) || String(e) }))
+      // Manual Fallback: surface the "go to GitHub" card. The structured form
+      // keeps the error re-translatable at the render boundary on a language
+      // switch; a raw string would freeze the old-language reason.
+      dispatch(
+        setFailed({
+          error: toStructuredError(e) ?? { kind: "raw", message: String(e) },
+        }),
+      )
     }
-  }, [dispatch, t])
+  }, [dispatch])
 
   const restartNow = useCallback(async () => {
     await relaunch()

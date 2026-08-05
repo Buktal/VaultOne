@@ -7,6 +7,7 @@ import {
   formatDuration,
   formatInt,
   formatPct,
+  formatSize,
   formatTokens,
 } from "@/lib/format"
 
@@ -81,6 +82,27 @@ describe("formatDuration", () => {
   it(">= 1 minute → mSS format, zero-padded seconds", () => {
     expect(formatDuration(65_000)).toBe("1m05s")
     expect(formatDuration(3_602_000)).toBe("60m02s")
+  })
+})
+
+describe("formatSize", () => {
+  it("em-dash for nullish / non-positive / non-finite", () => {
+    expect(formatSize(null)).toBe("—")
+    expect(formatSize(undefined)).toBe("—")
+    expect(formatSize(0)).toBe("—")
+    expect(formatSize(-5)).toBe("—")
+    expect(formatSize(Number.NaN)).toBe("—")
+  })
+
+  it("bytes under 1 KiB → plain B", () => {
+    expect(formatSize(512)).toBe("512 B")
+    expect(formatSize(1023)).toBe("1023 B")
+  })
+
+  it("scales to KB / MB / GB at the right thresholds", () => {
+    expect(formatSize(2048)).toBe("2.0 KB")
+    expect(formatSize(1024 * 1024 * 1.5)).toBe("1.5 MB")
+    expect(formatSize(1024 ** 3 * 2)).toBe("2.00 GB")
   })
 })
 

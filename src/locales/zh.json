@@ -272,7 +272,6 @@
   "usage.collect.collecting": "采集中…",
   "usage.collect.collectLocal": "采集本地日志",
   "usage.collect.done": "采集完成：新增 {{rows}} 条（扫描 {{files}} 文件）",
-  "usage.collect.doneShort": "采集完成：新增 {{count}} 条",
   "usage.collect.failed": "采集失败",
   "usage.collect.sync": "同步",
   "usage.collect.syncing": "同步中…",

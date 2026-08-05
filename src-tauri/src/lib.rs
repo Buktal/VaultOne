@@ -1,7 +1,7 @@
 //! VaultOne Tauri backend library.
 //!
-//! Module tree: config / db / providers / ingest / collect / pricing / sync /
-//! proxy / commands / window_geom, behind a tauri-specta typed
+//! Module tree: config / db / providers / ingest / artifact / session_snapshot
+//! / jsonl / collect / pricing / sync / proxy / commands / window_geom, behind a tauri-specta typed
 //! contract. First start bootstraps the local data dir + deviceId and defaults
 //! to Standalone
 //!.
@@ -16,6 +16,7 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{Emitter, Manager};
 use tauri_specta::Builder;
 
+mod artifact;
 mod collect;
 mod commands;
 mod config;
@@ -23,11 +24,13 @@ mod db;
 mod devices;
 mod error;
 mod ingest;
+mod jsonl;
 mod library;
 mod model;
 mod pricing;
 mod providers;
 mod proxy;
+mod session_snapshot;
 mod sessions;
 mod snapshot_policy;
 mod sync;
@@ -73,28 +76,28 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::set_skin,
         commands::verify_sync_repo,
         commands::confirm_close,
-        library::scan_library,
-        library::upload_to_library,
-        library::export_from_library,
-        library::delete_from_library,
-        library::rename_in_library,
-        library::read_library_text,
-        library::library_device_summary,
-        sessions::query_sessions_cmd,
-        sessions::get_session_transcript_cmd,
-        sessions::set_session_favorited_cmd,
-        sessions::set_session_custom_title_cmd,
-        sessions::set_session_local_group_cmd,
-        sessions::set_session_synced_group_cmd,
-        sessions::list_local_groups_cmd,
-        sessions::create_local_group_cmd,
-        sessions::rename_local_group_cmd,
-        sessions::delete_local_group_cmd,
-        sessions::list_synced_groups_cmd,
-        sessions::create_synced_group_cmd,
-        sessions::rename_synced_group_cmd,
-        sessions::delete_synced_group_cmd,
-        sessions::list_groups_cmd,
+        commands::scan_library,
+        commands::upload_to_library,
+        commands::export_from_library,
+        commands::delete_from_library,
+        commands::rename_in_library,
+        commands::read_library_text,
+        commands::library_device_summary,
+        commands::query_sessions_cmd,
+        commands::get_session_transcript_cmd,
+        commands::set_session_favorited_cmd,
+        commands::set_session_custom_title_cmd,
+        commands::set_session_local_group_cmd,
+        commands::set_session_synced_group_cmd,
+        commands::list_local_groups_cmd,
+        commands::create_local_group_cmd,
+        commands::rename_local_group_cmd,
+        commands::delete_local_group_cmd,
+        commands::list_synced_groups_cmd,
+        commands::create_synced_group_cmd,
+        commands::rename_synced_group_cmd,
+        commands::delete_synced_group_cmd,
+        commands::list_groups_cmd,
         window_geom::dock_window_right,
         window_geom::center_window,
         window_geom::set_window_rect,

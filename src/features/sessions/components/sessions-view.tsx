@@ -10,20 +10,18 @@
 
 import dayjs from "dayjs"
 import relativeTime from "dayjs/plugin/relativeTime"
-import { CalendarRange, MessagesSquare, Search, Star } from "lucide-react"
+import { MessagesSquare, Search, Star } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import { useDistinctModelsQuery } from "@/app/store/api"
-import { effectiveDays, type Preset } from "@/app/store/slices/filterSlice"
+import {
+  DateRangeChip,
+  type DateRangePreset,
+} from "@/components/date-range-chip"
 import { QueryState } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover"
 import {
   Select,
   SelectContent,
@@ -85,6 +83,11 @@ export function SessionsView() {
           onPreset={b.setRangePreset}
           onFromDay={b.setFromDay}
           onToDay={b.setToDay}
+          presets={RANGE_PRESETS}
+          allTimeKey="sessions.filter.allTime"
+          dateRangeKey="sessions.filter.dateRange"
+          startKey="sessions.filter.start"
+          endKey="sessions.filter.end"
         />
         <SourceSelect value={b.source} onChange={b.setSource} />
         <ModelSelect value={b.model} onChange={b.setModel} />
@@ -451,115 +454,12 @@ function ModelSelect({
   )
 }
 
-/** Selectable presets in the popover — "custom" is implied by manual date entry. */
-type SelectablePreset = Exclude<Preset, "custom">
-
-const RANGE_PRESETS: Array<{ value: SelectablePreset; key: string }> = [
+const RANGE_PRESETS: DateRangePreset[] = [
   { value: "today", key: "sessions.filter.today" },
   { value: "7d", key: "sessions.filter.last7d" },
   { value: "30d", key: "sessions.filter.last30d" },
   { value: "all", key: "sessions.filter.all" },
 ]
-
-/** Time-range chip — a popover with preset buttons + custom date inputs.
- *  Mirrors the request-log ControlBar's DateRangeChip but reads/writes the
- *  sessions hook's local filter state (not Redux filterSlice). */
-function DateRangeChip({
-  preset,
-  fromDay,
-  toDay,
-  onPreset,
-  onFromDay,
-  onToDay,
-}: {
-  preset: Preset
-  fromDay: string
-  toDay: string
-  onPreset: (p: Preset) => void
-  onFromDay: (d: string) => void
-  onToDay: (d: string) => void
-}) {
-  const { t } = useTranslation()
-  // The date inputs show the EFFECTIVE days — a dynamic preset (e.g. "today"
-  // picked yesterday) renders the current day, not the frozen stored date.
-  const { from_day: effFrom, to_day: effTo } = effectiveDays({
-    range_preset: preset,
-    from_day: fromDay,
-    to_day: toDay,
-  })
-  const label =
-    preset === "all"
-      ? t("sessions.filter.allTime")
-      : preset !== "custom"
-        ? t(
-            RANGE_PRESETS.find((p) => p.value === preset)?.key ??
-              "sessions.filter.dateRange",
-          )
-        : fromDay || toDay
-          ? fromDay === toDay
-            ? fromDay || "…"
-            : `${fromDay || "…"} → ${toDay || "…"}`
-          : t("sessions.filter.allTime")
-
-  return (
-    <Popover>
-      <PopoverTrigger
-        render={
-          <button
-            type="button"
-            className="border-border bg-card hover:bg-muted/60 flex h-8 max-w-full min-w-0 items-center gap-1.5 rounded-md border px-3 text-sm whitespace-nowrap"
-          >
-            <CalendarRange className="text-muted-foreground size-3.5 shrink-0" />
-            <span className="min-w-0 truncate">{label}</span>
-          </button>
-        }
-      />
-      <PopoverContent align="start" className="w-72">
-        <div className="bg-muted/60 inline-flex items-center gap-0.5 rounded-md p-0.5">
-          {RANGE_PRESETS.map((p) => (
-            <button
-              key={p.value}
-              type="button"
-              onClick={() => onPreset(p.value)}
-              className={cn(
-                "focus-visible:ring-ring/40 rounded-[5px] px-2.5 py-1 text-xs font-medium transition-colors outline-none focus-visible:ring-2",
-                preset === p.value
-                  ? "bg-accent-tint text-accent-brand-strong"
-                  : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
-              )}
-            >
-              {t(p.key)}
-            </button>
-          ))}
-        </div>
-        <div className="mt-3 flex flex-col gap-2">
-          <label className="flex flex-col gap-1 text-xs">
-            <span className="text-muted-foreground">
-              {t("sessions.filter.start")}
-            </span>
-            <input
-              type="date"
-              value={effFrom}
-              onChange={(e) => onFromDay(e.target.value)}
-              className="border-input bg-background h-8 rounded-md border px-2 text-xs"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-xs">
-            <span className="text-muted-foreground">
-              {t("sessions.filter.end")}
-            </span>
-            <input
-              type="date"
-              value={effTo}
-              onChange={(e) => onToDay(e.target.value)}
-              className="border-input bg-background h-8 rounded-md border px-2 text-xs"
-            />
-          </label>
-        </div>
-      </PopoverContent>
-    </Popover>
-  )
-}
 
 /** Device dropdown for the Favorites tab — narrows "all devices" to one. */
 function DeviceSelect({

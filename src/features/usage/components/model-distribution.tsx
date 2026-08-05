@@ -14,7 +14,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { topNModels } from "@/features/usage/derive"
-import { formatCost, formatTokens } from "@/lib/format"
+import { formatCost, formatPct, formatTokens } from "@/lib/format"
 
 import type { UsageFilter } from "@/types/generated/bindings"
 
@@ -100,7 +100,7 @@ export function ModelDistribution({
                     {it.label}
                   </span>
                   <span className="text-muted-foreground shrink-0 tabular-nums">
-                    {fmt(it.value)} · {pct.toFixed(1)}%
+                    {fmt(it.value)} · {formatPct(it.value / total)}
                   </span>
                 </div>
                 <div className="bg-muted h-1.5 w-full overflow-hidden rounded-full">

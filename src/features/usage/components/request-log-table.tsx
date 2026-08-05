@@ -9,11 +9,7 @@ import { FileText } from "lucide-react"
 import { type ReactNode, useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 
-import {
-  useCollectMutation,
-  useCountQuery,
-  useLogsQuery,
-} from "@/app/store/api"
+import { useCountQuery, useLogsQuery } from "@/app/store/api"
 import { QueryState } from "@/components/query-state"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -26,13 +22,14 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { stopReasonTone } from "@/features/usage/derive"
-import { useMutateWithToast } from "@/hooks/use-toast-mutation"
+import { useCollectAction } from "@/hooks/use-collect-action"
 import { formatCost, formatInt, formatTime } from "@/lib/format"
 import { paginate } from "@/lib/pagination"
 import { tokenTotal } from "@/lib/usage"
 import { cn } from "@/lib/utils"
 import type { UsageFilter } from "@/types/generated/bindings"
-import { useDeviceLabelMap } from "../use-device-options"
+import { sourceLabel } from "../source-labels"
+import { useDeviceLabelMap, useDeviceOptions } from "../use-device-options"
 
 const PAGE_SIZE = 50
 
@@ -72,22 +69,13 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
     offset,
   })
   const { data: total = 0 } = useCountQuery(filter)
-  const [collect, { isLoading: collecting }] = useCollectMutation()
-  const runWithToast = useMutateWithToast()
+  // 空状态 CTA 复用 sidebar 同一份采集动作 (useCollectAction) —— 不再在此
+  // 手写 mutation + toast, 避免分叉 (上一份手写副本就漏了数据新鲜度戳记
+  // markCollected/markSynced). multiDevice 决定成功 toast 措辞, 与 shell 一致.
+  const multiDevice = useDeviceOptions().length > 0
+  const { onCollect, collecting } = useCollectAction(multiDevice)
 
   const { totalPages, page } = paginate(total, offset, PAGE_SIZE)
-
-  async function onCollect() {
-    await runWithToast(collect, undefined, {
-      success: {
-        message: (data) =>
-          t("usage.collect.doneShort", {
-            count: data.collected.rows_inserted ?? 0,
-          }),
-      },
-      failed: { key: "usage.collect.failed" },
-    })
-  }
 
   return (
     <Card className="min-h-0 flex-1">
@@ -212,20 +200,11 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
 }
 
 function providerLabel(source: string): string {
-  switch (source) {
-    case "claude_code":
-      return "Claude (Session)"
-    case "codex_cli":
-      return "Codex (Session)"
-    case "gemini_cli":
-      return "Gemini CLI (Session)"
-    case "opencode":
-      return "OpenCode (Session)"
-    case "grok_cli":
-      return "Grok (Session)"
-    default:
-      return source || "—"
-  }
+  // 平台名复用单一来源 `sourceLabel` —— 不在此重抄映射表 (上一份副本就把
+  // claude_code 抄成 "Claude"、漏了 "Code"). "(Session)" 后缀是日志页语义
+  // (一行 ≈ 一个 session), 留给调用方组合, 不进共享映射.
+  if (!source) return "—"
+  return `${sourceLabel(source)} (Session)`
 }
 
 function StopReasonCell({ value }: { value: string }) {

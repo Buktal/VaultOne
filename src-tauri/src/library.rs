@@ -11,10 +11,8 @@
 
 use std::path::{Path, PathBuf};
 
-use tauri::State;
-
-use crate::commands::AppState;
 use crate::config::{ConfigData, ConfigStore};
+use crate::db::Store;
 use crate::error::{AppError, AppResult};
 
 /// A Library entry is either a single file or a directory tree.
@@ -89,6 +87,7 @@ const SCOPE_ALL: &str = "all";
 /// drilling into a directory). `is_self` and the device's display name are
 /// layered on from the config.
 pub fn scan(
+    store: &Store,
     config: &ConfigStore,
     device_scope: &str,
     subpath: &str,
@@ -97,10 +96,14 @@ pub fn scan(
     let cfg = config.get();
     let lib_root = paths.library.clone();
 
+    // Device enumeration + display names both come from the device registry —
+    // the single source — so the library view shows the same device set and the
+    // same names a dashboard list would (a peer's published name, not a raw id).
     let device_ids = match device_scope {
-        SCOPE_ALL | "" => device_dirs(&lib_root, &cfg),
+        SCOPE_ALL | "" => crate::devices::known_device_ids(&paths, &cfg),
         id => vec![id.to_string()],
     };
+    let device_names = crate::devices::resolve_display_names(store, &cfg, &device_ids)?;
 
     let mut out = Vec::new();
     for did in device_ids {
@@ -108,15 +111,11 @@ pub fn scan(
         if !dir.is_dir() {
             continue;
         }
-        let is_self = did == cfg.device_id;
-        let device_name = if is_self {
-            cfg.display_name.clone()
-        } else {
-            cfg.device_names
-                .get(&did)
-                .cloned()
-                .unwrap_or_else(|| did.clone())
-        };
+        let is_self = crate::devices::is_self(&cfg, &did);
+        let device_name = device_names
+            .get(&did)
+            .cloned()
+            .unwrap_or_else(|| did.clone());
         for entry in std::fs::read_dir(&dir)? {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().to_string();
@@ -176,28 +175,6 @@ fn join_rel(device_id: &str, subpath: &str, name: &str) -> String {
     } else {
         format!("{device_id}/{sub}/{name}")
     }
-}
-
-/// Every device id with a library dir on disk, self first. Peer dirs are
-/// filtered by the device-id shape so stray folders never show up as devices.
-fn device_dirs(lib_root: &Path, cfg: &ConfigData) -> Vec<String> {
-    let mut ids = Vec::new();
-    if !cfg.device_id.is_empty() {
-        ids.push(cfg.device_id.clone());
-    }
-    if let Ok(entries) = std::fs::read_dir(lib_root) {
-        for e in entries.flatten() {
-            if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                continue;
-            }
-            if let Some(name) = e.file_name().to_str() {
-                if name != cfg.device_id && crate::config::is_valid_device_id(name) {
-                    ids.push(name.to_string());
-                }
-            }
-        }
-    }
-    ids
 }
 
 // ---------------------------------------------------------------------------
@@ -434,7 +411,7 @@ pub fn forget_device_library(
 
 /// Recursively count files (excl. `.gitkeep`) and folders under a device's
 /// library subtree; `{0, 0}` when it does not exist.
-fn count_subtree(dir: &Path) -> DeviceLibrarySummary {
+pub(crate) fn count_subtree(dir: &Path) -> DeviceLibrarySummary {
     fn walk(dir: &Path, files: &mut f64, dirs: &mut f64) {
         let Ok(rd) = std::fs::read_dir(dir) else {
             return;
@@ -470,94 +447,8 @@ fn count_subtree(dir: &Path) -> DeviceLibrarySummary {
 /// Standalone is a no-op — the files already sit in the worktree, nothing to
 /// push. Delegates to sync's commit+push core; push failures are logged there,
 /// not propagated — the next collect/sync round carries the change up.
-fn commit_push_library(paths: &crate::config::Paths, cfg: &ConfigData) {
+pub(crate) fn commit_push_library(paths: &crate::config::Paths, cfg: &ConfigData) {
     crate::sync::commit_and_push_best_effort(paths, cfg, "vaultone: library sync");
-}
-
-// ---------------------------------------------------------------------------
-// Tauri commands
-// ---------------------------------------------------------------------------
-
-#[tauri::command]
-#[specta::specta]
-pub async fn scan_library(
-    state: State<'_, AppState>,
-    device_scope: String,
-    subpath: String,
-) -> AppResult<Vec<LibraryEntry>> {
-    let config = state.config.clone();
-    tauri::async_runtime::spawn_blocking(move || scan(&config, &device_scope, &subpath))
-        .await
-        .map_err(|e| AppError::Internal(format!("library scan task failed: {e}")))?
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn upload_to_library(
-    state: State<'_, AppState>,
-    items: Vec<UploadItem>,
-    subpath: String,
-) -> AppResult<()> {
-    let config = state.config.clone();
-    tauri::async_runtime::spawn_blocking(move || -> AppResult<()> {
-        let cfg = config.get();
-        let paths = config.paths();
-        upload(&paths, &cfg, &items, &subpath)?;
-        commit_push_library(&paths, &cfg);
-        Ok(())
-    })
-    .await
-    .map_err(|e| AppError::Internal(format!("library upload task failed: {e}")))?
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn export_from_library(
-    state: State<'_, AppState>,
-    rel_path: String,
-    target_dir: String,
-) -> AppResult<()> {
-    let config = state.config.clone();
-    tauri::async_runtime::spawn_blocking(move || -> AppResult<()> {
-        let paths = config.paths();
-        export_entry(&paths, &rel_path, &target_dir)
-    })
-    .await
-    .map_err(|e| AppError::Internal(format!("library export task failed: {e}")))?
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn delete_from_library(state: State<'_, AppState>, rel_path: String) -> AppResult<()> {
-    let config = state.config.clone();
-    tauri::async_runtime::spawn_blocking(move || -> AppResult<()> {
-        let cfg = config.get();
-        let paths = config.paths();
-        delete_entry(&paths, &rel_path)?;
-        commit_push_library(&paths, &cfg);
-        Ok(())
-    })
-    .await
-    .map_err(|e| AppError::Internal(format!("library delete task failed: {e}")))?
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn rename_in_library(
-    state: State<'_, AppState>,
-    rel_path: String,
-    new_name: String,
-) -> AppResult<()> {
-    let config = state.config.clone();
-    tauri::async_runtime::spawn_blocking(move || -> AppResult<()> {
-        let cfg = config.get();
-        let paths = config.paths();
-        rename_entry(&paths, &rel_path, &new_name)?;
-        commit_push_library(&paths, &cfg);
-        Ok(())
-    })
-    .await
-    .map_err(|e| AppError::Internal(format!("library rename task failed: {e}")))?
 }
 
 /// Text-preview cap: files larger than this are not read into the webview
@@ -570,7 +461,10 @@ const TEXT_READ_LIMIT: u64 = 1024 * 1024;
 /// [`resolve_rel`] (canonicalize + must stay under the library root), so a
 /// `../` escape or a missing file is an error, never a read outside the root.
 /// Binary probing: a NUL byte in the first 8 KiB means binary.
-fn read_text_entry(paths: &crate::config::Paths, rel_path: &str) -> AppResult<Option<String>> {
+pub(crate) fn read_text_entry(
+    paths: &crate::config::Paths,
+    rel_path: &str,
+) -> AppResult<Option<String>> {
     let target = resolve_rel(paths, rel_path)?;
     if !target.is_file() {
         return Ok(None);
@@ -586,39 +480,6 @@ fn read_text_entry(paths: &crate::config::Paths, rel_path: &str) -> AppResult<Op
         Ok(text) => Ok(Some(text)),
         Err(_) => Ok(None),
     }
-}
-
-/// Read a library entry as text for the themed preview (see [`read_text_entry`]).
-#[tauri::command]
-#[specta::specta]
-pub async fn read_library_text(
-    state: State<'_, AppState>,
-    rel_path: String,
-) -> AppResult<Option<String>> {
-    let config = state.config.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let paths = config.paths();
-        read_text_entry(&paths, &rel_path)
-    })
-    .await
-    .map_err(|e| AppError::Internal(format!("library text read task failed: {e}")))?
-}
-
-/// File/folder counts for one device's library subtree — used by the
-/// forget-device dialog to show what would be migrated or deleted.
-#[tauri::command]
-#[specta::specta]
-pub async fn library_device_summary(
-    state: State<'_, AppState>,
-    device_id: String,
-) -> AppResult<DeviceLibrarySummary> {
-    let config = state.config.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let paths = config.paths();
-        Ok(count_subtree(&paths.library.join(&device_id)))
-    })
-    .await
-    .map_err(|e| AppError::Internal(format!("library summary task failed: {e}")))?
 }
 
 #[cfg(test)]

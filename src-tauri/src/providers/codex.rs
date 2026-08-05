@@ -92,36 +92,7 @@ impl Provider for CodexProvider {
     }
 
     fn parse(&self, files: &[PathBuf]) -> AppResult<CollectResult> {
-        let mut events = Vec::new();
-        let mut sessions = Vec::new();
-        let mut messages = Vec::new();
-        let mut skipped = 0u32;
-        for file in files {
-            let text = match super::read_source_lossy(file) {
-                Some(t) => t,
-                None => {
-                    skipped += 1;
-                    continue;
-                }
-            };
-            let outcome = fold_codex_file(file, &text, 0);
-            events.extend(outcome.events);
-            sessions.extend(outcome.sessions);
-            messages.extend(outcome.messages);
-            skipped += outcome.skipped;
-        }
-        events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
-        sessions.sort_by(|a, b| (&a.last_active_at, &a.id).cmp(&(&b.last_active_at, &b.id)));
-        Ok(CollectResult {
-            source: self.name().to_string(),
-            events,
-            turn_durations: Vec::new(),
-            sessions,
-            messages,
-            files_scanned: files.len() as u32,
-            lines_skipped: skipped,
-            session_ids: self.session_ids_seen(files),
-        })
+        super::parse_jsonl_full(self, files, fold_codex_file)
     }
 
     /// Incremental collect: mtime-gate unchanged files; for a changed file,

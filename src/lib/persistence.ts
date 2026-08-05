@@ -29,9 +29,16 @@
 //     side effect) that must outlive any single hook instance and be shared
 //     app-wide; that singleton stays a module-level `let`. Only its throttled
 //     "last check" timestamp (a plain number) goes through `usePersistedState`.
-//   (The Redux filter slice was once a third, hand-rolled persistence path; its
-//   write side now also goes through `debouncedLocalStorageWrite`, so only these
-//   two remain as genuine exceptions.)
+//
+// `window-geometry` (src/app/shell/window-geometry.ts) is NOT an exception — it
+// is an imperative consumer of these primitives, not a React state hook: its
+// save* helpers write via `debouncedLocalStorageWrite`, its read* helpers read
+// via the shared `readPersisted` below. The in-memory `cached` snapshot + debounced
+// mirror is a read-modify-write shape `usePersistedState` cannot express, yet
+// every disk touch still funnels through this module — no hand-rolled localStorage
+// path. (The Redux filter slice was once another hand-rolled path; its write side
+// now also goes through `debouncedLocalStorageWrite`, so only the two genuine
+// exceptions above remain.)
 
 import { type Dispatch, type SetStateAction, useEffect, useState } from "react"
 
@@ -99,8 +106,11 @@ if (
   window.addEventListener("beforeunload", flushPendingWrites, { capture: true })
 }
 
-/** Read and JSON-parse `key`; return `initial` on miss / parse failure. */
-function readPersisted<T>(key: string, initial: T): T {
+/** Read and JSON-parse `key`; return `initial` on miss / parse failure. Shared
+ *  by `usePersistedState` and by imperative consumers that read localStorage
+ *  outside a React state hook (e.g. `window-geometry`'s cached read-modify-write
+ *  helpers) — so every disk read funnels through one path, never hand-rolled. */
+export function readPersisted<T>(key: string, initial: T): T {
   try {
     const raw = localStorage.getItem(key)
     if (raw == null) return initial

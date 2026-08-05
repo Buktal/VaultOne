@@ -15,11 +15,14 @@ use crate::collect::AlignReport;
 use crate::config::{CloseBehavior, ConfigStore, Language, LightweightExpand, Skin};
 use crate::db::Store;
 use crate::error::{AppError, AppResult};
+use crate::library::{self, DeviceLibrarySummary, LibraryEntry, UploadItem};
 use crate::model::{
-    DeviceInfo, LogsQuery, ModelStatsRow, PricingEntry, RunMode, TrendBucket, TrendPoint,
-    UsageFilter, UsageLogRow, UsageStats,
+    DeviceInfo, LocalGroup, LogsQuery, ModelStatsRow, PricingEntry, RunMode, SessionFilter,
+    SessionGroup, SessionMessage, SessionRow, SyncedGroup, TrendBucket, TrendPoint, UsageFilter,
+    UsageLogRow, UsageStats,
 };
 use crate::pricing;
+use crate::sessions;
 use crate::sync::VerifyReport;
 
 /// App-wide managed state: the Local Store + local config, wrapped
@@ -197,7 +200,7 @@ pub fn forget_device(
     library_action: crate::library::LibraryForgetAction,
 ) -> AppResult<()> {
     let cfg = state.config.get();
-    if cfg.device_id == device_id {
+    if crate::devices::is_self(&cfg, &device_id) {
         return Err(AppError::Config(
             "this device cannot be removed (rename it instead)".into(),
         ));
@@ -545,4 +548,346 @@ pub fn confirm_close(
         }
     }
     Ok(())
+}
+
+// ---------------- Sessions ----------------
+
+/// Emit `sessions_changed` so the frontend's session queries invalidate.
+fn emit_sessions_changed(app_handle: &tauri::AppHandle) {
+    let _ = app_handle.emit("sessions_changed", ());
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn query_sessions_cmd(
+    state: State<'_, AppState>,
+    filter: Option<SessionFilter>,
+) -> AppResult<Vec<SessionRow>> {
+    state.store.query_sessions(filter.as_ref())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_session_transcript_cmd(
+    state: State<'_, AppState>,
+    id: String,
+    device_id: String,
+) -> AppResult<Vec<SessionMessage>> {
+    // The transcript lives in the db (`session_messages`) for every session —
+    // favorited or not — so this read no longer depends on the favorites-only
+    // jsonl snapshot. `device_id` is the own device; its rows win on uuid
+    // conflict (it is the source of truth for a session it collected), then
+    // peers' pulled-in rows fill the gaps.
+    state.store.query_session_transcript(&id, &device_id)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn set_session_favorited_cmd(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    id: String,
+    device_id: String,
+    favorited: bool,
+) -> AppResult<()> {
+    state
+        .store
+        .set_session_favorited(&device_id, &id, favorited)?;
+    emit_sessions_changed(&app_handle);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn set_session_custom_title_cmd(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    id: String,
+    device_id: String,
+    title: Option<String>,
+) -> AppResult<()> {
+    state
+        .store
+        .set_session_custom_title(&device_id, &id, title.as_deref())?;
+    emit_sessions_changed(&app_handle);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn set_session_local_group_cmd(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    id: String,
+    device_id: String,
+    group_id: Option<String>,
+) -> AppResult<()> {
+    state
+        .store
+        .set_session_local_group(&device_id, &id, group_id.as_deref())?;
+    emit_sessions_changed(&app_handle);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn set_session_synced_group_cmd(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    id: String,
+    device_id: String,
+    group_id: Option<String>,
+) -> AppResult<()> {
+    state
+        .store
+        .set_session_synced_group(&device_id, &id, group_id.as_deref())?;
+    emit_sessions_changed(&app_handle);
+    Ok(())
+}
+
+// ---- local groups ----
+
+#[tauri::command]
+#[specta::specta]
+pub fn list_local_groups_cmd(state: State<'_, AppState>) -> AppResult<Vec<LocalGroup>> {
+    state.store.list_local_groups()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn create_local_group_cmd(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    name: String,
+) -> AppResult<LocalGroup> {
+    let id = sessions::generate_local_group_id();
+    let created_at = crate::time::now_iso();
+    state
+        .store
+        .create_local_group(&id, name.trim(), &created_at)?;
+    emit_sessions_changed(&app_handle);
+    Ok(LocalGroup {
+        id,
+        name: name.trim().to_string(),
+        created_at,
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn rename_local_group_cmd(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    id: String,
+    name: String,
+) -> AppResult<()> {
+    state.store.rename_local_group(&id, name.trim())?;
+    emit_sessions_changed(&app_handle);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn delete_local_group_cmd(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    id: String,
+) -> AppResult<()> {
+    state.store.delete_local_group(&id)?;
+    emit_sessions_changed(&app_handle);
+    Ok(())
+}
+
+// ---- synced groups ----
+
+#[tauri::command]
+#[specta::specta]
+pub fn list_synced_groups_cmd(state: State<'_, AppState>) -> AppResult<Vec<SyncedGroup>> {
+    Ok(sessions::read_all_synced_groups(&state.config.paths()))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn create_synced_group_cmd(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    name: String,
+) -> AppResult<SyncedGroup> {
+    let config = state.config.clone();
+    let group = tauri::async_runtime::spawn_blocking(move || -> AppResult<SyncedGroup> {
+        let cfg = config.get();
+        let paths = config.paths();
+        sessions::create_synced_group_owned(&paths, &cfg, &name)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("create_synced_group task failed: {e}")))??;
+    emit_sessions_changed(&app_handle);
+    Ok(group)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn rename_synced_group_cmd(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    id: String,
+    name: String,
+) -> AppResult<()> {
+    let config = state.config.clone();
+    tauri::async_runtime::spawn_blocking(move || -> AppResult<()> {
+        let cfg = config.get();
+        let paths = config.paths();
+        sessions::rename_synced_group_owned(&paths, &cfg, &id, &name)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("rename_synced_group task failed: {e}")))??;
+    emit_sessions_changed(&app_handle);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_synced_group_cmd(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    id: String,
+) -> AppResult<()> {
+    let config = state.config.clone();
+    tauri::async_runtime::spawn_blocking(move || -> AppResult<()> {
+        let cfg = config.get();
+        let paths = config.paths();
+        sessions::delete_synced_group_owned(&paths, &cfg, &id)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("delete_synced_group task failed: {e}")))??;
+    emit_sessions_changed(&app_handle);
+    Ok(())
+}
+
+/// Unified groups list (local + synced) for one-shot UI fetch.
+#[tauri::command]
+#[specta::specta]
+pub fn list_groups_cmd(state: State<'_, AppState>) -> AppResult<Vec<SessionGroup>> {
+    sessions::list_groups_dto(&state.store, &state.config.paths())
+}
+
+// ---------------- Library ----------------
+
+#[tauri::command]
+#[specta::specta]
+pub async fn scan_library(
+    state: State<'_, AppState>,
+    device_scope: String,
+    subpath: String,
+) -> AppResult<Vec<LibraryEntry>> {
+    let config = state.config.clone();
+    let store = state.store.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        library::scan(&store, &config, &device_scope, &subpath)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("library scan task failed: {e}")))?
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn upload_to_library(
+    state: State<'_, AppState>,
+    items: Vec<UploadItem>,
+    subpath: String,
+) -> AppResult<()> {
+    let config = state.config.clone();
+    tauri::async_runtime::spawn_blocking(move || -> AppResult<()> {
+        let cfg = config.get();
+        let paths = config.paths();
+        library::upload(&paths, &cfg, &items, &subpath)?;
+        library::commit_push_library(&paths, &cfg);
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("library upload task failed: {e}")))?
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn export_from_library(
+    state: State<'_, AppState>,
+    rel_path: String,
+    target_dir: String,
+) -> AppResult<()> {
+    let config = state.config.clone();
+    tauri::async_runtime::spawn_blocking(move || -> AppResult<()> {
+        let paths = config.paths();
+        library::export_entry(&paths, &rel_path, &target_dir)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("library export task failed: {e}")))?
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_from_library(state: State<'_, AppState>, rel_path: String) -> AppResult<()> {
+    let config = state.config.clone();
+    tauri::async_runtime::spawn_blocking(move || -> AppResult<()> {
+        let cfg = config.get();
+        let paths = config.paths();
+        library::delete_entry(&paths, &rel_path)?;
+        library::commit_push_library(&paths, &cfg);
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("library delete task failed: {e}")))?
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn rename_in_library(
+    state: State<'_, AppState>,
+    rel_path: String,
+    new_name: String,
+) -> AppResult<()> {
+    let config = state.config.clone();
+    tauri::async_runtime::spawn_blocking(move || -> AppResult<()> {
+        let cfg = config.get();
+        let paths = config.paths();
+        library::rename_entry(&paths, &rel_path, &new_name)?;
+        library::commit_push_library(&paths, &cfg);
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("library rename task failed: {e}")))?
+}
+
+/// Read a library entry as text for the themed preview (see
+/// [`library::read_text_entry`]).
+#[tauri::command]
+#[specta::specta]
+pub async fn read_library_text(
+    state: State<'_, AppState>,
+    rel_path: String,
+) -> AppResult<Option<String>> {
+    let config = state.config.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = config.paths();
+        library::read_text_entry(&paths, &rel_path)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("library text read task failed: {e}")))?
+}
+
+/// File/folder counts for one device's library subtree — used by the
+/// forget-device dialog to show what would be migrated or deleted.
+#[tauri::command]
+#[specta::specta]
+pub async fn library_device_summary(
+    state: State<'_, AppState>,
+    device_id: String,
+) -> AppResult<DeviceLibrarySummary> {
+    let config = state.config.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = config.paths();
+        Ok(library::count_subtree(&paths.library.join(&device_id)))
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("library summary task failed: {e}")))?
 }

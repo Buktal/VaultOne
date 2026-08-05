@@ -7,12 +7,18 @@ import { describe, expect, it } from "vitest"
 import type { SessionGroup, SessionRow } from "@/types/generated/bindings"
 import {
   ALL_GROUPS,
+  canCreateSyncedGroup,
+  effectiveFavorite,
+  favKey,
   filterSessionsByQuery,
   groupSessionsByGroup,
+  nextFavValue,
   selectSessions,
   sessionTabFilter,
   sortSessions,
   UNGROUPED,
+  withFavOverride,
+  withoutFavOverride,
 } from "./derive"
 
 /** Minimal factory: spread overrides over a zero-valued SessionRow so each case
@@ -350,5 +356,67 @@ describe("selectSessions", () => {
 
   it("an unknown group id returns empty (defensive)", () => {
     expect(selectSessions(allRows, grouped, "nope")).toEqual([])
+  })
+})
+
+// --------------------------------------------------------------- favorites --
+
+describe("favKey", () => {
+  it("joins device_id and id with a slash", () => {
+    expect(favKey({ device_id: "dev-a", id: "s1" })).toBe("dev-a/s1")
+  })
+})
+
+describe("effectiveFavorite", () => {
+  const s = row({ id: "s1", device_id: "dev-a", favorited: false })
+
+  it("falls back to the row's favorited when no override is pending", () => {
+    expect(effectiveFavorite(s, {})).toBe(false)
+  })
+
+  it("an override wins over the row's favorited", () => {
+    expect(effectiveFavorite(s, { "dev-a/s1": true })).toBe(true)
+  })
+
+  it("the override is per-session (a same-id row on another device is unaffected)", () => {
+    expect(effectiveFavorite(s, { "dev-b/s1": true })).toBe(false)
+  })
+})
+
+describe("nextFavValue", () => {
+  it("negates the effective state", () => {
+    const s = row({ id: "s1", device_id: "dev-a", favorited: false })
+    expect(nextFavValue(s, {})).toBe(true)
+    expect(nextFavValue(s, { "dev-a/s1": true })).toBe(false)
+  })
+})
+
+describe("withFavOverride / withoutFavOverride", () => {
+  const s = row({ id: "s1", device_id: "dev-a" })
+
+  it("withFavOverride stamps a value without mutating the input", () => {
+    const prev = { "dev-b/s2": true }
+    const next = withFavOverride(prev, s, true)
+    expect(next).toEqual({ "dev-b/s2": true, "dev-a/s1": true })
+    expect(prev).toEqual({ "dev-b/s2": true })
+  })
+
+  it("withoutFavOverride drops only the toggled key (rollback)", () => {
+    const prev = { "dev-a/s1": true, "dev-b/s2": true }
+    const next = withoutFavOverride(prev, s)
+    expect(next).toEqual({ "dev-b/s2": true })
+    expect(prev).toEqual({ "dev-a/s1": true, "dev-b/s2": true })
+  })
+})
+
+describe("canCreateSyncedGroup", () => {
+  it("local track is always allowed", () => {
+    expect(canCreateSyncedGroup("local", false)).toBe(true)
+    expect(canCreateSyncedGroup("local", true)).toBe(true)
+  })
+
+  it("synced track needs a bound repo", () => {
+    expect(canCreateSyncedGroup("synced", false)).toBe(false)
+    expect(canCreateSyncedGroup("synced", true)).toBe(true)
   })
 })

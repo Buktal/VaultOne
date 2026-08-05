@@ -131,6 +131,33 @@ pub fn read_all_device_artifacts(paths: &Paths) -> Vec<DeviceArtifact> {
 
 // ---------------- Membership ----------------
 
+/// Iterate the valid device-id directory names under `repo/data/` — the shared
+/// "walk the per-device data dirs" loop that artifact reading, session
+/// snapshots, synced-group reading, and membership each used to inline. Stray
+/// non-device folders and non-directory entries are skipped by the id shape.
+/// Absent `repo/data/` ⇒ empty; a read error propagates. Sorted for stable,
+/// display-friendly ordering.
+pub fn iter_data_device_ids(paths: &Paths) -> AppResult<Vec<String>> {
+    let root = &paths.repo_data;
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut ids: Vec<String> = std::fs::read_dir(root)?
+        .flatten()
+        .filter_map(|e| {
+            if !e.file_type().ok()?.is_dir() {
+                return None;
+            }
+            e.file_name()
+                .to_str()
+                .filter(|s| crate::config::is_valid_device_id(s))
+                .map(|s| s.to_string())
+        })
+        .collect();
+    ids.sort();
+    Ok(ids)
+}
+
 /// The set of device ids the local repo currently backs: this device ∪ devices
 /// with a published name artifact (`config/devices_<id>.json`) ∪ devices with a
 /// data dir under `repo/data/<id>/`. The local repo filesystem is always
@@ -142,16 +169,21 @@ fn present_device_ids(paths: &Paths, cfg: &ConfigData) -> HashSet<String> {
     for a in read_all_device_artifacts(paths) {
         present.insert(a.device_id.clone());
     }
-    if let Ok(entries) = std::fs::read_dir(&paths.repo_data) {
-        for e in entries.flatten() {
-            if let Some(name) = e.file_name().to_str() {
-                if crate::config::is_valid_device_id(name) {
-                    present.insert(name.to_string());
-                }
-            }
-        }
+    for id in iter_data_device_ids(paths).unwrap_or_default() {
+        present.insert(id);
     }
     present
+}
+
+/// The device ids the local repo currently backs, as an ordered list with this
+/// device first — the single enumeration for callers that walk per-device
+/// subtrees (e.g. `library::scan`'s "all" scope). Same membership basis as the
+/// private `present_device_ids` (self ∪ name artifacts ∪ `repo/data/<id>/`
+/// dirs); ordered here because subtree walks are displayed, self first.
+pub fn known_device_ids(paths: &Paths, cfg: &ConfigData) -> Vec<String> {
+    let mut ids: Vec<String> = present_device_ids(paths, cfg).into_iter().collect();
+    ids.sort_by_key(|id| (id != &cfg.device_id, id.clone()));
+    ids
 }
 
 // ---------------- Registry reconciliation ----------------
@@ -194,7 +226,7 @@ pub(crate) fn reload_devices_into_store(
     cfg: &ConfigData,
 ) -> AppResult<()> {
     for a in read_all_device_artifacts(paths) {
-        let is_self = a.device_id == cfg.device_id;
+        let is_self = is_self(cfg, &a.device_id);
         if let Err(e) = store.upsert_device(&a.device_id, &a.display_name, is_self) {
             eprintln!("[vaultone] device reload skipped {}: {e}", a.device_id);
         }
@@ -204,27 +236,73 @@ pub(crate) fn reload_devices_into_store(
 
 // ---------------- Naming layer ----------------
 
+/// Whether `device_id` is THIS device, per the live config. Re-derived at every
+/// call site (never trusted from a stored column) because this device's id can
+/// be regenerated — a peer must never be mislabeled "this device". The single
+/// rule every site derives from, so the comparison can't drift between them.
+pub fn is_self(cfg: &ConfigData, device_id: &str) -> bool {
+    cfg.device_id == device_id
+}
+
+/// The display name for one device: a local alias (set via
+/// `set_device_display_name`) wins where present, the synced name otherwise.
+/// This is the SINGLE resolution rule — both [`apply_aliases`] (batch, over
+/// `DeviceInfo` rows) and [`resolve_display_names`] (per-device, for callers
+/// without the rows) route through it, so a device's name can never diverge
+/// between the dashboard list and the library view.
+fn layer_alias(cfg: &ConfigData, device_id: &str, synced_name: &str) -> String {
+    cfg.device_names
+        .get(device_id)
+        .cloned()
+        .unwrap_or_else(|| synced_name.to_string())
+}
+
+/// Resolve a display name for each id in `device_ids`, layering local aliases
+/// over the synced name from the registry. A device with no registry row (e.g.
+/// a data dir on disk before the row is discovered) falls back to the default
+/// generated name — never a raw id — so the library view can't diverge from the
+/// dashboard. The single resolution for callers without `DeviceInfo` rows.
+pub fn resolve_display_names(
+    store: &Store,
+    cfg: &ConfigData,
+    device_ids: &[String],
+) -> AppResult<std::collections::HashMap<String, String>> {
+    let synced: std::collections::HashMap<String, String> = store
+        .list_devices()?
+        .into_iter()
+        .map(|d| (d.device_id, d.display_name))
+        .collect();
+    let mut out = std::collections::HashMap::new();
+    for id in device_ids {
+        let name = synced
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| crate::config::default_display_name(id));
+        out.insert(id.clone(), layer_alias(cfg, id, &name));
+    }
+    Ok(out)
+}
+
 /// Layer local aliases over the synced device names, and re-derive `is_self`
-/// from the live config. An alias (set via `set_device_display_name`) wins
-/// where present; the device table's synced name (learned from the cloud
-/// registry) is kept otherwise. `is_self` is re-derived because the stored
-/// column can go stale (e.g. this device's id was regenerated) and a peer must
-/// never be mislabeled "this device". Mutates `devices` in place.
+/// from the live config. Mutates `devices` in place. Thin batch wrapper over
+/// [`is_self`] + [`layer_alias`] — the single resolution rule.
 pub fn apply_aliases(devices: &mut [DeviceInfo], cfg: &ConfigData) {
     for d in devices {
-        // Re-derive is_self from the live config — the stored column can go
-        // stale (e.g. this device's id was regenerated) and a peer must never
-        // be mislabeled "this device".
-        d.is_self = d.device_id == cfg.device_id;
-        // Layer local aliases (set_device_display_name) over the synced names:
-        // an alias wins where present, the device table's synced name otherwise.
-        if let Some(alias) = cfg.device_names.get(&d.device_id) {
-            d.display_name = alias.clone();
-        }
+        d.is_self = is_self(cfg, &d.device_id);
+        d.display_name = layer_alias(cfg, &d.device_id, &d.display_name);
     }
 }
 
 // ---------------- Lifecycle: register / rename / forget ----------------
+
+/// Refresh THIS device's registry row. Idempotent (UPSERT); routed here — not a
+/// bare `store.upsert_device` at the call site — so every self-row write goes
+/// through the registry orchestrator, alongside `register_self` (boot) and
+/// `rename_self`. Used on the collect path to keep the row current as the user
+/// renames this device.
+pub fn touch_self(store: &Store, cfg: &ConfigData) -> AppResult<()> {
+    store.upsert_device(&cfg.device_id, &cfg.display_name, true)
+}
 
 /// Register THIS device on boot: a row in the Local Store and the published
 /// name artifact. Both best-effort — boot must not fail on these (the original
@@ -265,7 +343,7 @@ pub fn rename_peer(
     device_id: &str,
     display_name: &str,
 ) -> AppResult<()> {
-    let is_self = config.get().device_id == device_id;
+    let is_self = is_self(&config.get(), device_id);
     store.upsert_device(device_id, display_name, is_self)?;
     config.update(|c| {
         c.device_names

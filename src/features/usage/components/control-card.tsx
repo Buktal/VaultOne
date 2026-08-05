@@ -9,7 +9,7 @@
 // chip 只显「全部」. 来源 (source) 维度在多来源 (sources.length > 0) 时才出现
 // —— 采到任意来源就显示, 与设备维度同理.
 
-import { CalendarRange, ChevronDown } from "lucide-react"
+import { ChevronDown } from "lucide-react"
 import type { ReactNode } from "react"
 import { useTranslation } from "react-i18next"
 import {
@@ -17,12 +17,11 @@ import {
   useDistinctSourcesQuery,
 } from "@/app/store/api"
 import { useAppDispatch, useAppSelector } from "@/app/store/hooks"
+import { patchFilter } from "@/app/store/slices/filterSlice"
 import {
-  effectiveDays,
-  type Preset,
-  patchFilter,
-  presetDays,
-} from "@/app/store/slices/filterSlice"
+  type DateRangePreset,
+  DateRangeChip as SharedDateRangeChip,
+} from "@/components/date-range-chip"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -32,17 +31,13 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover"
-import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { presetDays } from "@/lib/date-range"
 import { usePersistedState } from "@/lib/persistence"
 import { cn } from "@/lib/utils"
 import { sourceLabel } from "../source-labels"
@@ -53,11 +48,7 @@ const ALL = "__all__"
 
 const CONTROL_COLLAPSE_KEY = "vaultone:control-collapsed"
 
-/** Selectable presets in the popover — "custom" is implied by manual date entry,
- *  never shown as a button. */
-type SelectablePreset = Exclude<Preset, "custom">
-
-const PRESETS: Array<{ value: SelectablePreset; key: string }> = [
+const PRESETS: DateRangePreset[] = [
   { value: "today", key: "usage.control.today" },
   { value: "7d", key: "usage.control.last7d" },
   { value: "30d", key: "usage.control.last30d" },
@@ -73,106 +64,34 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   )
 }
 
+/** 日期范围 chip —— 把 Redux filterSlice 适配成受控共享组件 (ControlCard 默认
+ *  右对齐, ControlBar 左对齐). 数据语义与 sessions 工具栏版一致: 选预设时立即
+ *  落具体 day 边界 (presetDays), 手填日期转 custom. 共享的 JSX / 标签拼装在
+ *  @/components/date-range-chip, 此处只做 slice 读写适配. */
 function DateRangeChip({ align = "end" }: { align?: "start" | "end" }) {
-  const { t } = useTranslation()
   const dispatch = useAppDispatch()
   const filter = useAppSelector((s) => s.filter.filter)
-  const { range_preset, from_day, to_day } = filter
-  // The inputs show the EFFECTIVE days — a dynamic preset (e.g. "today"
-  // picked yesterday) renders the current day, not the frozen stored date.
-  const { from_day: effFrom, to_day: effTo } = effectiveDays(filter)
-  const label =
-    range_preset === "all"
-      ? t("usage.control.allTime")
-      : range_preset !== "custom"
-        ? t(
-            PRESETS.find((p) => p.value === range_preset)?.key ??
-              "usage.control.dateRange",
-          )
-        : from_day || to_day
-          ? from_day === to_day
-            ? from_day || "…"
-            : `${from_day || "…"} → ${to_day || "…"}`
-          : t("usage.control.allTime")
-
   return (
-    <Popover>
-      <PopoverTrigger
-        render={
-          <button
-            type="button"
-            className="border-border bg-card hover:bg-muted/60 flex h-8 max-w-full min-w-0 items-center gap-1.5 rounded-md border px-3 text-sm whitespace-nowrap"
-          >
-            <CalendarRange className="text-muted-foreground size-3.5 shrink-0" />
-            <span className="min-w-0 truncate">{label}</span>
-          </button>
-        }
-      />
-      <PopoverContent align={align} className="w-72">
-        <div className="bg-muted/60 inline-flex items-center gap-0.5 rounded-md p-0.5">
-          {PRESETS.map((p) => (
-            <button
-              key={p.value}
-              type="button"
-              onClick={() =>
-                dispatch(
-                  patchFilter({
-                    range_preset: p.value,
-                    ...presetDays(p.value),
-                  }),
-                )
-              }
-              className={cn(
-                "focus-visible:ring-ring/40 rounded-[5px] px-2.5 py-1 text-xs font-medium transition-colors outline-none focus-visible:ring-2",
-                range_preset === p.value
-                  ? "bg-accent-tint text-accent-brand-strong"
-                  : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
-              )}
-            >
-              {t(p.key)}
-            </button>
-          ))}
-        </div>
-        <div className="mt-3 flex flex-col gap-2">
-          <label className="flex flex-col gap-1 text-xs">
-            <span className="text-muted-foreground">
-              {t("usage.control.start")}
-            </span>
-            <input
-              type="date"
-              value={effFrom}
-              onChange={(e) =>
-                dispatch(
-                  patchFilter({
-                    range_preset: "custom",
-                    from_day: e.target.value,
-                  }),
-                )
-              }
-              className="border-input bg-background h-8 rounded-md border px-2 text-xs"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-xs">
-            <span className="text-muted-foreground">
-              {t("usage.control.end")}
-            </span>
-            <input
-              type="date"
-              value={effTo}
-              onChange={(e) =>
-                dispatch(
-                  patchFilter({
-                    range_preset: "custom",
-                    to_day: e.target.value,
-                  }),
-                )
-              }
-              className="border-input bg-background h-8 rounded-md border px-2 text-xs"
-            />
-          </label>
-        </div>
-      </PopoverContent>
-    </Popover>
+    <SharedDateRangeChip
+      preset={filter.range_preset}
+      fromDay={filter.from_day}
+      toDay={filter.to_day}
+      onPreset={(p) =>
+        dispatch(patchFilter({ range_preset: p, ...presetDays(p) }))
+      }
+      onFromDay={(d) =>
+        dispatch(patchFilter({ range_preset: "custom", from_day: d }))
+      }
+      onToDay={(d) =>
+        dispatch(patchFilter({ range_preset: "custom", to_day: d }))
+      }
+      presets={PRESETS}
+      allTimeKey="usage.control.allTime"
+      dateRangeKey="usage.control.dateRange"
+      startKey="usage.control.start"
+      endKey="usage.control.end"
+      align={align}
+    />
   )
 }
 

@@ -279,50 +279,11 @@ impl Provider for ClaudeCodeProvider {
     }
 
     fn parse(&self, files: &[PathBuf]) -> AppResult<CollectResult> {
-        // Dedup key = Anthropic message id. Claude Code writes each content
-        // block of one assistant response (thinking / text / each tool_use) as
-        // a separate event that repeats the full message.usage; without dedup
-        // one API call becomes N records and tokens/cost inflate N× (observed
-        // ~3.6× on CC-Switch/GLM transit logs). One message id ⇒ one record.
-        // Per-file dedup via `fold_file` — the same fold the production
-        // incremental path uses, so test and production run identical logic.
-        // A message id never spans files (one session per jsonl), so per-file
-        // vs cross-file is observably identical here; sharing the fold is what
-        // matters.
-        let mut events = Vec::new();
-        let mut turn_durations = Vec::new();
-        let mut sessions = Vec::new();
-        let mut messages = Vec::new();
-        let mut skipped = 0u32;
-        for file in files {
-            let text = match super::read_source_lossy(file) {
-                Some(t) => t,
-                None => {
-                    skipped += 1;
-                    continue;
-                }
-            };
-            let outcome = Self::fold_file(file, &text, 0);
-            events.extend(outcome.events);
-            turn_durations.extend(outcome.turn_durations);
-            sessions.extend(outcome.sessions);
-            messages.extend(outcome.messages);
-            skipped += outcome.skipped;
-        }
-        // Deterministic order (timestamp, then uuid) so repeated parses of the
-        // same sources yield identical artifact lines.
-        events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
-        sessions.sort_by(|a, b| (&a.last_active_at, &a.id).cmp(&(&b.last_active_at, &b.id)));
-        Ok(CollectResult {
-            source: self.name().to_string(),
-            events,
-            turn_durations,
-            sessions,
-            messages,
-            files_scanned: files.len() as u32,
-            lines_skipped: skipped,
-            session_ids: self.session_ids_seen(files),
-        })
+        // Dedup by Anthropic message id lives in `fold_file` (one message id ⇒
+        // one record; without it one API call inflates tokens/cost N×). Runs
+        // through the shared `parse_jsonl_full` so the test path reuses the
+        // production fold + ordering, not a divergent copy.
+        super::parse_jsonl_full(self, files, Self::fold_file)
     }
 
     /// Incremental collect: parse only lines past each file's recorded cursor

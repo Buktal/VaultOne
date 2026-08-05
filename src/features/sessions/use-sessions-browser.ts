@@ -31,34 +31,30 @@ import {
   useSetSessionSyncedGroupMutation,
 } from "@/app/store/api"
 import { useAppDispatch } from "@/app/store/hooks"
-import {
-  effectiveDays,
-  type Preset,
-  presetDays,
-} from "@/app/store/slices/filterSlice"
 import { setView } from "@/app/store/slices/viewSlice"
 import { useMutateWithToast } from "@/hooks/use-toast-mutation"
+import { effectiveDays, type Preset, presetDays } from "@/lib/date-range"
 import { usePersistedState } from "@/lib/persistence"
 import type { SessionGroup, SessionRow } from "@/types/generated/bindings"
 import {
   ALL_GROUPS,
+  canCreateSyncedGroup,
+  effectiveFavorite,
+  favKey,
   filterSessionsByQuery,
   type GroupTrack,
   groupSessionsByGroup,
+  nextFavValue,
   type SessionTab,
   selectSessions,
   sessionTabFilter,
   sortSessions,
+  withFavOverride,
+  withoutFavOverride,
 } from "./derive"
 
 /** Persisted-tab key — the chosen tab (local / favorites) survives restarts. */
 const TAB_KEY = "vaultone:sessions-tab"
-
-/** Composite key for the optimistic-favorite override map — a session is
- *  uniquely (device_id, id), and the same id could exist on two devices. */
-function favKey(s: SessionRow): string {
-  return `${s.device_id}/${s.id}`
-}
 
 export function useSessionsBrowser() {
   const { t } = useTranslation()
@@ -236,7 +232,7 @@ export function useSessionsBrowser() {
   // filter) so the detail sheet stays open.
   const livePreview = useMemo<SessionRow | null>(() => {
     if (!previewKey) return null
-    return sessionsByKey.get(`${previewKey.device_id}/${previewKey.id}`) ?? null
+    return sessionsByKey.get(favKey(previewKey)) ?? null
   }, [previewKey, sessionsByKey])
   // Refresh the fallback only on a live hit; when the row leaves the slice the
   // fallback keeps the previous row so the sheet does not snap shut.
@@ -292,16 +288,14 @@ export function useSessionsBrowser() {
   // is more than one device (otherwise every row is "This device" — noise).
   const showDeviceColumn = tab === "favorites" && devices.length > 1
 
-  // ---- effective favorite (optimistic override over the query value) ----
-  function effectiveFavorite(s: SessionRow): boolean {
-    const k = favKey(s)
-    return k in favOverrides ? favOverrides[k] : s.favorited
-  }
-
   // ---- session row actions ----
+  // Favorite toggle is an optimistic state machine (stamp → mutate → rollback
+  // on failure); the decisions live in ./derive (effectiveFavorite /
+  // nextFavValue / withFavOverride / withoutFavOverride) so they are unit-
+  // tested. This hook only wires them to React state + the mutation.
   async function toggleFavorite(s: SessionRow): Promise<void> {
-    const next = !effectiveFavorite(s)
-    setFavOverrides((p) => ({ ...p, [favKey(s)]: next }))
+    const next = nextFavValue(s, favOverrides)
+    setFavOverrides((p) => withFavOverride(p, s, next))
     const ok = await runWithToast(
       favoritedMut,
       { id: s.id, deviceId: s.device_id, favorited: next },
@@ -314,11 +308,7 @@ export function useSessionsBrowser() {
     )
     if (!ok) {
       // Rollback the optimistic flip.
-      setFavOverrides((p) => {
-        const c = { ...p }
-        delete c[favKey(s)]
-        return c
-      })
+      setFavOverrides((p) => withoutFavOverride(p, s))
     }
   }
 
@@ -375,9 +365,6 @@ export function useSessionsBrowser() {
   // create would silently fail or hang. openCreateGroup is the UX guard (toast
   // + a one-hop to Settings, never opens the dialog); createGroup re-checks
   // defensively in case a caller bypasses the opener.
-  function canCreateSyncedGroup(): boolean {
-    return effectiveTrack !== "synced" || synced
-  }
   function notifyGitRequired(): void {
     toast.warning(t("sessions.group.gitRequiredTitle"), {
       description: t("sessions.group.gitRequiredDesc"),
@@ -388,7 +375,7 @@ export function useSessionsBrowser() {
     })
   }
   function openCreateGroup(): void {
-    if (!canCreateSyncedGroup()) {
+    if (!canCreateSyncedGroup(effectiveTrack, synced)) {
       notifyGitRequired()
       return
     }
@@ -397,7 +384,7 @@ export function useSessionsBrowser() {
   async function createGroup(name: string): Promise<boolean> {
     const trimmed = name.trim()
     if (!trimmed) return false
-    if (!canCreateSyncedGroup()) {
+    if (!canCreateSyncedGroup(effectiveTrack, synced)) {
       notifyGitRequired()
       return false
     }
@@ -488,7 +475,7 @@ export function useSessionsBrowser() {
     deviceLabel,
     showDeviceColumn,
     // session row actions
-    effectiveFavorite,
+    effectiveFavorite: (s: SessionRow) => effectiveFavorite(s, favOverrides),
     toggleFavorite,
     setSessionGroup,
     // detail sheet
