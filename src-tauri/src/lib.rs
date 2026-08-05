@@ -1,7 +1,7 @@
 //! VaultOne Tauri backend library.
 //!
-//! Module tree: config / db / providers / ingest / collect / pricing / sync /
-//! proxy / commands / window_geom, behind a tauri-specta typed
+//! Module tree: config / db / providers / ingest / artifact / session_snapshot
+//! / jsonl / collect / pricing / sync / proxy / commands / window_geom, behind a tauri-specta typed
 //! contract. First start bootstraps the local data dir + deviceId and defaults
 //! to Standalone
 //!.
@@ -16,6 +16,7 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{Emitter, Manager};
 use tauri_specta::Builder;
 
+mod artifact;
 mod collect;
 mod commands;
 mod config;
@@ -23,11 +24,13 @@ mod db;
 mod devices;
 mod error;
 mod ingest;
+mod jsonl;
 mod library;
 mod model;
 mod pricing;
 mod providers;
 mod proxy;
+mod session_snapshot;
 mod sessions;
 mod snapshot_policy;
 mod sync;

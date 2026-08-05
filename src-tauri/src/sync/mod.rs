@@ -522,10 +522,10 @@ pub fn pull_and_import(
         }
         PullOutcome::UpToDate | PullOutcome::FastForwarded => {}
     }
-    let records = crate::ingest::read_all_artifacts(paths)?;
+    let records = crate::artifact::read_all_artifacts(paths)?;
     let inserted = store.ingest(&records)?;
     // Per-turn durations (separate grain, uuid-deduped).
-    let turns = crate::ingest::read_all_turn_artifacts(paths)?;
+    let turns = crate::artifact::read_all_turn_artifacts(paths)?;
     store.ingest_turn_durations(&turns)?;
     // Sessions: import peers' snapshots (self is local-authoritative, skipped
     // on read) and propagate cross-device un-favorites.
@@ -537,7 +537,7 @@ pub fn pull_and_import(
 
 /// Import peers' session snapshots into the store and propagate cross-device
 /// un-favorites. Self's own snapshots are skipped on read
-/// ([`crate::ingest::read_all_session_snapshots`]), so self's rows are never
+/// ([`crate::session_snapshot::read_all_session_snapshots`]), so self's rows are never
 /// overwritten by a possibly-stale git copy of itself. For every peer that has
 /// (or had) a favorited session row, sessions whose snapshot file vanished since
 /// the last pull are un-favorited and their shared messages dropped — the
@@ -547,7 +547,7 @@ fn import_peer_sessions(
     paths: &crate::config::Paths,
     self_device_id: &str,
 ) -> AppResult<()> {
-    let snapshots = crate::ingest::read_all_session_snapshots(paths, self_device_id)?;
+    let snapshots = crate::session_snapshot::read_all_session_snapshots(paths, self_device_id)?;
     // still-favorited ids per peer = the snapshot files that exist this pull.
     let mut per_device: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
         std::collections::BTreeMap::new();
@@ -649,8 +649,8 @@ pub fn push_usage(
     // boundary: rows that land AFTER these snapshots must keep their day dirty.
     let mut day_snapshots: Vec<(String, usize, usize)> = Vec::with_capacity(dirty.len());
     for day in &dirty {
-        let usage = crate::ingest::recompute_usage_day(store, paths, &cfg.device_id, day)?;
-        let turns = crate::ingest::recompute_turns_day(store, paths, &cfg.device_id, day)?;
+        let usage = crate::artifact::recompute_usage_day(store, paths, &cfg.device_id, day)?;
+        let turns = crate::artifact::recompute_turns_day(store, paths, &cfg.device_id, day)?;
         day_snapshots.push((day.clone(), usage, turns));
     }
 
@@ -666,14 +666,18 @@ pub fn push_usage(
         match decide_snapshot_action(favorited) {
             // favorited ⇒ the snapshot must exist: recompute it from the store.
             SnapshotAction::Write => {
-                let count =
-                    crate::ingest::recompute_session_snapshot(store, paths, &cfg.device_id, sid)?;
+                let count = crate::session_snapshot::recompute_session_snapshot(
+                    store,
+                    paths,
+                    &cfg.device_id,
+                    sid,
+                )?;
                 recomputed.push((sid.clone(), count));
             }
             // not favorited ⇒ the snapshot must not exist. Idempotent: a
             // never-favorited session has no file to remove.
             SnapshotAction::Remove => {
-                let path = crate::ingest::transcript_path(paths, &cfg.device_id, sid);
+                let path = paths.session_snapshot_path(&cfg.device_id, sid);
                 if path.exists() {
                     std::fs::remove_file(path)?;
                 }
@@ -1061,7 +1065,7 @@ mod tests {
         let repo_a = open_or_clone(&url, &paths_a.repo, "").unwrap();
         let book = crate::pricing::seed_book();
         let rec = crate::ingest::recordify(&raw_usage("import-1"), "aabbccddeeff", &book);
-        crate::ingest::append_jsonl(&paths_a, "aabbccddeeff", &[rec]).unwrap();
+        crate::artifact::append_jsonl(&paths_a, "aabbccddeeff", &[rec]).unwrap();
         commit_all(&repo_a, "A usage", "DevA", "a@devices.vaultone").unwrap();
         push(&repo_a, "").unwrap();
 
@@ -1503,7 +1507,7 @@ mod tests {
             "A pushed the snapshot"
         );
         assert!(
-            crate::ingest::transcript_path(&paths_a, dev_a, "sx").exists(),
+            paths_a.session_snapshot_path(dev_a, "sx").exists(),
             "snapshot written"
         );
 
@@ -1532,7 +1536,7 @@ mod tests {
         store_a.set_session_favorited(dev_a, "sx", false).unwrap();
         assert!(push_usage(&store_a, &paths_a, &cfg_a).unwrap());
         assert!(
-            !crate::ingest::transcript_path(&paths_a, dev_a, "sx").exists(),
+            !paths_a.session_snapshot_path(dev_a, "sx").exists(),
             "A removed the snapshot on un-favorite"
         );
 
@@ -1644,7 +1648,7 @@ mod tests {
         let _repo_a = open_or_clone(&url, &paths_a.repo, "").unwrap();
         let book = crate::pricing::seed_book();
         let rec = crate::ingest::recordify(&raw_usage("round-1"), "aabbccddeeff", &book);
-        crate::ingest::append_jsonl(&paths_a, "aabbccddeeff", &[rec]).unwrap();
+        crate::artifact::append_jsonl(&paths_a, "aabbccddeeff", &[rec]).unwrap();
         let store_a = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
         let imported_a = pull_and_import(&store_a, &paths_a, &cfg_a).unwrap();
         let pushed_a = commit_and_push(&paths_a, &cfg_a, "vaultone: usage sync").unwrap();
