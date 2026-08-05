@@ -53,24 +53,10 @@ fn read_device_synced_groups(paths: &Paths, device_id: &str) -> Vec<SyncedGroup>
 /// up as a groups source. This is the read-side of the per-device-write pattern
 /// (mirrors `devices::read_all_device_artifacts`).
 pub fn read_all_synced_groups(paths: &Paths) -> Vec<SyncedGroup> {
-    let root = &paths.repo_data;
     let mut by_id: std::collections::HashMap<String, SyncedGroup> =
         std::collections::HashMap::new();
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return Vec::new();
-    };
-    for entry in entries.flatten() {
-        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            continue;
-        }
-        let name_owned = entry.file_name();
-        let Some(name) = name_owned.to_str() else {
-            continue;
-        };
-        if !crate::config::is_valid_device_id(name) {
-            continue;
-        }
-        for g in read_device_synced_groups(paths, name) {
+    for name in crate::devices::iter_data_device_ids(paths).unwrap_or_default() {
+        for g in read_device_synced_groups(paths, &name) {
             let existing = by_id.get(&g.id);
             let take = existing
                 .map(|e| e.updated_at < g.updated_at)

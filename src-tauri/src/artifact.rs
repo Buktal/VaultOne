@@ -113,20 +113,9 @@ fn read_device_artifacts_of<A: ArtifactGrain>(
 
 /// Read every device's `<prefix>-*.jsonl` Artifacts (all known devices).
 fn read_all_artifacts_of<A: ArtifactGrain>(paths: &Paths) -> AppResult<Vec<A::Row>> {
-    let root = &paths.repo_data;
-    if !root.exists() {
-        return Ok(Vec::new());
-    }
     let mut out = Vec::new();
-    for entry in std::fs::read_dir(root)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            if let Some(name) = entry.file_name().to_str() {
-                if crate::config::is_valid_device_id(name) {
-                    out.extend(read_device_artifacts_of::<A>(paths, name)?);
-                }
-            }
-        }
+    for name in crate::devices::iter_data_device_ids(paths)? {
+        out.extend(read_device_artifacts_of::<A>(paths, &name)?);
     }
     Ok(out)
 }

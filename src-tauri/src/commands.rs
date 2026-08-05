@@ -197,7 +197,7 @@ pub fn forget_device(
     library_action: crate::library::LibraryForgetAction,
 ) -> AppResult<()> {
     let cfg = state.config.get();
-    if cfg.device_id == device_id {
+    if crate::devices::is_self(&cfg, &device_id) {
         return Err(AppError::Config(
             "this device cannot be removed (rename it instead)".into(),
         ));

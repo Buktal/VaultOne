@@ -15,6 +15,7 @@ use tauri::State;
 
 use crate::commands::AppState;
 use crate::config::{ConfigData, ConfigStore};
+use crate::db::Store;
 use crate::error::{AppError, AppResult};
 
 /// A Library entry is either a single file or a directory tree.
@@ -89,6 +90,7 @@ const SCOPE_ALL: &str = "all";
 /// drilling into a directory). `is_self` and the device's display name are
 /// layered on from the config.
 pub fn scan(
+    store: &Store,
     config: &ConfigStore,
     device_scope: &str,
     subpath: &str,
@@ -97,10 +99,14 @@ pub fn scan(
     let cfg = config.get();
     let lib_root = paths.library.clone();
 
+    // Device enumeration + display names both come from the device registry —
+    // the single source — so the library view shows the same device set and the
+    // same names a dashboard list would (a peer's published name, not a raw id).
     let device_ids = match device_scope {
-        SCOPE_ALL | "" => device_dirs(&lib_root, &cfg),
+        SCOPE_ALL | "" => crate::devices::known_device_ids(&paths, &cfg),
         id => vec![id.to_string()],
     };
+    let device_names = crate::devices::resolve_display_names(store, &cfg, &device_ids)?;
 
     let mut out = Vec::new();
     for did in device_ids {
@@ -108,15 +114,11 @@ pub fn scan(
         if !dir.is_dir() {
             continue;
         }
-        let is_self = did == cfg.device_id;
-        let device_name = if is_self {
-            cfg.display_name.clone()
-        } else {
-            cfg.device_names
-                .get(&did)
-                .cloned()
-                .unwrap_or_else(|| did.clone())
-        };
+        let is_self = crate::devices::is_self(&cfg, &did);
+        let device_name = device_names
+            .get(&did)
+            .cloned()
+            .unwrap_or_else(|| did.clone());
         for entry in std::fs::read_dir(&dir)? {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().to_string();
@@ -176,28 +178,6 @@ fn join_rel(device_id: &str, subpath: &str, name: &str) -> String {
     } else {
         format!("{device_id}/{sub}/{name}")
     }
-}
-
-/// Every device id with a library dir on disk, self first. Peer dirs are
-/// filtered by the device-id shape so stray folders never show up as devices.
-fn device_dirs(lib_root: &Path, cfg: &ConfigData) -> Vec<String> {
-    let mut ids = Vec::new();
-    if !cfg.device_id.is_empty() {
-        ids.push(cfg.device_id.clone());
-    }
-    if let Ok(entries) = std::fs::read_dir(lib_root) {
-        for e in entries.flatten() {
-            if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                continue;
-            }
-            if let Some(name) = e.file_name().to_str() {
-                if name != cfg.device_id && crate::config::is_valid_device_id(name) {
-                    ids.push(name.to_string());
-                }
-            }
-        }
-    }
-    ids
 }
 
 // ---------------------------------------------------------------------------
@@ -486,7 +466,8 @@ pub async fn scan_library(
     subpath: String,
 ) -> AppResult<Vec<LibraryEntry>> {
     let config = state.config.clone();
-    tauri::async_runtime::spawn_blocking(move || scan(&config, &device_scope, &subpath))
+    let store = state.store.clone();
+    tauri::async_runtime::spawn_blocking(move || scan(&store, &config, &device_scope, &subpath))
         .await
         .map_err(|e| AppError::Internal(format!("library scan task failed: {e}")))?
 }

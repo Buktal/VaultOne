@@ -70,26 +70,14 @@ pub fn read_all_session_snapshots(
     paths: &Paths,
     self_device_id: &str,
 ) -> AppResult<Vec<ParsedSessionSnapshot>> {
-    let root = &paths.repo_data;
-    if !root.exists() {
-        return Ok(Vec::new());
-    }
     let mut out = Vec::new();
-    for entry in std::fs::read_dir(root)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
-            continue;
-        }
-        let dev = match entry.file_name().to_str() {
-            Some(n) if crate::config::is_valid_device_id(n) => n.to_string(),
-            _ => continue,
-        };
+    for dev in crate::devices::iter_data_device_ids(paths)? {
         // Self's snapshots are written by this device's own push — pulling them
         // back would clobber local state with a (possibly stale) git copy.
         if dev == self_device_id {
             continue;
         }
-        let sess_dir = entry.path().join("sessions");
+        let sess_dir = paths.device_data_dir(&dev).join("sessions");
         if !sess_dir.is_dir() {
             continue;
         }
