@@ -272,7 +272,6 @@
   "usage.collect.collecting": "収集中…",
   "usage.collect.collectLocal": "ローカルログを収集",
   "usage.collect.done": "収集完了：{{rows}}件追加（{{files}}ファイル走査）",
-  "usage.collect.doneShort": "収集完了：{{count}}件追加",
   "usage.collect.failed": "収集に失敗しました",
   "usage.control.all": "すべて",
   "usage.control.allSource": "すべてのソース",
