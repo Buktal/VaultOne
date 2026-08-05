@@ -269,6 +269,34 @@ pub enum SessionMessageRole {
     System,
 }
 
+impl SessionMessageRole {
+    /// The lowercase string form persisted in `session_messages.role` and used
+    /// everywhere a role crosses a text boundary. Kept in lockstep with the
+    /// `#[serde(rename_all = "lowercase")]` mapping above so the DB, the JSONL
+    /// snapshot, and serde all agree on one spelling per variant.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SessionMessageRole::User => "user",
+            SessionMessageRole::Assistant => "assistant",
+            SessionMessageRole::Tool => "tool",
+            SessionMessageRole::System => "system",
+        }
+    }
+
+    /// Inverse of [`Self::as_str`]. An unknown string defaults to `User` (the
+    /// enum default) rather than failing — a malformed stored row should not
+    /// crash a transcript read.
+    #[allow(dead_code)] // expand phase: unused while the read path still reads the jsonl artifact (see Store::query_session_messages)
+    pub fn parse_str(s: &str) -> Self {
+        match s {
+            "assistant" => SessionMessageRole::Assistant,
+            "tool" => SessionMessageRole::Tool,
+            "system" => SessionMessageRole::System,
+            _ => SessionMessageRole::User,
+        }
+    }
+}
+
 /// One transcript line. Single source of truth across three roles: provider
 /// output (`RawSessionMessage` concept), the per-session JSONL Artifact
 /// (`sessions/<id>.jsonl`), and the DTO crossing to the frontend. The shape is
@@ -293,6 +321,44 @@ pub struct SessionMessage {
     /// summary for tool calls; thinking blocks' full text, base64 images, and
     /// >32 KB tool_results are filtered/truncated at collect time.
     pub content: String,
+}
+
+/// Format version of a session snapshot Artifact (`sessions/<id>.jsonl`). Bumped
+/// only on an incompatible line-shape change; pull refuses a snapshot whose
+/// version is higher than the running binary supports (the §10 upgrade gate)
+/// rather than importing partially-understood data and corrupting state.
+pub const SESSION_SNAPSHOT_VERSION: u32 = 1;
+
+/// The meta line of a session snapshot — always the FIRST line of
+/// `sessions/<id>.jsonl`. Carries the session's system data plus the two
+/// favorites-track user fields (`favorited`, `synced_group_id`) so a peer that
+/// pulls the snapshot can reconstruct the full row (the favorites tab is
+/// cross-device: a peer's favorited session must surface with its title and
+/// group, not just its messages). `v` is the §10 upgrade gate.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SessionSnapshotMeta {
+    pub v: u32,
+    pub id: String,
+    pub source: String,
+    pub project_dir: String,
+    pub title_orig: String,
+    pub started_at: String,
+    pub last_active_at: String,
+    pub favorited: bool,
+    pub synced_group_id: String,
+}
+
+/// One line of a session snapshot Artifact. The first line is always
+/// [`SessionSnapshotLine::Session`]; the rest are
+/// [`SessionSnapshotLine::Message`] in `(ts, uuid)` order. The tagged enum makes
+/// every line self-describing — the pull reader dispatches on `type` rather than
+/// trusting line position, so a future shape change only has to add a variant
+/// and bump `v`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SessionSnapshotLine {
+    Session(SessionSnapshotMeta),
+    Message(SessionMessage),
 }
 
 /// One session row for the frontend list. Aggregates (request_count /

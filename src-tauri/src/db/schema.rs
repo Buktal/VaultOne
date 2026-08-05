@@ -99,6 +99,16 @@ pub(super) const TURN_DURATIONS_INDEXES: &str = "\
 /// which would). Minimal shape: the day is the whole row.
 pub(super) const DIRTY_DAYS_COLS_DDL: &str = "day TEXT PRIMARY KEY";
 
+/// `dirty_sessions` — session ids holding un-pushed message changes. The collect
+/// path flags a session dirty in the SAME transaction that writes its new
+/// `session_messages` rows; the push path recomputes that session's derived
+/// `sessions/<id>.jsonl` snapshot from the store and clears the flag once the
+/// push lands. Mirrors `dirty_days` (one shared dirty-channel per grain).
+/// Local-only: never part of the JSONL Artifact, never synced. It describes
+/// local write dirtiness and makes no claim about git worktree state, so a pull
+/// that rewrites the worktree can never desync it.
+pub(super) const DIRTY_SESSIONS_COLS_DDL: &str = "session_id TEXT PRIMARY KEY";
+
 /// `model_pricing` — LiteLLM seed + user overrides. Decimal as TEXT.
 pub(super) const MODEL_PRICING_COLS_DDL: &str = "\
     model_key TEXT PRIMARY KEY, \
@@ -168,6 +178,31 @@ pub(super) const LOCAL_GROUPS_COLS_DDL: &str = "\
     name TEXT NOT NULL, \
     created_at TEXT NOT NULL";
 
+/// `session_messages` — one row per transcript line, for ALL sessions (not just
+/// favorited). `(device_id, uuid)` = dedup key: a source event replayed lands
+/// once. SQLite is the single source of truth for message 原文; the
+/// `sessions/<id>.jsonl` Artifact is a DERIVED snapshot the push path recomputes
+/// for favorited sessions only. `role` is the lowercase spelling from
+/// `SessionMessageRole::as_str`; `model`/`name` store the empty string for the
+/// `None` side of their `Option<String>` (round-trips losslessly — the role
+/// decides which is meaningful, never an empty value standing alone).
+pub(super) const SESSION_MESSAGES_COLS_DDL: &str = "\
+    device_id TEXT NOT NULL, \
+    session_id TEXT NOT NULL, \
+    uuid TEXT NOT NULL, \
+    role TEXT NOT NULL, \
+    ts TEXT NOT NULL, \
+    model TEXT NOT NULL DEFAULT '', \
+    name TEXT NOT NULL DEFAULT '', \
+    content TEXT NOT NULL, \
+    PRIMARY KEY (device_id, uuid)";
+
+/// The transcript read path resolves a session by `(device_id, session_id)` and
+/// orders by `(ts, uuid)` — this index serves it directly.
+pub(super) const SESSION_MESSAGES_INDEXES: &str = "\
+    CREATE INDEX IF NOT EXISTS idx_session_messages_session \
+        ON session_messages(device_id, session_id);";
+
 /// All `CREATE TABLE IF NOT EXISTS` statements (no indexes). [`Store::open`]
 /// runs this FIRST so every table shell exists before
 /// [`migrate::migrate_schema`] ALTERs legacy columns onto them — and before any
@@ -184,11 +219,13 @@ pub(super) fn schema_tables_sql() -> String {
         create_table("usage_records", USAGE_RECORDS_COLS_DDL),
         create_table("turn_durations", TURN_DURATIONS_COLS_DDL),
         create_table("dirty_days", DIRTY_DAYS_COLS_DDL),
+        create_table("dirty_sessions", DIRTY_SESSIONS_COLS_DDL),
         create_table("model_pricing", MODEL_PRICING_COLS_DDL),
         create_table("device", DEVICE_COLS_DDL),
         create_table("scan_progress", SCAN_PROGRESS_COLS_DDL),
         create_table("sessions", SESSIONS_COLS_DDL),
         create_table("local_groups", LOCAL_GROUPS_COLS_DDL),
+        create_table("session_messages", SESSION_MESSAGES_COLS_DDL),
     ]
     .join("\n")
 }
@@ -204,6 +241,7 @@ pub(super) fn schema_indexes_sql() -> String {
         USAGE_RECORDS_INDEXES.to_string(),
         TURN_DURATIONS_INDEXES.to_string(),
         SESSIONS_INDEXES.to_string(),
+        SESSION_MESSAGES_INDEXES.to_string(),
     ]
     .join("\n")
 }
@@ -280,11 +318,13 @@ mod tests {
             "usage_records",
             "turn_durations",
             "dirty_days",
+            "dirty_sessions",
             "model_pricing",
             "device",
             "scan_progress",
             "sessions",
             "local_groups",
+            "session_messages",
         ] {
             assert!(tables.contains(expected), "schema missing table {expected}");
         }

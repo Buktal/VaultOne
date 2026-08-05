@@ -110,7 +110,7 @@ export function PricingView() {
   const sortProps = { sortKey, sortDir, onSort }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative">
           <Search className="text-muted-foreground absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
@@ -178,145 +178,149 @@ export function PricingView() {
           {t("pricing.add")}
         </Button>
       </div>
-      <Card>
+      <Card className="min-h-0 flex-1">
         <CardHeader>
           <CardTitle>{t("pricing.title")}</CardTitle>
         </CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>
-                  <SortHeader
-                    label={t("pricing.col.modelKey")}
-                    k="model_key"
-                    {...sortProps}
-                  />
-                </TableHead>
-                <TableHead>
-                  <SortHeader
-                    label={t("pricing.col.displayName")}
-                    k="display_name"
-                    {...sortProps}
-                  />
-                </TableHead>
-                <TableHead>
-                  <SortHeader
-                    label={t("usage.tokens.input")}
-                    k="input_per_million"
-                    {...sortProps}
-                  />
-                </TableHead>
-                <TableHead>
-                  <SortHeader
-                    label={t("usage.tokens.output")}
-                    k="output_per_million"
-                    {...sortProps}
-                  />
-                </TableHead>
-                <TableHead>
-                  <SortHeader
-                    label={t("usage.tokens.cacheRead")}
-                    k="cache_read_per_million"
-                    {...sortProps}
-                  />
-                </TableHead>
-                <TableHead>
-                  <SortHeader
-                    label={t("usage.tokens.cacheCreation")}
-                    k="cache_creation_per_million"
-                    {...sortProps}
-                  />
-                </TableHead>
-                <TableHead>{t("usage.logs.col.source")}</TableHead>
-                <TableHead className="text-right">
-                  {t("pricing.col.actions")}
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {isLoading ? (
+        <CardContent className="flex min-h-0 flex-1 flex-col">
+          <div className="min-h-0 flex-1 -mr-2.5 overflow-auto pr-2.5">
+            <Table>
+              <TableHeader>
                 <TableRow>
-                  <TableCell colSpan={8} className="text-muted-foreground">
-                    {t("common.loading")}
-                  </TableCell>
+                  <TableHead>
+                    <SortHeader
+                      label={t("pricing.col.modelKey")}
+                      k="model_key"
+                      {...sortProps}
+                    />
+                  </TableHead>
+                  <TableHead>
+                    <SortHeader
+                      label={t("pricing.col.displayName")}
+                      k="display_name"
+                      {...sortProps}
+                    />
+                  </TableHead>
+                  <TableHead>
+                    <SortHeader
+                      label={t("usage.tokens.input")}
+                      k="input_per_million"
+                      {...sortProps}
+                    />
+                  </TableHead>
+                  <TableHead>
+                    <SortHeader
+                      label={t("usage.tokens.output")}
+                      k="output_per_million"
+                      {...sortProps}
+                    />
+                  </TableHead>
+                  <TableHead>
+                    <SortHeader
+                      label={t("usage.tokens.cacheRead")}
+                      k="cache_read_per_million"
+                      {...sortProps}
+                    />
+                  </TableHead>
+                  <TableHead>
+                    <SortHeader
+                      label={t("usage.tokens.cacheCreation")}
+                      k="cache_creation_per_million"
+                      {...sortProps}
+                    />
+                  </TableHead>
+                  <TableHead>{t("usage.logs.col.source")}</TableHead>
+                  <TableHead className="text-right">
+                    {t("pricing.col.actions")}
+                  </TableHead>
                 </TableRow>
-              ) : total === 0 ? (
-                <TableRow>
-                  <TableCell
-                    colSpan={8}
-                    className="text-muted-foreground py-8 text-center"
-                  >
-                    {t("pricing.noMatch")}
-                  </TableCell>
-                </TableRow>
-              ) : (
-                paged.map((e) => (
-                  <TableRow key={e.model_key}>
-                    <TableCell className="font-mono text-xs">
-                      {e.model_key}
-                    </TableCell>
-                    <TableCell>{e.display_name}</TableCell>
-                    <TableCell className="pr-4 text-right tabular-nums">
-                      {formatCost(e.input_per_million)}
-                    </TableCell>
-                    <TableCell className="pr-4 text-right tabular-nums">
-                      {formatCost(e.output_per_million)}
-                    </TableCell>
-                    <TableCell className="pr-4 text-right tabular-nums">
-                      {formatCost(e.cache_read_per_million)}
-                    </TableCell>
-                    <TableCell className="pr-4 text-right tabular-nums">
-                      {formatCost(e.cache_creation_per_million)}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={e.is_builtin ? "secondary" : "default"}>
-                        {e.is_builtin
-                          ? t("pricing.builtin")
-                          : t("pricing.custom")}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex justify-end gap-1">
-                        <Tooltip>
-                          <TooltipTrigger
-                            render={
-                              <Button
-                                variant="ghost"
-                                size="icon-sm"
-                                onClick={() => openEdit(e)}
-                                aria-label={t("common.edit")}
-                              />
-                            }
-                          >
-                            <Pencil />
-                          </TooltipTrigger>
-                          <TooltipContent>{t("common.edit")}</TooltipContent>
-                        </Tooltip>
-                        <Tooltip>
-                          <TooltipTrigger
-                            render={
-                              <Button
-                                variant="ghost"
-                                size="icon-sm"
-                                onClick={() => remove(e.model_key)}
-                                aria-label={t("common.delete")}
-                              />
-                            }
-                          >
-                            <Trash2 />
-                          </TooltipTrigger>
-                          <TooltipContent>{t("common.delete")}</TooltipContent>
-                        </Tooltip>
-                      </div>
+              </TableHeader>
+              <TableBody>
+                {isLoading ? (
+                  <TableRow>
+                    <TableCell colSpan={8} className="text-muted-foreground">
+                      {t("common.loading")}
                     </TableCell>
                   </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
+                ) : total === 0 ? (
+                  <TableRow>
+                    <TableCell
+                      colSpan={8}
+                      className="text-muted-foreground py-8 text-center"
+                    >
+                      {t("pricing.noMatch")}
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  paged.map((e) => (
+                    <TableRow key={e.model_key}>
+                      <TableCell className="font-mono text-xs">
+                        {e.model_key}
+                      </TableCell>
+                      <TableCell>{e.display_name}</TableCell>
+                      <TableCell className="pr-4 text-right tabular-nums">
+                        {formatCost(e.input_per_million)}
+                      </TableCell>
+                      <TableCell className="pr-4 text-right tabular-nums">
+                        {formatCost(e.output_per_million)}
+                      </TableCell>
+                      <TableCell className="pr-4 text-right tabular-nums">
+                        {formatCost(e.cache_read_per_million)}
+                      </TableCell>
+                      <TableCell className="pr-4 text-right tabular-nums">
+                        {formatCost(e.cache_creation_per_million)}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={e.is_builtin ? "secondary" : "default"}>
+                          {e.is_builtin
+                            ? t("pricing.builtin")
+                            : t("pricing.custom")}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-1">
+                          <Tooltip>
+                            <TooltipTrigger
+                              render={
+                                <Button
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  onClick={() => openEdit(e)}
+                                  aria-label={t("common.edit")}
+                                />
+                              }
+                            >
+                              <Pencil />
+                            </TooltipTrigger>
+                            <TooltipContent>{t("common.edit")}</TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger
+                              render={
+                                <Button
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  onClick={() => remove(e.model_key)}
+                                  aria-label={t("common.delete")}
+                                />
+                              }
+                            >
+                              <Trash2 />
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {t("common.delete")}
+                            </TooltipContent>
+                          </Tooltip>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
 
-          <div className="text-muted-foreground mt-3 flex items-center justify-between text-xs">
+          <div className="text-muted-foreground mt-3 flex shrink-0 items-center justify-between text-xs">
             <span>{t("usage.logs.pageInfo", { page, totalPages, total })}</span>
             <div className="flex gap-2">
               <Button

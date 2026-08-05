@@ -206,7 +206,7 @@ pub(super) fn collect_jsonl_incremental(
     let mut delta = ScanProgressDelta::new();
 
     for file in &files {
-        let path_str = file.to_string_lossy().into_owned();
+        let path_str = scan_progress_key(file);
         // mtime gate — one stat; unchanged files do no IO/serde.
         let metadata = match std::fs::metadata(file) {
             Ok(m) => m,
@@ -221,9 +221,9 @@ pub(super) fn collect_jsonl_incremental(
         if prev.last_modified != 0 && mtime <= prev.last_modified {
             continue;
         }
-        let text = match std::fs::read_to_string(file) {
-            Ok(t) => t,
-            Err(_) => {
+        let text = match read_source_lossy(file) {
+            Some(t) => t,
+            None => {
                 skipped += 1;
                 continue;
             }
@@ -333,6 +333,30 @@ pub(super) fn metadata_modified_nanos(metadata: &std::fs::Metadata) -> i64 {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
         .unwrap_or(0)
+}
+
+/// Read a source-log file as text, tolerating a partial multi-byte UTF-8
+/// sequence at the write boundary. An active session being appended to may be
+/// flushed mid-character; `read_to_string` rejects the WHOLE file on that, so
+/// the session's meta/transcript never land and the scan cursor never advances
+/// (see `collect_jsonl_incremental`). Reading bytes + lossy decode turns the
+/// truncated tail into U+FFFD: the line holding it fails JSON parsing and is
+/// counted as `skipped` like any malformed line, while every complete line
+/// before it parses normally. Returns `None` only on a real IO error (file
+/// vanished mid-scan) — the caller then skips the file.
+pub(super) fn read_source_lossy(file: &Path) -> Option<String> {
+    let bytes = std::fs::read(file).ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Stable `scan_progress` key for a source-log file. The same physical file
+/// can surface with different path spellings across runs (e.g. a Windows home
+/// dir resolving with different drive-letter case), which would otherwise fork
+/// one cursor per spelling and stall the mtime gate on the stale one. Normalize
+/// to lowercase + forward slashes so the key is spelling-invariant. (UTF-8
+/// round-trips losslessly: source-log paths are valid Unicode in practice.)
+pub(super) fn scan_progress_key(file: &Path) -> String {
+    file.to_string_lossy().to_lowercase().replace('\\', "/")
 }
 
 /// Resolve the default projects dir for diagnostics (used by commands).

@@ -110,7 +110,7 @@ export function LibraryView() {
   } = useLibraryBrowser()
 
   return (
-    <div className="flex flex-1 flex-col gap-4">
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
       <div className="flex flex-wrap items-center gap-2">
         {!atRoot ? (
           <Tooltip>
@@ -189,14 +189,14 @@ export function LibraryView() {
 
       <Card
         className={cn(
-          "flex flex-1 flex-col transition-colors",
+          "flex min-h-0 flex-1 flex-col transition-colors",
           dragging && "border-accent-brand bg-accent-tint",
         )}
       >
         <CardHeader>
           <CardTitle>{t("library.title")}</CardTitle>
         </CardHeader>
-        <CardContent className="flex flex-1 flex-col overflow-auto">
+        <CardContent className="flex min-h-0 flex-1 flex-col">
           {isLoading ? (
             <div className="text-muted-foreground p-4 text-sm">
               {t("common.loading")}
@@ -210,176 +210,178 @@ export function LibraryView() {
               />
             </div>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>{t("library.col.name")}</TableHead>
-                  <TableHead className="w-24">
-                    {t("library.col.kind")}
-                  </TableHead>
-                  <TableHead className="w-24">
-                    {t("library.col.size")}
-                  </TableHead>
-                  <TableHead className="w-40">
-                    {showDevice
-                      ? t("library.col.device")
-                      : t("library.col.modified")}
-                  </TableHead>
-                  <TableHead className="text-right">
-                    {t("library.col.actions")}
-                  </TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {entries.map((e) => {
-                  const Icon = kindIcon(e.name, e.kind === "dir")
-                  const isRenaming = renaming === e.rel_path
-                  const busy = busyRelPath === e.rel_path
-                  const kindLabel =
-                    e.kind === "dir"
-                      ? t("library.kind.dir")
-                      : e.name.split(".").pop()?.toUpperCase() ||
-                        t("library.kind.file")
-                  return (
-                    <TableRow key={e.rel_path}>
-                      <TableCell>
-                        {isRenaming ? (
-                          <div className="flex items-center gap-1">
-                            <Input
-                              value={renameVal}
-                              onChange={(ev) => setRenameVal(ev.target.value)}
-                              className="h-7 w-44"
-                              onKeyDown={(ev) => {
-                                if (ev.key === "Enter") commitRename(e)
-                                if (ev.key === "Escape") cancelRename()
-                              }}
-                              autoFocus
-                            />
-                            <Button
-                              variant="ghost"
-                              size="icon-sm"
-                              disabled={busy}
-                              onClick={() => commitRename(e)}
-                            >
-                              {busy ? (
-                                <Loader2 className="animate-spin" />
-                              ) : (
-                                <Check />
-                              )}
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon-sm"
-                              onClick={cancelRename}
-                            >
-                              <X />
-                            </Button>
-                          </div>
-                        ) : (
-                          <button
-                            type="button"
-                            className="hover:text-accent-brand-strong flex items-center gap-2"
-                            onClick={() =>
-                              e.kind === "dir" ? drill(e) : setPreview(e)
-                            }
-                          >
-                            <Icon className="size-4 shrink-0" />
-                            <span>{e.name}</span>
-                          </button>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground text-xs">
-                        {kindLabel}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground text-xs tabular-nums">
-                        {formatSize(e.size)}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground text-xs">
-                        {showDevice ? (
-                          e.is_self ? (
-                            t("devices.thisDevice")
+            <div className="min-h-0 flex-1 -mr-2.5 overflow-auto pr-2.5">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>{t("library.col.name")}</TableHead>
+                    <TableHead className="w-24">
+                      {t("library.col.kind")}
+                    </TableHead>
+                    <TableHead className="w-24">
+                      {t("library.col.size")}
+                    </TableHead>
+                    <TableHead className="w-40">
+                      {showDevice
+                        ? t("library.col.device")
+                        : t("library.col.modified")}
+                    </TableHead>
+                    <TableHead className="text-right">
+                      {t("library.col.actions")}
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {entries.map((e) => {
+                    const Icon = kindIcon(e.name, e.kind === "dir")
+                    const isRenaming = renaming === e.rel_path
+                    const busy = busyRelPath === e.rel_path
+                    const kindLabel =
+                      e.kind === "dir"
+                        ? t("library.kind.dir")
+                        : e.name.split(".").pop()?.toUpperCase() ||
+                          t("library.kind.file")
+                    return (
+                      <TableRow key={e.rel_path}>
+                        <TableCell>
+                          {isRenaming ? (
+                            <div className="flex items-center gap-1">
+                              <Input
+                                value={renameVal}
+                                onChange={(ev) => setRenameVal(ev.target.value)}
+                                className="h-7 w-44"
+                                onKeyDown={(ev) => {
+                                  if (ev.key === "Enter") commitRename(e)
+                                  if (ev.key === "Escape") cancelRename()
+                                }}
+                                autoFocus
+                              />
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                disabled={busy}
+                                onClick={() => commitRename(e)}
+                              >
+                                {busy ? (
+                                  <Loader2 className="animate-spin" />
+                                ) : (
+                                  <Check />
+                                )}
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                onClick={cancelRename}
+                              >
+                                <X />
+                              </Button>
+                            </div>
                           ) : (
-                            e.device_name
-                          )
-                        ) : (
-                          <span
-                            title={dayjs(e.modified_ms).format("MM/DD HH:mm")}
-                          >
-                            {dayjs(e.modified_ms).fromNow()}
-                          </span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex justify-end gap-1">
-                          <Tooltip>
-                            <TooltipTrigger
-                              render={
-                                <Button
-                                  variant="ghost"
-                                  size="icon-sm"
-                                  aria-label={t("library.row.export")}
-                                  disabled={busy}
-                                  onClick={() => onExport(e)}
-                                />
+                            <button
+                              type="button"
+                              className="hover:text-accent-brand-strong flex items-center gap-2"
+                              onClick={() =>
+                                e.kind === "dir" ? drill(e) : setPreview(e)
                               }
                             >
-                              {busy ? (
-                                <Loader2 className="animate-spin" />
-                              ) : (
-                                <Download />
-                              )}
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              {t("library.row.export")}
-                            </TooltipContent>
-                          </Tooltip>
-                          <Tooltip>
-                            <TooltipTrigger
-                              render={
-                                <Button
-                                  variant="ghost"
-                                  size="icon-sm"
-                                  aria-label={t("library.row.rename")}
-                                  disabled={busy}
-                                  onClick={() => startRename(e)}
-                                />
-                              }
+                              <Icon className="size-4 shrink-0" />
+                              <span>{e.name}</span>
+                            </button>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-xs">
+                          {kindLabel}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-xs tabular-nums">
+                          {formatSize(e.size)}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-xs">
+                          {showDevice ? (
+                            e.is_self ? (
+                              t("devices.thisDevice")
+                            ) : (
+                              e.device_name
+                            )
+                          ) : (
+                            <span
+                              title={dayjs(e.modified_ms).format("MM/DD HH:mm")}
                             >
-                              <Pencil />
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              {t("library.row.rename")}
-                            </TooltipContent>
-                          </Tooltip>
-                          <Tooltip>
-                            <TooltipTrigger
-                              render={
-                                <Button
-                                  variant="ghost"
-                                  size="icon-sm"
-                                  aria-label={t("library.row.delete")}
-                                  disabled={busy}
-                                  onClick={() => onDelete(e)}
-                                />
-                              }
-                            >
-                              {busy ? (
-                                <Loader2 className="animate-spin" />
-                              ) : (
-                                <Trash2 />
-                              )}
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              {t("library.row.delete")}
-                            </TooltipContent>
-                          </Tooltip>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  )
-                })}
-              </TableBody>
-            </Table>
+                              {dayjs(e.modified_ms).fromNow()}
+                            </span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-1">
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={
+                                  <Button
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    aria-label={t("library.row.export")}
+                                    disabled={busy}
+                                    onClick={() => onExport(e)}
+                                  />
+                                }
+                              >
+                                {busy ? (
+                                  <Loader2 className="animate-spin" />
+                                ) : (
+                                  <Download />
+                                )}
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                {t("library.row.export")}
+                              </TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={
+                                  <Button
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    aria-label={t("library.row.rename")}
+                                    disabled={busy}
+                                    onClick={() => startRename(e)}
+                                  />
+                                }
+                              >
+                                <Pencil />
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                {t("library.row.rename")}
+                              </TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={
+                                  <Button
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    aria-label={t("library.row.delete")}
+                                    disabled={busy}
+                                    onClick={() => onDelete(e)}
+                                  />
+                                }
+                              >
+                                {busy ? (
+                                  <Loader2 className="animate-spin" />
+                                ) : (
+                                  <Trash2 />
+                                )}
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                {t("library.row.delete")}
+                              </TooltipContent>
+                            </Tooltip>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
+                </TableBody>
+              </Table>
+            </div>
           )}
         </CardContent>
       </Card>

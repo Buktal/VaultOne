@@ -234,15 +234,14 @@ pub fn query_sessions_cmd(
 pub fn get_session_transcript_cmd(
     state: State<'_, AppState>,
     id: String,
-    _device_id: String,
+    device_id: String,
 ) -> AppResult<Vec<SessionMessage>> {
-    // Read all devices' transcripts for this session (own first, then peers'
-    // pulled-in files). `_device_id` is accepted for API symmetry but the
-    // transcript may live under any device's `sessions/` dir.
-    Ok(crate::ingest::read_all_transcripts(
-        &state.config.paths(),
-        &id,
-    ))
+    // The transcript lives in the db (`session_messages`) for every session —
+    // favorited or not — so this read no longer depends on the favorites-only
+    // jsonl snapshot. `device_id` is the own device; its rows win on uuid
+    // conflict (it is the source of truth for a session it collected), then
+    // peers' pulled-in rows fill the gaps.
+    state.store.query_session_transcript(&id, &device_id)
 }
 
 #[tauri::command]

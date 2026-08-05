@@ -111,7 +111,7 @@ impl Provider for OpenCodeProvider {
         let Some(db_path) = &self.db_path else {
             return Ok((result, delta));
         };
-        let db_path_str = db_path.to_string_lossy().into_owned();
+        let db_path_str = super::scan_progress_key(db_path);
 
         let Some(merged_mtime) = merged_db_mtime(db_path) else {
             return Ok((result, delta));

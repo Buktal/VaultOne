@@ -13,8 +13,11 @@ use std::path::Path;
 
 use crate::config::Paths;
 use crate::db::Store;
-use crate::error::AppResult;
-use crate::model::{RawSession, SessionMessage, TurnDuration, UsageRecord};
+use crate::error::{AppError, AppResult};
+use crate::model::{
+    RawSession, SessionMessage, SessionSnapshotLine, SessionSnapshotMeta, TurnDuration,
+    UsageRecord, SESSION_SNAPSHOT_VERSION,
+};
 use crate::pricing::{CostCalculator, PricingBook};
 use crate::providers::{CollectResult, RawTurnDuration, RawUsage};
 
@@ -72,9 +75,9 @@ pub fn turn_durationify(raw: &RawTurnDuration, device_id: &str) -> TurnDuration 
 /// [`recompute_usage_day`] / [`recompute_turns_day`]). SQLite is the single
 /// source of truth; the scan cursor advances only after the ingest commits, so
 /// a failed ingest re-parses the same source lines next collect (store dedup).
-/// Session transcripts are the ONE file-system write: favorited sessions'
-/// message 原文 land in per-session files (`data/<dev>/sessions/<id>.jsonl`,
-/// local data, not a derived Artifact) — hence `paths`.
+/// `paths` is NOT for transcript writes — collect is store-only; it is used only
+/// by the ghost-session reconcile (best-effort unlink of a vanished session's
+/// jsonl snapshot, which the push path owns).
 /// Returns a summary.
 pub fn ingest_collected(
     store: &Store,
@@ -104,10 +107,10 @@ pub fn ingest_collected(
     let turns_inserted = store.ingest_turn_durations_marking_dirty(&turns)?;
 
     // Sessions (Claude only in this phase; empty for other sources). Refreshes
-    // the sessions table (system data; user data preserved by UPSERT) and
-    // appends transcripts for favorited sessions — local-only for now; the
-    // per-session sync shape lands with the session phase.
-    ingest_sessions(store, paths, device_id, &result.sessions, &result.messages)?;
+    // the sessions table (system data; user data preserved by UPSERT) and writes
+    // all transcript messages to the store (favorited or not); the per-session
+    // jsonl snapshot is the push path's derived concern, not collect's.
+    ingest_sessions(store, device_id, &result.sessions, &result.messages)?;
 
     // File-backed reality check: drop session rows (and their transcript
     // files) whose source file no longer exists. Runs only when the ingest
@@ -257,6 +260,37 @@ pub fn recompute_turns_day(
     Ok(rows.len())
 }
 
+/// Recompute one session's derived snapshot Artifact from the store: the meta
+/// line first (system data + favorited + synced_group_id), then every message in
+/// `(ts, uuid)` order, as a full file rewrite. The push-side writer — collect no
+/// longer appends; the store is the single source of truth and this materializes
+/// the snapshot a peer pulls. Byte-stable across pushes ((ts,uuid) order + serde
+/// field-declaration order), so the same store yields the same bytes every time
+/// (no git churn once a session settles). Returns the message count — the
+/// recompute-time snapshot the push path uses to decide whether the session is
+/// still clearable after the push lands.
+pub fn recompute_session_snapshot(
+    store: &Store,
+    paths: &Paths,
+    device_id: &str,
+    session_id: &str,
+) -> AppResult<usize> {
+    let messages = store.query_session_messages(device_id, session_id)?;
+    let count = messages.len();
+    let meta = store
+        .get_session_snapshot_meta(device_id, session_id)?
+        .ok_or_else(|| {
+            AppError::Internal(format!("recompute session {session_id}: no meta row"))
+        })?;
+    let mut lines: Vec<SessionSnapshotLine> = Vec::with_capacity(count + 1);
+    lines.push(SessionSnapshotLine::Session(meta));
+    for m in messages {
+        lines.push(SessionSnapshotLine::Message(m));
+    }
+    rewrite_day_file(&transcript_path(paths, device_id, session_id), &lines)?;
+    Ok(count)
+}
+
 // ---------------- Test-only Artifact append fixtures ----------------
 //
 // collect no longer appends to the Artifact — the push path rewrites it from
@@ -265,8 +299,11 @@ pub fn recompute_turns_day(
 // exercise pull/import without driving a full collect+push), so they are
 // `#[cfg(test)]`.
 
-/// Open once in append mode, serialize + writeln each row. Used by the
-/// session-transcript append (production) and the test fixtures above.
+/// Open once in append mode, serialize + writeln each row. Test-fixture only
+/// now: production writes Artifacts via the full-rewrite path (`rewrite_day_file`
+/// / `recompute_session_snapshot`); this append helper survives for the sync
+/// round-trip tests that stand a device's Artifact up directly.
+#[cfg(test)]
 fn write_jsonl_day<T: serde::Serialize>(path: &Path, rows: &[&T]) -> std::io::Result<()> {
     use std::fs::OpenOptions;
     use std::io::Write;
@@ -395,6 +432,103 @@ pub fn read_all_turn_artifacts(paths: &Paths) -> AppResult<Vec<TurnDuration>> {
     read_all_artifacts_of::<TurnGrain>(paths)
 }
 
+/// One parsed session snapshot off disk: the device that authored it, its meta
+/// line, and its message lines (file order). The pull path imports these into
+/// the store keyed by `(device_id, session_id)`.
+#[derive(Debug, Clone)]
+pub struct ParsedSessionSnapshot {
+    pub device_id: String,
+    pub meta: SessionSnapshotMeta,
+    pub messages: Vec<SessionMessage>,
+}
+
+/// Read every PEER's `sessions/<id>.jsonl` snapshots. `self_device_id`'s own
+/// directory is skipped — self is local-authoritative (collect-driven), so its
+/// git snapshot must never overwrite fresher local state on pull. Each file's
+/// first line is the meta (`type:"session"`); the rest are messages
+/// (`type:"message"`). A snapshot whose `v` exceeds
+/// [`SESSION_SNAPSHOT_VERSION`] is the §10 upgrade-gate hit: it is skipped with
+/// a logged warning (not a hard error — a newer peer's snapshot must not break
+/// an older binary's whole pull), so its messages simply do not arrive until
+/// the user upgrades. Malformed lines are skipped (mirror `read_jsonl_file_of`).
+pub fn read_all_session_snapshots(
+    paths: &Paths,
+    self_device_id: &str,
+) -> AppResult<Vec<ParsedSessionSnapshot>> {
+    let root = &paths.repo_data;
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let dev = match entry.file_name().to_str() {
+            Some(n) if crate::config::is_valid_device_id(n) => n.to_string(),
+            _ => continue,
+        };
+        // Self's snapshots are written by this device's own push — pulling them
+        // back would clobber local state with a (possibly stale) git copy.
+        if dev == self_device_id {
+            continue;
+        }
+        let sess_dir = entry.path().join("sessions");
+        if !sess_dir.is_dir() {
+            continue;
+        }
+        for f in std::fs::read_dir(&sess_dir)? {
+            let f = f?;
+            if f.file_type()?.is_file() {
+                if let Some(snap) = read_one_session_snapshot(&f.path(), &dev) {
+                    out.push(snap);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Parse one `sessions/<id>.jsonl`: the meta line first, then messages. Returns
+/// `None` for a file whose meta line carries a higher `v` than this binary
+/// supports (upgrade gate), or one with no meta line at all (not a snapshot).
+/// Read errors and malformed lines are tolerated — a corrupt peer file must not
+/// abort a pull.
+fn read_one_session_snapshot(path: &Path, device_id: &str) -> Option<ParsedSessionSnapshot> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(_) => return None,
+    };
+    let mut meta: Option<SessionSnapshotMeta> = None;
+    let mut messages = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<SessionSnapshotLine>(line) {
+            Ok(SessionSnapshotLine::Session(m)) => {
+                if m.v > SESSION_SNAPSHOT_VERSION {
+                    eprintln!(
+                        "[vaultone] session snapshot {} is v{} (this build supports v{}); skipping — upgrade to read it",
+                        m.id, m.v, SESSION_SNAPSHOT_VERSION
+                    );
+                    return None;
+                }
+                meta = Some(m);
+            }
+            Ok(SessionSnapshotLine::Message(m)) => messages.push(m),
+            Err(_) => continue,
+        }
+    }
+    meta.map(|m| ParsedSessionSnapshot {
+        device_id: device_id.to_string(),
+        meta: m,
+        messages,
+    })
+}
+
 // The device-name artifact I/O (`ensure_own_device_artifact` /
 // `read_all_device_artifacts`) lived here once; it moved to `crate::devices`,
 // the registry module that owns device membership + naming + the name
@@ -410,12 +544,9 @@ pub fn read_all_turn_artifacts(paths: &Paths) -> AppResult<Vec<TurnDuration>> {
 // sync shape (per-session files, favorites-only) lands with the session phase;
 // the old per-day `session-meta` grain is gone.
 
-/// Per-session transcript soft cap (5 MiB). Exceeded ⇒ log warning only; not
-/// enforced (the main strategy is "favorites only"; this is an observability
-/// backstop).
-const TRANSCRIPT_SOFT_CAP_BYTES: u64 = 5 * 1024 * 1024;
-
-/// `<device_data_dir>/sessions/<session_id>.jsonl` — one file per session.
+/// `<device_data_dir>/sessions/<session_id>.jsonl` — one file per session. The
+/// push path writes it (`recompute_session_snapshot`); collect never touches it
+/// (the store is the single source of truth, the jsonl is a derived snapshot).
 pub(crate) fn transcript_path(
     paths: &Paths,
     device_id: &str,
@@ -427,121 +558,18 @@ pub(crate) fn transcript_path(
         .join(format!("{session_id}.jsonl"))
 }
 
-/// Append transcript messages to `sessions/<id>.jsonl`, deduping by message
-/// `uuid` (idempotent re-collect writes no duplicate). The caller MUST ensure
-/// the session is favorited — the invariant "原文仅 favorited 才采集" is
-/// asserted at the ingest layer (`ingest_sessions` checks before calling).
-/// Soft cap (5 MiB) warns but does not truncate.
-pub fn append_session_transcript(
-    paths: &Paths,
-    device_id: &str,
-    session_id: &str,
-    messages: &[SessionMessage],
-) -> AppResult<()> {
-    if messages.is_empty() {
-        return Ok(());
-    }
-    let path = transcript_path(paths, device_id, session_id);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let existing: std::collections::HashSet<String> = read_jsonl_file_of::<SessionMessage>(&path)
-        .unwrap_or_default()
-        .iter()
-        .map(|m| m.uuid.clone())
-        .collect();
-    let missing: Vec<&SessionMessage> = messages
-        .iter()
-        .filter(|m| !existing.contains(&m.uuid))
-        .collect();
-    if missing.is_empty() {
-        return Ok(());
-    }
-    write_jsonl_day(&path, &missing)?;
-    // Soft-cap observability: warn (don't truncate) when a transcript file
-    // crosses 5 MiB — the favorites-only policy is the real cap.
-    if let Ok(meta) = std::fs::metadata(&path) {
-        if meta.len() > TRANSCRIPT_SOFT_CAP_BYTES {
-            eprintln!(
-                "[vaultone] session {session_id} transcript exceeds 5 MiB soft cap ({} bytes)",
-                meta.len()
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Read one device's transcript for a session. A missing file (a non-favorited
-/// session, or one never synced here) returns an empty Vec — the transcript's
-/// absence is a normal state, not an error.
-pub fn read_session_transcript(
-    paths: &Paths,
-    device_id: &str,
-    session_id: &str,
-) -> AppResult<Vec<SessionMessage>> {
-    let path = transcript_path(paths, device_id, session_id);
-    match std::fs::read_to_string(&path) {
-        Ok(text) => {
-            let mut out = Vec::new();
-            for line in text.lines() {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                if let Ok(m) = serde_json::from_str::<SessionMessage>(line) {
-                    out.push(m);
-                }
-            }
-            Ok(out)
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(e) => Err(e.into()),
-    }
-}
-
-/// Read every device's transcript for a session and merge by message uuid (the
-/// `get_session_transcript` command's read path: own device first, then peers'
-/// pulled-in files). Dedup keeps the first occurrence per uuid (own device
-/// wins on conflict — it is the source of truth for a session it collected).
-pub fn read_all_transcripts(paths: &Paths, session_id: &str) -> Vec<SessionMessage> {
-    let mut out: Vec<SessionMessage> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let root = &paths.repo_data;
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return out;
-    };
-    // Own device first so its messages win dedup; then peers in stable order.
-    let mut device_ids: Vec<String> = Vec::new();
-    for entry in entries.flatten() {
-        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            continue;
-        }
-        if let Some(name) = entry.file_name().to_str() {
-            if crate::config::is_valid_device_id(name) {
-                device_ids.push(name.to_string());
-            }
-        }
-    }
-    device_ids.sort();
-    for did in device_ids {
-        if let Ok(msgs) = read_session_transcript(paths, &did, session_id) {
-            for m in msgs {
-                if seen.insert(m.uuid.clone()) {
-                    out.push(m);
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Ingest a provider's session output: refresh system data in the SQLite table
-/// (UPSERT preserves user data) and append transcripts for favorited sessions
-/// only. Local-only in this phase — the cross-device sync shape (per-session
-/// files, favorites-only) lands with the session phase.
+/// Ingest a provider's session output:
+///   1. Refresh system data in the `sessions` table (UPSERT preserves user data).
+///   2. Write ALL transcript messages to `session_messages` (db single source of
+///      truth — favorited or not) and mark their sessions dirty for the push path.
+///
+/// The jsonl snapshot is NO LONGER written here — the push path recomputes it
+/// from the store (`recompute_session_snapshot`), so collect is store-only
+/// (mirrors the usage/turns grains). The favorites gate lives entirely in the
+/// push path: a non-favorited session's messages still land in the db (readable
+/// locally), but no `sessions/<id>.jsonl` is produced for it.
 pub fn ingest_sessions(
     store: &Store,
-    paths: &Paths,
     device_id: &str,
     sessions: &[RawSession],
     messages: &[SessionMessage],
@@ -556,27 +584,13 @@ pub fn ingest_sessions(
         store.upsert_session(device_id, s)?;
     }
 
-    // Transcripts: group messages by session, append ONLY for favorited ones.
-    // The invariant "原文仅 favorited 才采集" is enforced here — a session must
-    // be favorited in the DB (just refreshed above with preserved user data)
-    // before its messages land in `sessions/<id>.jsonl`.
+    // All transcript messages → db. EVERY session lands here (favorited or not):
+    // SQLite is the single source of truth for 原文. Sessions with new rows are
+    // flagged dirty in the same transaction so the push path recomputes their
+    // snapshots; the favorites gate (write vs delete the jsonl) is the push
+    // path's concern, not collect's.
     if !messages.is_empty() {
-        let mut by_session: std::collections::HashMap<String, Vec<SessionMessage>> =
-            std::collections::HashMap::new();
-        for m in messages {
-            by_session
-                .entry(m.session_id.clone())
-                .or_default()
-                .push(m.clone());
-        }
-        for (sid, msgs) in by_session {
-            let favorited = store
-                .get_session_favorited(device_id, &sid)?
-                .unwrap_or(false);
-            if favorited {
-                append_session_transcript(paths, device_id, &sid, &msgs)?;
-            }
-        }
+        store.ingest_session_messages_marking_dirty(device_id, messages)?;
     }
     Ok(())
 }
@@ -901,10 +915,10 @@ mod tests {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
         let dev = "0123456789ab";
 
-        // Two favorited sessions with transcripts on disk.
+        // Two favorited sessions; their messages land in the db (collect is
+        // store-only — the jsonl is a derived snapshot the push path writes).
         ingest_sessions(
             &store,
-            &paths,
             dev,
             &[
                 sys_session("real", "2026-08-01T01:00:00.000Z"),
@@ -917,7 +931,6 @@ mod tests {
         store.set_session_favorited(dev, "ghost", true).unwrap();
         ingest_sessions(
             &store,
-            &paths,
             dev,
             &[
                 sys_session("real", "2026-08-01T01:00:00.000Z"),
@@ -926,13 +939,16 @@ mod tests {
             &[msg("m1", "real", "hi"), msg("m2", "ghost", "bye")],
         )
         .unwrap();
+        // Push materializes both favorited sessions' jsonl snapshots.
+        recompute_session_snapshot(&store, &paths, dev, "real").unwrap();
+        recompute_session_snapshot(&store, &paths, dev, "ghost").unwrap();
         assert!(
             transcript_path(&paths, dev, "real").exists()
                 && transcript_path(&paths, dev, "ghost").exists(),
-            "both transcripts written (both favorited)"
+            "both snapshots written (both favorited)"
         );
 
-        // Next collect sees only `real` → `ghost` row + transcript vanish.
+        // Next collect sees only `real` → `ghost` row + jsonl + messages vanish.
         let removed =
             reconcile_session_data(&store, &paths, dev, "claude_code", &["real".to_string()])
                 .unwrap();
@@ -946,11 +962,26 @@ mod tests {
         assert_eq!(ids, ["real"], "ghost row deleted");
         assert!(
             !transcript_path(&paths, dev, "ghost").exists(),
-            "ghost transcript file removed"
+            "ghost jsonl removed"
         );
         assert!(
             transcript_path(&paths, dev, "real").exists(),
-            "real transcript untouched"
+            "real jsonl untouched"
+        );
+
+        // The db tracks the same unit: the ghost's messages leave session_messages
+        // too, not just the jsonl artifact on disk.
+        assert!(
+            store
+                .query_session_messages(dev, "ghost")
+                .unwrap()
+                .is_empty(),
+            "ghost session_messages removed with its row"
+        );
+        assert_eq!(
+            store.query_session_messages(dev, "real").unwrap().len(),
+            1,
+            "real session_messages untouched"
         );
     }
 
@@ -998,6 +1029,8 @@ mod tests {
             session_ids: vec!["s1".into(), "s2".into()],
         };
         ingest_collected(&store, &paths, dev, &book, pass1b).unwrap();
+        // Push writes s2's derived jsonl (collect no longer touches it).
+        recompute_session_snapshot(&store, &paths, dev, "s2").unwrap();
         assert!(transcript_path(&paths, dev, "s2").exists());
 
         // Pass 2: s2's file is gone from disk; only s1 is seen. Its row +
@@ -1027,40 +1060,39 @@ mod tests {
         );
     }
 
-    /// Invariant: transcripts are written ONLY for favorited sessions.
-    /// `ingest_sessions` checks favorited in the DB before appending.
+    /// All transcript messages land in the db (`session_messages`), favorited or
+    /// not — SQLite is the single source of truth for 原文. The favorites gate
+    /// applies only to the derived jsonl snapshot (a push-path concern); the db
+    /// holds every session so a non-favorited session can still be read.
     #[test]
-    fn ingest_sessions_writes_transcript_only_when_favorited() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = Paths::resolve(tmp.path());
+    fn ingest_sessions_writes_all_messages_to_db_regardless_of_favorite() {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
         let dev = "0123456789ab";
 
-        // Two sessions, both collected; messages for both.
         let fav = sys_session("fav", "2026-08-01T01:00:00.000Z");
         let plain = sys_session("plain", "2026-08-01T01:00:00.000Z");
-        ingest_sessions(&store, &paths, dev, &[fav.clone(), plain.clone()], &[]).unwrap();
-        // Favorite only `fav`.
-        store.set_session_favorited(dev, "fav", true).unwrap();
-        // Next collect: messages for both arrive.
         ingest_sessions(
             &store,
-            &paths,
             dev,
             &[fav, plain],
             &[msg("m1", "fav", "hello"), msg("m2", "plain", "world")],
         )
         .unwrap();
-        // `fav` transcript exists; `plain` does not.
-        assert!(
-            read_session_transcript(&paths, dev, "fav").unwrap().len() == 1,
-            "favorited session's transcript was written"
+
+        // Neither session is favorited, yet BOTH land in the db.
+        assert_eq!(
+            store.query_session_messages(dev, "fav").unwrap().len(),
+            1,
+            "favorited session's messages in db"
         );
-        assert!(
-            read_session_transcript(&paths, dev, "plain")
-                .unwrap()
-                .is_empty(),
-            "non-favorited session collected NO transcript"
+        assert_eq!(
+            store.query_session_messages(dev, "plain").unwrap().len(),
+            1,
+            "non-favorited session's messages ALSO in db (原文 for all sessions)"
         );
+        // Both flagged dirty so the push path recomputes their snapshots.
+        let dirty = store.dirty_sessions().unwrap();
+        assert!(dirty.contains(&"fav".to_string()));
+        assert!(dirty.contains(&"plain".to_string()));
     }
 }

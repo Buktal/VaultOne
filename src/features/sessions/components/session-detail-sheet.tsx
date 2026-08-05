@@ -16,7 +16,6 @@ import {
   Info,
   Loader2,
   Star,
-  StarOff,
   Terminal,
   User as UserIcon,
   Wrench,
@@ -164,7 +163,7 @@ export function SessionDetailSheet(props: SessionDetailSheetProps) {
               size="sm"
               onClick={onToggleFavorite}
             >
-              {favorited ? <Star /> : <StarOff />}
+              <Star className={cn("size-4", favorited && "fill-current")} />
               {favorited
                 ? t("sessions.row.unfavorite")
                 : t("sessions.row.favorite")}
@@ -202,8 +201,6 @@ export function SessionDetailSheet(props: SessionDetailSheetProps) {
 
         {/* Body: transcript timeline */}
         <TranscriptBody
-          favorited={favorited}
-          onFavorite={onToggleFavorite}
           messages={transcript}
           loading={transcriptLoading}
           error={transcriptError}
@@ -215,15 +212,11 @@ export function SessionDetailSheet(props: SessionDetailSheetProps) {
 }
 
 function TranscriptBody({
-  favorited,
-  onFavorite,
   messages,
   loading,
   error,
   onRefresh,
 }: {
-  favorited: boolean
-  onFavorite: () => void
   messages: SessionMessage[]
   loading: boolean
   error: unknown
@@ -247,34 +240,19 @@ function TranscriptBody({
     )
   }
   if (messages.length === 0) {
-    // Favorited but empty → original is still being collected (~30s next
-    // collect). Not favorited → offer to favorite so the original gets
-    // collected at all (collect only writes JSONL for favorited sessions).
+    // Empty = the transcript isn't in the db yet. Every session's messages land
+    // in `session_messages` regardless of favorite status, so this is a
+    // collection lag (the next collect picks them up), not a favorite gate.
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center p-6">
         <EmptyState
           icon={Bot}
-          title={
-            favorited
-              ? t("sessions.detail.transcriptCollecting")
-              : t("sessions.detail.transcriptLocked")
-          }
-          description={
-            favorited
-              ? t("sessions.detail.transcriptCollectingHint")
-              : t("sessions.detail.transcriptLockedHint")
-          }
-          action={
-            favorited
-              ? {
-                  label: t("sessions.detail.refresh"),
-                  onClick: onRefresh,
-                }
-              : {
-                  label: t("sessions.row.favorite"),
-                  onClick: onFavorite,
-                }
-          }
+          title={t("sessions.detail.transcriptCollecting")}
+          description={t("sessions.detail.transcriptCollectingHint")}
+          action={{
+            label: t("sessions.detail.refresh"),
+            onClick: onRefresh,
+          }}
         />
       </div>
     )

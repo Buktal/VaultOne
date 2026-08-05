@@ -10,7 +10,7 @@
 // imports cleanly in node (it pulls the tauri-specta API + RTK Query hooks).
 
 import dayjs from "dayjs"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 import {
@@ -81,7 +81,21 @@ export function useSessionsBrowser() {
   const [favOverrides, setFavOverrides] = useState<Record<string, boolean>>({})
   const [pendingGroup, setPendingGroup] = useState<string | null>(null)
   const [busyGroupId, setBusyGroupId] = useState<string | null>(null)
-  const [preview, setPreview] = useState<SessionRow | null>(null)
+  // Detail-sheet target stored as a composite key (device_id, id), not a row
+  // snapshot. A snapshot goes stale the moment a favorite toggle's refetch
+  // clears the optimistic override map — effectiveFavorite would then fall
+  // back to the snapshot's old `favorited`, making the sheet's star flicker
+  // back to its pre-toggle state. The derived `preview` (below) resolves this
+  // key against the live sessions array every render, so it always carries the
+  // freshest row.
+  const [previewKey, setPreviewKey] = useState<{
+    id: string
+    device_id: string
+  } | null>(null)
+  // Last row seen for the open preview — fallback when the session leaves the
+  // current slice (tab switch / filter change) so the sheet stays open instead
+  // of snapping shut. Refreshed whenever the live lookup hits.
+  const lastKnownRef = useRef<SessionRow | null>(null)
   const [editTitle, setEditTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState("")
   const [createGroupOpen, setCreateGroupOpen] = useState(false)
@@ -160,10 +174,10 @@ export function useSessionsBrowser() {
   const { data: groups = [] } = useListGroupsQuery()
   const { data: devices = [] } = useDevicesQuery()
   const transcriptQuery = useSessionTranscriptQuery(
-    preview
-      ? { id: preview.id, deviceId: preview.device_id }
+    previewKey
+      ? { id: previewKey.id, deviceId: previewKey.device_id }
       : { id: "", deviceId: "" },
-    { skip: !preview },
+    { skip: !previewKey },
   )
 
   // Drop optimistic overrides the moment fresh list data lands — the write's
@@ -204,6 +218,46 @@ export function useSessionsBrowser() {
     () => selectSessions(filtered, grouped, selectedGroupId),
     [filtered, grouped, selectedGroupId],
   )
+
+  // sessions lookup by composite key — O(1) resolve for the derived preview.
+  // Reuses the favKey shape ("device_id/id") so favorite + preview agree on
+  // identity (a session is uniquely (device_id, id)).
+  const sessionsByKey = useMemo(() => {
+    const m = new Map<string, SessionRow>()
+    for (const s of sessions) m.set(favKey(s), s)
+    return m
+  }, [sessions])
+
+  // Derived preview: resolve the open key against the live sessions array
+  // every render. After a favorite toggle's refetch this picks up the fresh
+  // row immediately, so effectiveFavorite(preview) reflects the new value
+  // instead of flickering back to a stale snapshot. Falls back to the
+  // last-known row when the session has left the current slice (tab switch /
+  // filter) so the detail sheet stays open.
+  const livePreview = useMemo<SessionRow | null>(() => {
+    if (!previewKey) return null
+    return sessionsByKey.get(`${previewKey.device_id}/${previewKey.id}`) ?? null
+  }, [previewKey, sessionsByKey])
+  // Refresh the fallback only on a live hit; when the row leaves the slice the
+  // fallback keeps the previous row so the sheet does not snap shut.
+  useEffect(() => {
+    if (livePreview) lastKnownRef.current = livePreview
+  }, [livePreview])
+  const preview = previewKey ? (livePreview ?? lastKnownRef.current) : null
+
+  // setPreview keeps the caller contract (SessionRow | null) but stores only
+  // the composite key — so the transcript query and title/favorite lookups
+  // keep working even after a tab switch or filter change removes the row
+  // from the visible list.
+  function setPreview(s: SessionRow | null): void {
+    if (s) {
+      lastKnownRef.current = s
+      setPreviewKey({ id: s.id, device_id: s.device_id })
+    } else {
+      lastKnownRef.current = null
+      setPreviewKey(null)
+    }
+  }
 
   // id → display label for the favorites tab's source-device column. Self is
   // "This device"; a peer is its display name (or "Unnamed").

@@ -86,8 +86,6 @@
   "sessions.detail.renameHint": "点击重命名",
   "sessions.detail.transcriptCollecting": "正在采集原文",
   "sessions.detail.transcriptCollectingHint": "原文会在下一次采集时写入（约 30 秒），稍后刷新即可查看。",
-  "sessions.detail.transcriptLocked": "收藏后可查看完整对话",
-  "sessions.detail.transcriptLockedHint": "原文仅采集已收藏的会话。收藏此会话即可同步并在此阅读。",
   "sessions.empty.desc": "会话从本地 CLI 日志采集。运行受支持的 CLI（Claude Code）并在下次采集后返回查看。",
   "sessions.empty.title": "暂无会话",
   "sessions.filter.all": "全部",

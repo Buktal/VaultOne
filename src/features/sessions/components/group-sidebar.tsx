@@ -69,7 +69,7 @@ export function GroupSidebar({
   const ungroupedCount = grouped.ungrouped.length
 
   return (
-    <div className="border-border bg-card flex w-52 shrink-0 flex-col gap-1 rounded-lg border p-2">
+    <div className="border-border bg-card flex min-h-0 w-52 shrink-0 flex-col gap-1 rounded-lg border p-2">
       <div className="text-muted-foreground px-2 py-1 text-xs font-medium">
         {track === "local"
           ? t("sessions.group.localTitle")
