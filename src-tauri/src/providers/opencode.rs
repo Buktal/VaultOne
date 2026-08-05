@@ -77,8 +77,7 @@ impl Provider for OpenCodeProvider {
                 Err(_) => skipped += 1,
             }
         }
-        events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
-        sessions.sort_by(|a, b| (&a.last_active_at, &a.id).cmp(&(&b.last_active_at, &b.id)));
+        super::order_results(&mut events, &mut sessions);
         Ok(CollectResult {
             source: self.name().to_string(),
             events,
@@ -185,12 +184,7 @@ impl Provider for OpenCodeProvider {
                 Err(_) => result.lines_skipped += 1,
             }
         }
-        result
-            .events
-            .sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
-        result
-            .sessions
-            .sort_by(|a, b| (&a.last_active_at, &a.id).cmp(&(&b.last_active_at, &b.id)));
+        super::order_results(&mut result.events, &mut result.sessions);
         delta.insert(
             db_path_str,
             FileCursor {

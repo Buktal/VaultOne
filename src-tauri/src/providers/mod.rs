@@ -262,11 +262,9 @@ pub(super) fn collect_jsonl_incremental(
         );
     }
 
-    // Deterministic order (timestamp, then uuid).
-    events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
-    // Sessions: deterministic order by (last_active_at, id) so repeated parses
-    // of the same sources yield identical grain lines.
-    sessions.sort_by(|a, b| (&a.last_active_at, &a.id).cmp(&(&b.last_active_at, &b.id)));
+    // Deterministic order (shared with `parse_jsonl_full`): events by
+    // (timestamp, uuid), sessions by (last_active_at, id).
+    order_results(&mut events, &mut sessions);
     // Messages: keep source order (within-file chronological); cross-file extend
     // is stable per the discover() order, which is deterministic per OS but not
     // sorted — the ingest layer re-groups by session_id before writing, and each
@@ -285,6 +283,62 @@ pub(super) fn collect_jsonl_incremental(
         session_ids: provider.session_ids_seen(&files),
     };
     Ok((result, delta))
+}
+
+/// Deterministic ordering for collected results: events by (timestamp, uuid),
+/// sessions by (last_active_at, id). Applied by every parse/collect path so
+/// repeated runs over the same sources yield identical grain lines — the single
+/// rule, replacing the sort copy each provider used to inline.
+pub(super) fn order_results(events: &mut [RawUsage], sessions: &mut [RawSession]) {
+    events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
+    sessions.sort_by(|a, b| (&a.last_active_at, &a.id).cmp(&(&b.last_active_at, &b.id)));
+}
+
+/// Full-scan parse for line-oriented JSONL sources — the shared "parse every
+/// discovered file in full" loop that each JSONL provider's `parse` used to
+/// inline. Hands each file's text to `parse_file` (start_line 0 — full scan),
+/// aggregates events / turn durations / sessions / messages, and applies the
+/// deterministic ordering. The only per-provider thing is "how a file's text
+/// becomes events", supplied as the same `parse_file` closure the provider's
+/// `collect_incremental` uses — so the test path (`parse`) and the production
+/// path (`collect_incremental`) run identical per-file logic. OpenCode (SQLite)
+/// keeps its own `parse`; its source shape does not fit this driver.
+pub(super) fn parse_jsonl_full(
+    provider: &dyn Provider,
+    files: &[PathBuf],
+    parse_file: impl Fn(&Path, &str, i64) -> FileParseOutcome,
+) -> AppResult<CollectResult> {
+    let mut events = Vec::new();
+    let mut turn_durations = Vec::new();
+    let mut sessions = Vec::new();
+    let mut messages = Vec::new();
+    let mut skipped = 0u32;
+    for file in files {
+        let text = match read_source_lossy(file) {
+            Some(t) => t,
+            None => {
+                skipped += 1;
+                continue;
+            }
+        };
+        let outcome = parse_file(file, &text, 0);
+        events.extend(outcome.events);
+        turn_durations.extend(outcome.turn_durations);
+        sessions.extend(outcome.sessions);
+        messages.extend(outcome.messages);
+        skipped += outcome.skipped;
+    }
+    order_results(&mut events, &mut sessions);
+    Ok(CollectResult {
+        source: provider.name().to_string(),
+        events,
+        turn_durations,
+        sessions,
+        messages,
+        files_scanned: files.len() as u32,
+        lines_skipped: skipped,
+        session_ids: provider.session_ids_seen(files),
+    })
 }
 
 /// Normalize a cache-inclusive `input` — one whose value already contains its
