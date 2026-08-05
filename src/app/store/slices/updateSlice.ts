@@ -4,6 +4,7 @@
 // failure surfaces the Manual Fallback card.
 
 import { createSlice } from "@reduxjs/toolkit"
+import type { StructuredError } from "@/lib/error"
 
 export type UpdateStatus =
   | "idle" // not probed / silent check failure
@@ -22,8 +23,10 @@ export interface UpdateState {
   currentVersion: string | null
   /** Raw release notes (markdown) from latest.json `notes`. */
   notes: string | null
-  /** Failure reason for the Manual Fallback card. */
-  error: string | null
+  /** Failure reason for the Manual Fallback card — structured so it can be
+   *  re-translated at the render boundary on a language switch (a raw string
+   *  would freeze the old-language reason). */
+  error: StructuredError | null
   /** Download progress, bytes. */
   downloadedBytes: number
   totalBytes: number
@@ -78,7 +81,7 @@ const updateSlice = createSlice({
     setReady(state) {
       state.status = "ready"
     },
-    setFailed(state, action: { payload: { error: string } }) {
+    setFailed(state, action: { payload: { error: StructuredError } }) {
       state.status = "failed"
       state.error = action.payload.error
     },

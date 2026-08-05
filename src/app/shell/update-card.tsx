@@ -26,6 +26,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
+import { localizeStructuredError } from "@/lib/error"
 
 const NOTES_PREVIEW_LINES = 5
 
@@ -184,7 +185,7 @@ function UpdateCardBody({
         <CircleArrowUp className="size-3.5" />
         {t("update.failed")}
       </div>
-      {error ? <p>{error}</p> : null}
+      {error ? <p>{localizeStructuredError(error, t)}</p> : null}
       <p>{t("update.manualHint")}</p>
       <div className="flex gap-2 pt-1">
         <Button size="xs" variant="outline" onClick={onOpenReleases}>
