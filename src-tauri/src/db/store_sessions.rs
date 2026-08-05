@@ -4,7 +4,7 @@
 //! both collect ([`Store::upsert_session`]) and pull
 //! ([`super::transcript::Store::import_session_snapshot`]).
 
-use super::transcript::mark_sessions_dirty;
+use super::store_transcript::mark_sessions_dirty;
 use super::*;
 
 impl super::Store {

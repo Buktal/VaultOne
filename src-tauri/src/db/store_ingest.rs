@@ -1,8 +1,8 @@
 //! Usage-record / turn-duration ingest + incremental scan cursors.
 
-use super::*;
-use super::dirty_days::mark_days_dirty;
 use super::schema;
+use super::store_dirty_days::mark_days_dirty;
+use super::*;
 
 impl super::Store {
     // ---------------- Ingest ----------------

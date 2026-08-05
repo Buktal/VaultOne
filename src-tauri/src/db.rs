@@ -10,19 +10,22 @@
 //! cost).
 //!
 //! The store is split by domain across `db/*.rs`: each domain file holds its
-//! own `impl super::Store` block plus its helpers and tests. This file keeps
+//! own `impl super::Store` block plus its helpers and tests. Store-method
+//! blocks are named `store_*` so they never collide with the same-named
+//! top-level domain modules (ingest / devices / sessions / pricing); schema,
+//! migrate and testutil are infrastructure, not method blocks. This file keeps
 //! only the `Store` type, the `open` constructor, and the module wiring.
 
-mod dirty_days;
-mod devices;
-mod groups;
-mod ingest;
 mod migrate;
-mod pricing;
-mod reads;
 mod schema;
-mod sessions;
-mod transcript;
+mod store_devices;
+mod store_dirty_days;
+mod store_groups;
+mod store_ingest;
+mod store_pricing;
+mod store_reads;
+mod store_sessions;
+mod store_transcript;
 
 #[cfg(test)]
 mod testutil;

@@ -1,6 +1,6 @@
 //! Pricing table CRUD + seed + zero-cost rebill.
 
-use super::dirty_days::mark_days_dirty;
+use super::store_dirty_days::mark_days_dirty;
 use super::*;
 
 impl super::Store {

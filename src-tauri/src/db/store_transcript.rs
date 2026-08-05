@@ -5,8 +5,8 @@
 //! favorites setters) and the `build_session_where` / `row_to_session_message`
 //! decode helpers.
 
+use super::store_sessions::{upsert_session_row, SessionUpsertPolicy};
 use super::*;
-use super::sessions::{upsert_session_row, SessionUpsertPolicy};
 
 impl super::Store {
     // ---------------- Session messages (transcript 原文, db source of truth) ----
@@ -234,8 +234,9 @@ impl super::Store {
     /// deterministic reconciliation.
     pub fn favorited_session_ids(&self, device_id: &str) -> AppResult<Vec<String>> {
         let conn = self.conn.lock().expect("db mutex poisoned");
-        let mut stmt =
-            conn.prepare("SELECT id FROM sessions WHERE device_id = ?1 AND favorited = 1 ORDER BY id")?;
+        let mut stmt = conn.prepare(
+            "SELECT id FROM sessions WHERE device_id = ?1 AND favorited = 1 ORDER BY id",
+        )?;
         let rows = stmt.query_map(params![device_id], |r| r.get::<_, String>(0))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(AppError::from)
@@ -250,11 +251,7 @@ impl super::Store {
     /// harmless, and self may hold its own row for the same session). No-op
     /// (returns 0) on an empty set. NOT marked dirty: a pull-side reconciliation
     /// is not a local change to push.
-    pub fn bulk_unfavorite_sessions(
-        &self,
-        device_id: &str,
-        ids: &[String],
-    ) -> AppResult<usize> {
+    pub fn bulk_unfavorite_sessions(&self, device_id: &str, ids: &[String]) -> AppResult<usize> {
         if ids.is_empty() {
             // Nothing to write; skip opening a transaction entirely.
             return Ok(0);
