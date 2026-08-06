@@ -21,6 +21,10 @@ export type ProviderPreset = {
   notes?: string
   /** 预填的 settings.json 快照（JSON 文本），含 env 块：baseURL、认证字段占位、模型映射等。 */
   settingsConfig: string
+  /** 模型列表端点覆写：默认端点拼不出正确的 OpenAI 兼容候选时（如
+   *  `/api/compatible` 不在候选构造的剥离清单里）精确指路。表单「获取模型
+   *  列表」在端点等于本预设默认 ANTHROPIC_BASE_URL 时优先带上它。 */
+  modelsUrl?: string
 }
 
 /** 把 env 块（外加可选顶层字段）序列化成 settings.json 快照文本。 */
@@ -176,6 +180,9 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
       ANTHROPIC_DEFAULT_OPUS_MODEL: "doubao-seed-2-1-pro-260628",
       ANTHROPIC_DEFAULT_HAIKU_MODEL: "doubao-seed-2-1-pro-260628",
     }),
+    // /api/compatible 不在候选构造的 9 种剥离后缀里，拼不出正确候选，
+    // 精确指路到火山 OpenAI 兼容的 /api/v3/models。
+    modelsUrl: "https://ark.cn-beijing.volces.com/api/v3/models",
   },
   {
     name: "百度千帆",

@@ -23,6 +23,7 @@ import {
   stripOneM,
   switchAuthField,
   withAllRolesFromFirstInText,
+  withAllRolesInText,
   withBasicFields,
   withBasicFieldsInText,
   withMetaTemplateValues,
@@ -745,6 +746,29 @@ describe("withAllRolesFromFirstInText", () => {
         }),
       ),
     ).not.toBeNull()
+  })
+})
+
+describe("withAllRolesInText", () => {
+  it("writes the given model to every role with display-name sync", () => {
+    const next = withAllRolesInText(configWith({}), "my-model[1M]")
+    const env = envOf(next)
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("my-model[1M]")
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("my-model[1M]")
+    expect(env.ANTHROPIC_DEFAULT_FABLE_MODEL).toBe("my-model[1M]")
+    expect(env.ANTHROPIC_DEFAULT_SUBAGENT_MODEL).toBe("my-model[1M]")
+    // Haiku 不支持 1M 标记，写入时剥离；显示名一律不带标记。
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("my-model")
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME).toBe("my-model")
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME).toBe("my-model")
+  })
+
+  it("preserves a hand-set display name that differs from the model", () => {
+    const next = withAllRolesInText(
+      configWith({ ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "My Favorite" }),
+      "glm-5.1",
+    )
+    expect(envOf(next).ANTHROPIC_DEFAULT_SONNET_MODEL_NAME).toBe("My Favorite")
   })
 })
 describe("configAuthField / switchAuthField", () => {

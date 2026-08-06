@@ -477,6 +477,17 @@ export const vaultApi = createApi({
         run(commands.importProvidersCmd(sourcePath, mode)),
       invalidatesTags: ["Providers"],
     }),
+    /** 拉取供应商的模型列表（OpenAI 兼容 GET /v1/models，后端发请求避免
+     *  WebView CORS）。失败时 error 是 `FetchModels` 变体，data 为带分桶
+     *  标签的错误串——表单按标签映射成对应 toast（model-fetch.ts 的
+     *  `bucketFetchModelsError`）。 */
+    fetchModels: b.mutation<
+      string[],
+      { baseUrl: string; apiKey: string; modelsUrl: string | null }
+    >({
+      queryFn: async ({ baseUrl, apiKey, modelsUrl }) =>
+        run(commands.fetchModelsCmd(baseUrl, apiKey, modelsUrl)),
+    }),
 
     // ---- preferences ----
     // Go through the generated `commands.*` so tauri-specta's `typedError`
@@ -579,6 +590,7 @@ export const {
   useSetCommonConfigSnippetMutation,
   useExportProvidersMutation,
   useImportProvidersMutation,
+  useFetchModelsMutation,
 } = vaultApi
 
 export type VaultApi = typeof vaultApi

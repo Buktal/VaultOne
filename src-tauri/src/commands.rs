@@ -970,6 +970,26 @@ pub fn import_providers_cmd(
     Ok(report)
 }
 
+/// 获取供应商的可用模型列表（OpenAI 兼容 `GET /v1/models`）。WebView fetch
+/// 撞 CORS，所以请求由后端发（ureq）。`models_url` 非空时精确覆写候选列表
+/// （只试这一个）；否则对 baseURL 构造候选 URL（版本段识别 + 兼容子路径
+/// 剥离，见 `provider::model_fetch::candidate_models_urls`），按序尝试首个
+/// 成功。错误串带稳定前缀标签（AUTH_FAILED / ENDPOINT_CLOSED / TIMEOUT /
+/// BAD_FORMAT / NETWORK），前端按标签分桶提示。
+#[tauri::command]
+#[specta::specta]
+pub async fn fetch_models_cmd(
+    base_url: String,
+    api_key: String,
+    models_url: Option<String>,
+) -> AppResult<Vec<String>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::provider::model_fetch::fetch_models(&base_url, &api_key, models_url.as_deref())
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("fetch_models task failed: {e}")))?
+}
+
 // ---------------- Library ----------------
 
 #[tauri::command]
