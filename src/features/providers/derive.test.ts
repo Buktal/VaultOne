@@ -466,12 +466,13 @@ describe("extractTemplateVars / replaceTemplateVarsInText", () => {
     const text = JSON.stringify({
       env: {
         // biome-ignore lint/suspicious/noTemplateCurlyInString: 断言字面量占位符文本
-        ANTHROPIC_BASE_URL: "https://bedrock-runtime.${AWS_REGION}.amazonaws.com",
+        ANTHROPIC_BASE_URL:
+          "https://bedrock-runtime.${AWS_REGION}.amazonaws.com",
       },
     })
-    expect(JSON.parse(replaceTemplateVarsInText(text, { AWS_REGION: "" }))).toEqual(
-      JSON.parse(text),
-    )
+    expect(
+      JSON.parse(replaceTemplateVarsInText(text, { AWS_REGION: "" })),
+    ).toEqual(JSON.parse(text))
     expect(JSON.parse(replaceTemplateVarsInText(text, {}))).toEqual(
       JSON.parse(text),
     )
@@ -482,8 +483,7 @@ describe("restoreTemplatePlaceholders", () => {
   it("reverts every occurrence of a recorded value to its placeholder", () => {
     const text = JSON.stringify({
       env: {
-        ANTHROPIC_BASE_URL:
-          "https://bedrock-runtime.us-east-1.amazonaws.com",
+        ANTHROPIC_BASE_URL: "https://bedrock-runtime.us-east-1.amazonaws.com",
         AWS_REGION: "us-east-1",
       },
     })
@@ -493,7 +493,8 @@ describe("restoreTemplatePlaceholders", () => {
     expect(JSON.parse(restored)).toEqual({
       env: {
         // biome-ignore lint/suspicious/noTemplateCurlyInString: 断言字面量占位符文本
-        ANTHROPIC_BASE_URL: "https://bedrock-runtime.${AWS_REGION}.amazonaws.com",
+        ANTHROPIC_BASE_URL:
+          "https://bedrock-runtime.${AWS_REGION}.amazonaws.com",
         // biome-ignore lint/suspicious/noTemplateCurlyInString: 断言字面量占位符文本
         AWS_REGION: "${AWS_REGION}",
       },
@@ -501,9 +502,13 @@ describe("restoreTemplatePlaceholders", () => {
   })
 
   it("leaves values without a recorded template untouched", () => {
-    const text = JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://x.dev" } })
+    const text = JSON.stringify({
+      env: { ANTHROPIC_BASE_URL: "https://x.dev" },
+    })
     expect(
-      JSON.parse(restoreTemplatePlaceholders(text, { AWS_REGION: "us-east-1" })),
+      JSON.parse(
+        restoreTemplatePlaceholders(text, { AWS_REGION: "us-east-1" }),
+      ),
     ).toEqual(JSON.parse(text))
   })
 })
@@ -538,10 +543,7 @@ describe("metaTemplateValues / withMetaTemplateValues", () => {
   it("removes the templateValues key when nothing is filled", () => {
     expect(withMetaTemplateValues("{}", {})).toBe("{}")
     expect(
-      withMetaTemplateValues(
-        '{"templateValues": {"A": "old"}}',
-        { A: "" },
-      ),
+      withMetaTemplateValues('{"templateValues": {"A": "old"}}', { A: "" }),
     ).toBe("{}")
   })
 })

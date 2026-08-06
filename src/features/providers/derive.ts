@@ -306,7 +306,8 @@ export function restoreTemplatePlaceholders(
   const next = walkStrings(config, (s) => {
     let out = s
     for (const [name, value] of entries) {
-      out = out.replaceAll(value, `\${${name}}`)
+      // split/join 代替 replaceAll：ES2020 目标库不支持 replaceAll，且值可能含正则元字符
+      out = out.split(value).join(`\${${name}}`)
     }
     return out
   })

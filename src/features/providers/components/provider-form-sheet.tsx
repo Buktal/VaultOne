@@ -39,6 +39,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import {
+  type AuthField,
   authFieldKey,
   configApiKey,
   configAuthField,
@@ -55,7 +56,6 @@ import {
   withBasicFields,
   withBasicFieldsInText,
   withMetaTemplateValues,
-  type AuthField,
 } from "@/features/providers/derive"
 import type { ProviderPreset } from "@/features/providers/presets"
 import { useMutateWithToast } from "@/hooks/use-toast-mutation"
@@ -260,7 +260,9 @@ export function ProviderFormSheet({
                   <Field key={name} label={name}>
                     <Input
                       value={templateValues[name] ?? ""}
-                      onChange={(e) => onTemplateVarChange(name, e.target.value)}
+                      onChange={(e) =>
+                        onTemplateVarChange(name, e.target.value)
+                      }
                       spellCheck={false}
                     />
                   </Field>
@@ -285,10 +287,7 @@ export function ProviderFormSheet({
           </Field>
           {showKeyFields ? (
             <div className="flex items-end gap-2">
-              <Field
-                label={t("providers.form.authField")}
-                className="shrink-0"
-              >
+              <Field label={t("providers.form.authField")} className="shrink-0">
                 <Select
                   value={authField}
                   onValueChange={(v) => {
