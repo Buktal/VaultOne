@@ -161,9 +161,9 @@ export interface ModelRole {
 
 /** The five roles, in form-display order — single source of truth for the env
  *  key mapping: the form iterates this table and the helpers look roles up in
- *  it. Backfill chains: Haiku falls back to the legacy small-fast key, Fable
- *  through Opus's key, Subagent through Sonnet's, the rest to the primary
- *  model. */
+ *  it. Backfill chains: Haiku falls back to the legacy small-fast key, then
+ *  the primary model; Fable through Opus's key, Subagent through Sonnet's, the
+ *  rest to the primary model. */
 export const MODEL_ROLES: ModelRole[] = [
   {
     id: "sonnet",
@@ -183,7 +183,7 @@ export const MODEL_ROLES: ModelRole[] = [
     id: "haiku",
     modelKey: "ANTHROPIC_DEFAULT_HAIKU_MODEL",
     nameKey: "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
-    backfillKeys: [ENV_SMALL_FAST_MODEL],
+    backfillKeys: [ENV_SMALL_FAST_MODEL, ENV_MODEL],
     supportsOneM: false,
   },
   {
@@ -366,11 +366,12 @@ export function withRoleOneMInText(
  * carries `[1M]` propagates the marker to the roles that support it. Returns
  * null when no model is filled anywhere (callers disable the button).
  */
-export function withAllRolesFromFirstInText(
-  configText: string,
-): string | null {
+export function withAllRolesFromFirstInText(configText: string): string | null {
   const env = parseSettingsConfig(configText).env ?? {}
-  const candidates = [env[ENV_MODEL], ...MODEL_ROLES.map((r) => env[r.modelKey])]
+  const candidates = [
+    env[ENV_MODEL],
+    ...MODEL_ROLES.map((r) => env[r.modelKey]),
+  ]
   const picked = candidates.find((m) => m?.trim())
   if (!picked) return null
   let next = configText

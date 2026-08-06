@@ -16,9 +16,9 @@
 // so the field values win for the keys they own and everything else survives
 // verbatim.
 
+import { Wand2 } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
-import { Wand2 } from "lucide-react"
 import { toast } from "sonner"
 import { useSaveProviderMutation } from "@/app/store/api"
 import { JsonEditor } from "@/components/json-editor"
@@ -33,12 +33,13 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
+import type { ModelRoleId } from "@/features/providers/derive"
 import {
-  MODEL_ROLES,
   configApiKey,
   configEndpoint,
   configRoleFields,
   emptyProvider,
+  MODEL_ROLES,
   providerApiKey,
   providerEndpoint,
   providerFromPreset,
@@ -50,7 +51,6 @@ import {
   withRoleNameInText,
   withRoleOneMInText,
 } from "@/features/providers/derive"
-import type { ModelRoleId } from "@/features/providers/derive"
 import type { ProviderPreset } from "@/features/providers/presets"
 import { useMutateWithToast } from "@/hooks/use-toast-mutation"
 import { parseJsonObject } from "@/lib/json"
@@ -267,8 +267,12 @@ export function ProviderFormSheet({
                       {t(`providers.form.role.${role.id}`)}
                     </Label>
                     {role.supportsOneM ? (
-                      <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+                      <label
+                        htmlFor={`model-role-one-m-${role.id}`}
+                        className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground"
+                      >
                         <Checkbox
+                          id={`model-role-one-m-${role.id}`}
                           checked={fields.oneM}
                           onCheckedChange={(checked) =>
                             onRoleOneMChange(role.id, checked)

@@ -32,8 +32,13 @@ function provider(config: string): Provider {
   }
 }
 
-/** The env block of a settingsConfig JSON text, for assertions. */
-function envOf(configText: string): Record<string, string> {
+/** The env block of a settingsConfig JSON text, for assertions. Accepts null
+ *  so role-write results (null when no model is filled) can be fed straight
+ *  in — a null fails loudly here instead of at a less legible parse. */
+function envOf(configText: string | null): Record<string, string> {
+  if (configText === null) {
+    throw new Error("envOf: expected a settingsConfig text, got null")
+  }
   return (JSON.parse(configText) as { env: Record<string, string> }).env
 }
 
@@ -470,10 +475,7 @@ describe("configRoleName / configRoleFields", () => {
 
   it("oneM derives from a backfilled model too", () => {
     expect(
-      configRoleHasOneM(
-        configWith({ ANTHROPIC_MODEL: "glm-5.1[1M]" }),
-        "opus",
-      ),
+      configRoleHasOneM(configWith({ ANTHROPIC_MODEL: "glm-5.1[1M]" }), "opus"),
     ).toBe(true)
   })
 })
@@ -539,11 +541,7 @@ describe("withRoleModelInText", () => {
   })
 
   it("keeps the marker for 1M-capable roles", () => {
-    const next = withRoleModelInText(
-      configWith({}),
-      "sonnet",
-      "glm-5.1[1M]",
-    )
+    const next = withRoleModelInText(configWith({}), "sonnet", "glm-5.1[1M]")
     expect(envOf(next).ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("glm-5.1[1M]")
   })
 
@@ -710,7 +708,8 @@ describe("withAllRolesFromFirstInText", () => {
         },
       }),
     )
-    const parsed = JSON.parse(next) as {
+    expect(next).not.toBeNull()
+    const parsed = JSON.parse(next as string) as {
       includeCoAuthoredBy: boolean
       env: Record<string, string>
     }
