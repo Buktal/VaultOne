@@ -3,9 +3,11 @@ import {
   emptyProvider,
   providerApiKey,
   providerEndpoint,
+  providerFromPreset,
   providerModel,
   withBasicFields,
 } from "@/features/providers/derive"
+import { PROVIDER_PRESETS } from "@/features/providers/presets"
 import type { Provider } from "@/types/generated/bindings"
 
 /** A provider whose settingsConfig carries a full env block. */
@@ -152,5 +154,70 @@ describe("emptyProvider", () => {
     expect(p.category).toBe("custom")
     expect(providerEndpoint(p)).toBe("")
     expect(providerApiKey(p)).toBe("")
+  })
+})
+
+describe("providerFromPreset", () => {
+  it("builds a custom-category draft that copies the preset snapshot verbatim", () => {
+    const kimi = PROVIDER_PRESETS.find((p) => p.name === "Kimi")
+    expect(kimi).toBeDefined()
+    const draft = providerFromPreset(kimi!)
+    // 预设是起点、定制是终点：落表单的草稿归 custom，id 留空让 save 分配。
+    expect(draft.id).toBe("")
+    expect(draft.category).toBe("custom")
+    expect(draft.name).toBe("Kimi")
+    expect(draft.settingsConfig).toBe(kimi!.settingsConfig)
+    // derive 读函数直接回填表单字段，无需另起一套解析。
+    expect(providerEndpoint(draft)).toBe("https://api.moonshot.cn/anthropic")
+    expect(providerModel(draft)).toBe("kimi-k2.7-code")
+    expect(providerApiKey(draft)).toBe("")
+  })
+
+  it("keeps the preset's model mapping after withBasicFields writes the form fields", () => {
+    const glm = PROVIDER_PRESETS.find((p) => p.name === "Zhipu GLM")
+    expect(glm).toBeDefined()
+    const next = withBasicFields(providerFromPreset(glm!), {
+      endpoint: "https://example.com/anthropic",
+      apiKey: "sk-123",
+    })
+    expect(providerEndpoint(next)).toBe("https://example.com/anthropic")
+    expect(providerApiKey(next)).toBe("sk-123")
+    const env = (
+      JSON.parse(next.settingsConfig) as {
+        env: Record<string, string>
+      }
+    ).env
+    // 模型映射（表单不拥有的字段）原样保留。
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("glm-5.1")
+    expect(env.ANTHROPIC_MODEL).toBe("glm-5.1")
+  })
+
+  it("keeps the Bedrock template-variable placeholders until the template step", () => {
+    const bedrock = PROVIDER_PRESETS.find(
+      (p) => p.name === "AWS Bedrock (AKSK)",
+    )
+    expect(bedrock).toBeDefined()
+    const draft = providerFromPreset(bedrock!)
+    const env = (
+      JSON.parse(draft.settingsConfig) as {
+        env: Record<string, string>
+      }
+    ).env
+    expect(env.ANTHROPIC_BASE_URL).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: 断言字面量占位符文本
+      "https://bedrock-runtime.${AWS_REGION}.amazonaws.com",
+    )
+    expect(env.AWS_ACCESS_KEY_ID).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: 断言字面量占位符文本
+      "${AWS_ACCESS_KEY_ID}",
+    )
+    expect(env.CLAUDE_CODE_USE_BEDROCK).toBe("1")
+  })
+
+  it("never mutates the preset constant", () => {
+    const before = JSON.stringify(PROVIDER_PRESETS)
+    const draft = providerFromPreset(PROVIDER_PRESETS[0]!)
+    expect(draft.settingsConfig).toBe(PROVIDER_PRESETS[0]!.settingsConfig)
+    expect(JSON.stringify(PROVIDER_PRESETS)).toBe(before)
   })
 })

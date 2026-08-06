@@ -1,8 +1,9 @@
-// Providers view (供应商): the local provider list with drag-to-reorder,
-// add / edit (via Sheet) / delete. Rows are a Card list (not a <table>) so the
-// whole row can act as the dnd-kit drag handle, matching the group sidebar's
-// reorder interaction. Empty state nudges toward creating a provider — the
-// preset picker arrives on a later ticket, so the hint names both paths.
+// Providers view (供应商): the mid-view preset chip selector, plus the local
+// provider list with drag-to-reorder, add / edit (via Sheet) / delete. Rows are
+// a Card list (not a <table>) so the whole row can act as the dnd-kit drag
+// handle, matching the group sidebar's reorder interaction. Empty state nudges
+// toward the preset picker above — clicking a chip opens the form pre-filled
+// from that preset (the preset is only a starting point).
 
 import { PointerActivationConstraints } from "@dnd-kit/dom"
 import {
@@ -24,11 +25,13 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { providerEndpoint, providerModel } from "@/features/providers/derive"
+import type { ProviderPreset } from "@/features/providers/presets"
 import { useProvidersBrowser } from "@/features/providers/use-providers-browser"
 import { useMutateWithToast } from "@/hooks/use-toast-mutation"
 import { cn } from "@/lib/utils"
 
 import type { Provider } from "@/types/generated/bindings"
+import { PresetSelector } from "./preset-selector"
 import { ProviderFormSheet } from "./provider-form-sheet"
 
 export function ProvidersView() {
@@ -39,6 +42,7 @@ export function ProvidersView() {
 
   const [sheetOpen, setSheetOpen] = useState(false)
   const [editing, setEditing] = useState<Provider | null>(null)
+  const [preset, setPreset] = useState<ProviderPreset | null>(null)
 
   // Whole-row drag handle: 6px of movement before a press becomes a drag —
   // clicks keep opening the edit sheet; moves reorder. Same constraints as the
@@ -62,10 +66,17 @@ export function ProvidersView() {
 
   function openNew() {
     setEditing(null)
+    setPreset(null)
+    setSheetOpen(true)
+  }
+  function openFromPreset(p: ProviderPreset) {
+    setEditing(null)
+    setPreset(p)
     setSheetOpen(true)
   }
   function openEdit(p: Provider) {
     setEditing(p)
+    setPreset(null)
     setSheetOpen(true)
   }
   async function onDelete(p: Provider) {
@@ -83,6 +94,7 @@ export function ProvidersView() {
           {t("providers.add")}
         </Button>
       </div>
+      <PresetSelector onSelect={openFromPreset} />
       <Card className="min-h-0 flex-1">
         <CardHeader>
           <CardTitle>{t("providers.title")}</CardTitle>
@@ -125,6 +137,7 @@ export function ProvidersView() {
         open={sheetOpen}
         onOpenChange={setSheetOpen}
         editing={editing}
+        preset={preset}
         onSaved={() => setSheetOpen(false)}
       />
     </div>
