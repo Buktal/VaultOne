@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-08-06
+
+### Added
+
+- **Drag to reorder groups** — grab any custom group in the sessions sidebar and drag it to a new spot; the list keeps your order, and on the Favorites tab that order follows the group to every other device. Order lives per track — a `position` column in the local database for local groups, a `position` field in the synced-groups artifact for the Favorites tab — and new groups always land at the end. The All / Ungrouped rows stay pinned.
+
 ## [1.7.0] - 2026-08-06
 
 ### Added
