@@ -5,6 +5,7 @@
 // isolation — the single authority for how the form maps onto the
 // settings.json text.
 
+import type { ProviderPreset } from "@/features/providers/presets"
 import type { Provider } from "@/types/generated/bindings"
 
 // The env keys the basic form knows about. The endpoint and auth key are the
@@ -21,7 +22,7 @@ type SettingsConfig = { env?: Record<string, string> }
  *  corrupt snapshot never throws the form open. A non-object `env` (a string,
  *  an array — anything a hand-edited snapshot could hold) is dropped to `{}`
  *  so the write-back never spreads e.g. a string into character-index keys. */
-function parseSettingsConfig(config: string): SettingsConfig {
+export function parseSettingsConfig(config: string): SettingsConfig {
   if (!config) return {}
   try {
     const parsed: unknown = JSON.parse(config)
@@ -140,6 +141,28 @@ export function emptyProvider(): Provider {
     sortIndex: 0,
     notes: "",
     settingsConfig: '{\n  "env": {}\n}',
+    meta: "{}",
+    updatedAt: "",
+  }
+}
+
+/** Build the "new provider" draft from a built-in preset: category goes to
+ *  `custom` (a preset is the starting point, customization is the end — the
+ *  saved row is a user provider, not a preset), `id` stays empty so
+ *  `save_provider_cmd` allocates a fresh one. The preset's settingsConfig
+ *  snapshot is copied verbatim (its `${VAR}` placeholders stay until the
+ *  template-variable step); the preset constant itself is never mutated. */
+export function providerFromPreset(preset: ProviderPreset): Provider {
+  return {
+    id: "",
+    name: preset.name,
+    websiteUrl: preset.websiteUrl,
+    category: "custom",
+    icon: preset.icon,
+    iconColor: preset.iconColor,
+    sortIndex: 0,
+    notes: preset.notes ?? "",
+    settingsConfig: preset.settingsConfig,
     meta: "{}",
     updatedAt: "",
   }

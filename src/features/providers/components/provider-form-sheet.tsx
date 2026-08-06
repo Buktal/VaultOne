@@ -34,9 +34,11 @@ import {
   emptyProvider,
   providerApiKey,
   providerEndpoint,
+  providerFromPreset,
   withBasicFields,
   withBasicFieldsInText,
 } from "@/features/providers/derive"
+import type { ProviderPreset } from "@/features/providers/presets"
 import { useMutateWithToast } from "@/hooks/use-toast-mutation"
 import { parseJsonObject } from "@/lib/json"
 
@@ -46,16 +48,22 @@ export function ProviderFormSheet({
   open,
   onOpenChange,
   editing,
+  preset,
   onSaved,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   /** The provider being edited, or null for a new one. */
   editing: Provider | null
+  /** When set, the sheet opens pre-filled from this built-in preset. The preset
+   *  constant is never mutated — providerFromPreset copies its settingsConfig
+   *  snapshot into a fresh custom-category draft. */
+  preset: ProviderPreset | null
   onSaved: () => void
 }) {
   const { t } = useTranslation()
-  const base = editing ?? emptyProvider()
+  const base =
+    editing ?? (preset ? providerFromPreset(preset) : emptyProvider())
   const [name, setName] = useState(base.name)
   const [configText, setConfigText] = useState(base.settingsConfig)
   const [endpoint, setEndpoint] = useState(providerEndpoint(base))
@@ -65,12 +73,12 @@ export function ProviderFormSheet({
 
   useEffect(() => {
     if (!open) return
-    const b = editing ?? emptyProvider()
+    const b = editing ?? (preset ? providerFromPreset(preset) : emptyProvider())
     setName(b.name)
     setConfigText(b.settingsConfig)
     setEndpoint(providerEndpoint(b))
     setApiKey(providerApiKey(b))
-  }, [editing, open])
+  }, [editing, preset, open])
 
   // JSON → form fields: whenever the snapshot text changes (editor edit or a
   // field merge), the env-backed fields mirror it. A text that doesn't parse
@@ -139,8 +147,15 @@ export function ProviderFormSheet({
           <SheetTitle>
             {editing
               ? t("providers.form.editTitle")
-              : t("providers.form.newTitle")}
+              : preset
+                ? t("providers.form.presetTitle")
+                : t("providers.form.newTitle")}
           </SheetTitle>
+          {preset ? (
+            <p className="text-muted-foreground text-xs">
+              {t("providers.form.presetHint", { name: preset.name })}
+            </p>
+          ) : null}
         </SheetHeader>
 
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-0.5">
