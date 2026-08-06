@@ -9,7 +9,9 @@ describe("presetModelsUrl", () => {
   it("returns the preset's modelsUrl when the endpoint equals its default", () => {
     // DouBaoSeed 预设：/api/compatible 不在剥离清单里，必须精确指路。
     const doubao = PROVIDER_PRESETS.find((p) => p.name === "DouBaoSeed")
-    expect(doubao?.modelsUrl).toBe("https://ark.cn-beijing.volces.com/api/v3/models")
+    expect(doubao?.modelsUrl).toBe(
+      "https://ark.cn-beijing.volces.com/api/v3/models",
+    )
     expect(
       presetModelsUrl(
         "https://ark.cn-beijing.volces.com/api/compatible",
@@ -28,11 +30,15 @@ describe("presetModelsUrl", () => {
   })
 
   it("returns null when the endpoint matches a preset without modelsUrl", () => {
-    expect(presetModelsUrl("https://api.moonshot.cn/anthropic", PROVIDER_PRESETS)).toBeNull()
+    expect(
+      presetModelsUrl("https://api.moonshot.cn/anthropic", PROVIDER_PRESETS),
+    ).toBeNull()
   })
 
   it("returns null when no preset matches", () => {
-    expect(presetModelsUrl("https://api.example.com", PROVIDER_PRESETS)).toBeNull()
+    expect(
+      presetModelsUrl("https://api.example.com", PROVIDER_PRESETS),
+    ).toBeNull()
   })
 
   it("returns null for an empty endpoint", () => {
@@ -43,7 +49,9 @@ describe("presetModelsUrl", () => {
 
 describe("bucketFetchModelsError", () => {
   it("buckets the auth tag (401/403 认证失败)", () => {
-    expect(bucketFetchModelsError("AUTH_FAILED: HTTP 401: invalid key")).toEqual({
+    expect(
+      bucketFetchModelsError("AUTH_FAILED: HTTP 401: invalid key"),
+    ).toEqual({
       kind: "auth",
       detail: "HTTP 401: invalid key",
     })
@@ -62,7 +70,9 @@ describe("bucketFetchModelsError", () => {
 
   it("buckets the timeout tag", () => {
     expect(
-      bucketFetchModelsError("TIMEOUT: http: timeout connecting to https://x.com"),
+      bucketFetchModelsError(
+        "TIMEOUT: http: timeout connecting to https://x.com",
+      ),
     ).toEqual({
       kind: "timeout",
       detail: "http: timeout connecting to https://x.com",

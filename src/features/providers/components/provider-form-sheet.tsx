@@ -26,7 +26,10 @@ import { RefreshCw, Wand2 } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
-import { useFetchModelsMutation, useSaveProviderMutation } from "@/app/store/api"
+import {
+  useFetchModelsMutation,
+  useSaveProviderMutation,
+} from "@/app/store/api"
 import { JsonEditor } from "@/components/json-editor"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -78,9 +81,10 @@ import {
   bucketFetchModelsError,
   presetModelsUrl,
 } from "@/features/providers/model-fetch"
-import { PROVIDER_PRESETS } from "@/features/providers/presets"
 import type { ProviderPreset } from "@/features/providers/presets"
+import { PROVIDER_PRESETS } from "@/features/providers/presets"
 import { useMutateWithToast } from "@/hooks/use-toast-mutation"
+import { toStructuredError } from "@/lib/error"
 import { parseJsonObject } from "@/lib/json"
 import { cn } from "@/lib/utils"
 
@@ -237,7 +241,14 @@ export function ProviderFormSheet({
       modelsUrl: presetModelsUrl(endpoint, PROVIDER_PRESETS),
     })
     if (result.error) {
-      const { kind, detail } = bucketFetchModelsError(result.error.data)
+      // RTK unions SerializedError in for internal failures; the repo seam
+      // `toStructuredError` reduces either shape to its raw message string.
+      const structured = toStructuredError(result.error)
+      const message =
+        structured?.kind === "app"
+          ? structured.data
+          : (structured?.message ?? String(result.error))
+      const { kind, detail } = bucketFetchModelsError(message)
       toast.error(t(`providers.toast.fetchModels.${kind}`), {
         description: detail,
       })
@@ -474,7 +485,11 @@ export function ProviderFormSheet({
             </p>
             {fetchedModels.length > 0 ? (
               <div className="mb-2">
-                <Select onValueChange={onPickModel}>
+                <Select
+                  onValueChange={(model) => {
+                    if (typeof model === "string") onPickModel(model)
+                  }}
+                >
                   <SelectTrigger
                     className="font-mono text-xs"
                     aria-label={t("providers.form.fetchModels.placeholder")}

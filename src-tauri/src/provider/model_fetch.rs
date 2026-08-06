@@ -138,8 +138,8 @@ fn ends_with_version_segment(url: &str) -> bool {
 /// 会提前匹配掉 `/api/anthropic` 的场景）。
 fn strip_compat_suffix(base_url: &str) -> Option<&str> {
     for suffix in COMPAT_SUFFIXES {
-        if base_url.ends_with(suffix) {
-            return Some(&base_url[..base_url.len() - suffix.len()]);
+        if let Some(stripped) = base_url.strip_suffix(suffix) {
+            return Some(stripped);
         }
     }
     None
@@ -175,7 +175,10 @@ fn fetch_models_with_timeout(
         let request = ureq::get(url)
             .timeout(timeout)
             .set("Authorization", &format!("Bearer {trimmed_key}"))
-            .set("User-Agent", &format!("VaultOne/{}", env!("CARGO_PKG_VERSION")));
+            .set(
+                "User-Agent",
+                &format!("VaultOne/{}", env!("CARGO_PKG_VERSION")),
+            );
         match request.call() {
             Ok(response) => {
                 let body = response.into_string().unwrap_or_default();
@@ -363,14 +366,8 @@ mod tests {
                 "https://api.stepfun.com/step_plan",
                 "https://api.stepfun.com",
             ),
-            (
-                "https://api.kimi.com/coding",
-                "https://api.kimi.com",
-            ),
-            (
-                "https://www.right.codes/claude",
-                "https://www.right.codes",
-            ),
+            ("https://api.kimi.com/coding", "https://api.kimi.com"),
+            ("https://www.right.codes/claude", "https://www.right.codes"),
         ];
         for (base, root) in cases {
             assert_eq!(
@@ -430,15 +427,17 @@ mod tests {
     }
 
     #[test]
-    fn natural_input_capped_at_three() {
-        // 版本段 + 兼容后缀同时命中 → 4 个原始候选被截到 3 条（保前 3）。
+    fn version_segment_prevents_suffix_strip() {
+        // 版本段是 URL 最后一段，后缀剥离要求 URL 以已知后缀结尾——两者互斥：
+        // /v4 命中版本段分支后不会再剥 /coding，只产出 {base}/models 与
+        // {base}/v1/models 两个候选（自然输入上限其实到不了 3 条，去重 /
+        // 上限步骤由 dedup_keep_first 的直接用例守住）。
         let c = candidate_models_urls("https://x.com/coding/v4", None);
         assert_eq!(
             c,
             vec![
                 "https://x.com/coding/v4/models",
                 "https://x.com/coding/v4/v1/models",
-                "https://x.com/v4/v1/models",
             ]
         );
     }
@@ -558,8 +557,15 @@ mod tests {
             ("/v1/models", 404, "nope"),
             ("/models", 404, "nope"),
         ]);
-        let msg = fetch_err_msg(fetch_models(&server.endpoint("/anthropic"), "sk-test", None));
-        assert!(msg.starts_with("ENDPOINT_CLOSED: all candidates failed: "), "got: {msg}");
+        let msg = fetch_err_msg(fetch_models(
+            &server.endpoint("/anthropic"),
+            "sk-test",
+            None,
+        ));
+        assert!(
+            msg.starts_with("ENDPOINT_CLOSED: all candidates failed: "),
+            "got: {msg}"
+        );
         assert!(msg.contains("HTTP 404"), "got: {msg}");
     }
 
@@ -567,7 +573,10 @@ mod tests {
     fn fetch_405_maps_to_endpoint_tag() {
         let server = TestServer::start(&[("/v1/models", 405, "no get")]);
         let msg = fetch_err_msg(fetch_models(&server.endpoint(""), "sk-test", None));
-        assert!(msg.starts_with("ENDPOINT_CLOSED: all candidates failed: HTTP 405"), "got: {msg}");
+        assert!(
+            msg.starts_with("ENDPOINT_CLOSED: all candidates failed: HTTP 405"),
+            "got: {msg}"
+        );
     }
 
     #[test]
