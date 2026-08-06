@@ -102,6 +102,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::reorder_providers_cmd,
         commands::switch_provider_cmd,
         commands::get_active_provider_cmd,
+        commands::export_providers_cmd,
+        commands::import_providers_cmd,
         window_geom::dock_window_right,
         window_geom::center_window,
         window_geom::set_window_rect,

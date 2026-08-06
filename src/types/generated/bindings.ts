@@ -216,6 +216,18 @@ export const commands = {
 	updatedAt: string,
 } | null, AppError>(__TAURI_INVOKE("get_active_provider_cmd")),
 	/**
+	 *  导出全部供应商为 JSON 文档，写入 `target_path`（前端 save 对话框选的位置）。
+	 *  `include_keys=false` 时剔除 settingsConfig env 里的密钥键。换设备迁移 /
+	 *  留档用，不经过 git 同步。返回文档里的 provider 数量。
+	 */
+	exportProvidersCmd: (includeKeys: boolean, targetPath: string) => typedError<number, AppError>(__TAURI_INVOKE("export_providers_cmd", { includeKeys, targetPath })),
+	/**
+	 *  从 JSON 文档导入供应商（合并 / 覆盖模式）。`source_path` 是前端 open
+	 *  对话框选的文件。只写本机 DB（`save_provider`），不触发 providers.json
+	 *  同步写——导入的 key 只进本机库。返回应用 / 跳过计数。
+	 */
+	importProvidersCmd: (sourcePath: string, mode: ProviderImportMode) => typedError<ProviderImportReport, AppError>(__TAURI_INVOKE("import_providers_cmd", { sourcePath, mode })),
+	/**
 	 *  Dock the given window against the right edge of its current monitor.
 	 * 
 	 *  `client_logical_w/h` is the desired CLIENT (visible content) size in logical
@@ -493,6 +505,16 @@ export type Provider = {
  *  list view can label and theme them.
  */
 export type ProviderCategory = "official" | "cn_official" | "aggregator" | "cloud_provider" | "custom";
+
+/**  导入冲突模式：merge = 已有 id 跳过（保留双方，按 id 去重）；overwrite =
+ *  同 id 以导入为准（后者胜），本地独有 id 保留（不做删除——保守迁移）。 */
+export type ProviderImportMode = "merge" | "overwrite";
+
+/**  导入结果计数，前端 toast 展示「导入 N 个、跳过 M 个」。 */
+export type ProviderImportReport = {
+	imported: number,
+	skipped: number,
+};
 
 /**  Run mode: default Standalone; Synced once a repo is configured. */
 export type RunMode = "standalone" | "synced";

@@ -22,6 +22,7 @@ use crate::model::{
     UsageFilter, UsageLogRow, UsageStats,
 };
 use crate::pricing;
+use crate::provider::export_import::{ProviderImportMode, ProviderImportReport};
 use crate::sessions;
 use crate::sync::VerifyReport;
 
@@ -889,6 +890,43 @@ pub fn get_active_provider_cmd(state: State<'_, AppState>) -> AppResult<Option<P
         None => return Ok(None),
     };
     state.store.get_provider(&id)
+}
+
+/// 导出全部供应商为 JSON 文档，写入 `target_path`（前端 save 对话框选的位置）。
+/// `include_keys=false` 时剔除 settingsConfig env 里的密钥键。换设备迁移 /
+/// 留档用，不经过 git 同步。返回文档里的 provider 数量。
+#[tauri::command]
+#[specta::specta]
+pub fn export_providers_cmd(
+    state: State<'_, AppState>,
+    include_keys: bool,
+    target_path: String,
+) -> AppResult<u32> {
+    let providers = state.store.list_providers()?;
+    let doc = crate::provider::export_import::export_document(
+        &providers,
+        include_keys,
+        &crate::time::now_iso(),
+    )?;
+    std::fs::write(&target_path, doc)?;
+    Ok(providers.len() as u32)
+}
+
+/// 从 JSON 文档导入供应商（合并 / 覆盖模式）。`source_path` 是前端 open
+/// 对话框选的文件。只写本机 DB（`save_provider`），不触发 providers.json
+/// 同步写——导入的 key 只进本机库。返回应用 / 跳过计数。
+#[tauri::command]
+#[specta::specta]
+pub fn import_providers_cmd(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    source_path: String,
+    mode: ProviderImportMode,
+) -> AppResult<ProviderImportReport> {
+    let json = std::fs::read_to_string(&source_path)?;
+    let report = crate::provider::export_import::apply_import(&state.store, &json, mode)?;
+    emit_providers_changed(&app_handle);
+    Ok(report)
 }
 
 // ---------------- Library ----------------

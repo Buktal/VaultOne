@@ -12,7 +12,7 @@ import {
   PointerSensor,
 } from "@dnd-kit/react"
 import { useSortable } from "@dnd-kit/react/sortable"
-import { Pencil, Plus, Trash2 } from "lucide-react"
+import { Download, Pencil, Plus, Trash2, Upload } from "lucide-react"
 import { useState } from "react"
 import { useTranslation } from "react-i18next"
 import {
@@ -37,10 +37,15 @@ import { cn } from "@/lib/utils"
 import type { Provider } from "@/types/generated/bindings"
 import { PresetSelector } from "./preset-selector"
 import { ProviderFormSheet } from "./provider-form-sheet"
+import {
+  ProviderTransferDialog,
+  type TransferKind,
+} from "./provider-transfer-dialog"
 
 export function ProvidersView() {
   const { t } = useTranslation()
-  const { providers, isLoading, onReorder } = useProvidersBrowser()
+  const { providers, isLoading, onReorder, exportProviders, importProviders, transferring } =
+    useProvidersBrowser()
   const { data: activeProvider, isLoading: activeLoading } =
     useGetActiveProviderQuery()
   const [remove] = useDeleteProviderMutation()
@@ -50,6 +55,7 @@ export function ProvidersView() {
   const [sheetOpen, setSheetOpen] = useState(false)
   const [editing, setEditing] = useState<Provider | null>(null)
   const [preset, setPreset] = useState<ProviderPreset | null>(null)
+  const [transfer, setTransfer] = useState<TransferKind | null>(null)
 
   // Whole-row drag handle: 6px of movement before a press becomes a drag —
   // clicks keep opening the edit sheet; moves reorder. Same constraints as the
@@ -105,7 +111,25 @@ export function ProvidersView() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
-      <div className="flex items-center justify-end">
+      <div className="flex items-center justify-between">
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setTransfer("export")}
+          >
+            <Download />
+            {t("providers.transfer.export")}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setTransfer("import")}
+          >
+            <Upload />
+            {t("providers.transfer.import")}
+          </Button>
+        </div>
         <Button size="sm" onClick={openNew}>
           <Plus />
           {t("providers.add")}
@@ -189,6 +213,13 @@ export function ProvidersView() {
         editing={editing}
         preset={preset}
         onSaved={() => setSheetOpen(false)}
+      />
+      <ProviderTransferDialog
+        kind={transfer}
+        transferring={transferring}
+        onExport={exportProviders}
+        onImport={importProviders}
+        onOpenChange={setTransfer}
       />
     </div>
   )
