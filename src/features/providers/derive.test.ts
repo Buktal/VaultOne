@@ -2,13 +2,24 @@ import { describe, expect, it } from "vitest"
 import {
   configApiKey,
   configEndpoint,
+  configRoleFields,
+  configRoleHasOneM,
+  configRoleModel,
+  configRoleName,
   emptyProvider,
+  hasOneM,
   providerApiKey,
   providerEndpoint,
   providerFromPreset,
   providerModel,
+  setModelOneM,
+  stripOneM,
+  withAllRolesFromFirstInText,
   withBasicFields,
   withBasicFieldsInText,
+  withRoleModelInText,
+  withRoleNameInText,
+  withRoleOneMInText,
 } from "@/features/providers/derive"
 import { PROVIDER_PRESETS } from "@/features/providers/presets"
 import type { Provider } from "@/types/generated/bindings"
@@ -19,6 +30,16 @@ function provider(config: string): Provider {
     ...emptyProvider(),
     settingsConfig: config,
   }
+}
+
+/** The env block of a settingsConfig JSON text, for assertions. */
+function envOf(configText: string): Record<string, string> {
+  return (JSON.parse(configText) as { env: Record<string, string> }).env
+}
+
+/** A settingsConfig text with just an env block. */
+function configWith(env: Record<string, string>): string {
+  return JSON.stringify({ env })
 }
 
 describe("providerEndpoint / providerApiKey / providerModel", () => {
@@ -278,5 +299,443 @@ describe("providerFromPreset", () => {
     const draft = providerFromPreset(PROVIDER_PRESETS[0]!)
     expect(draft.settingsConfig).toBe(PROVIDER_PRESETS[0]!.settingsConfig)
     expect(JSON.stringify(PROVIDER_PRESETS)).toBe(before)
+  })
+})
+
+describe("1M marker helpers", () => {
+  it("hasOneM detects the marker case-insensitively", () => {
+    expect(hasOneM("claude-sonnet-5[1M]")).toBe(true)
+    // 代理转发上游时写小写标记，读端两种拼写都要认得。
+    expect(hasOneM("claude-sonnet-5[1m]")).toBe(true)
+    expect(hasOneM("claude-sonnet-5")).toBe(false)
+    expect(hasOneM("")).toBe(false)
+  })
+
+  it("stripOneM removes a trailing marker and nothing else", () => {
+    expect(stripOneM("claude-sonnet-5[1M]")).toBe("claude-sonnet-5")
+    expect(stripOneM("claude-sonnet-5[1m]")).toBe("claude-sonnet-5")
+    expect(stripOneM("claude-sonnet-5 [1M]")).toBe("claude-sonnet-5")
+    expect(stripOneM("claude-sonnet-5")).toBe("claude-sonnet-5")
+    // 只剥最末尾的一个标记，中间出现的不动。
+    expect(stripOneM("claude-sonnet-5[1M][1M]")).toBe("claude-sonnet-5[1M]")
+    expect(stripOneM("claude-sonnet-5[1M]-x")).toBe("claude-sonnet-5[1M]-x")
+    expect(stripOneM("[1M]")).toBe("")
+  })
+
+  it("setModelOneM appends and idempotently strips before re-applying", () => {
+    expect(setModelOneM("claude-sonnet-5", true)).toBe("claude-sonnet-5[1M]")
+    expect(setModelOneM("claude-sonnet-5[1M]", true)).toBe(
+      "claude-sonnet-5[1M]",
+    )
+    expect(setModelOneM("claude-sonnet-5[1M]", false)).toBe("claude-sonnet-5")
+    expect(setModelOneM("claude-sonnet-5", false)).toBe("claude-sonnet-5")
+    expect(setModelOneM("", true)).toBe("")
+    expect(setModelOneM("  ", false)).toBe("")
+  })
+})
+
+describe("configRoleModel backfill chain", () => {
+  it("prefers the role's own key over any backfill", () => {
+    const text = configWith({
+      ANTHROPIC_MODEL: "fallback",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "glm-5.1",
+    })
+    expect(configRoleModel(text, "sonnet")).toBe("glm-5.1")
+  })
+
+  it("falls back to the primary model for sonnet and opus", () => {
+    const text = configWith({ ANTHROPIC_MODEL: "glm-5.1" })
+    expect(configRoleModel(text, "sonnet")).toBe("glm-5.1")
+    expect(configRoleModel(text, "opus")).toBe("glm-5.1")
+  })
+
+  it("falls back to the legacy small-fast key for haiku, then the primary model", () => {
+    expect(
+      configRoleModel(
+        configWith({ ANTHROPIC_SMALL_FAST_MODEL: "glm-5-flash" }),
+        "haiku",
+      ),
+    ).toBe("glm-5-flash")
+    expect(
+      configRoleModel(configWith({ ANTHROPIC_MODEL: "glm-5.1" }), "haiku"),
+    ).toBe("glm-5.1")
+    expect(configRoleModel(configWith({}), "haiku")).toBe("")
+  })
+
+  it("fable falls back to the opus role key, then the primary model", () => {
+    expect(
+      configRoleModel(
+        configWith({ ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-5" }),
+        "fable",
+      ),
+    ).toBe("claude-opus-5")
+    expect(
+      configRoleModel(configWith({ ANTHROPIC_MODEL: "glm-5.1" }), "fable"),
+    ).toBe("glm-5.1")
+    // Fable 不会回填到其他角色的键。
+    expect(
+      configRoleModel(
+        configWith({ ANTHROPIC_DEFAULT_SONNET_MODEL: "glm-5.1" }),
+        "fable",
+      ),
+    ).toBe("")
+  })
+
+  it("subagent falls back to the sonnet role key, then the primary model", () => {
+    expect(
+      configRoleModel(
+        configWith({ ANTHROPIC_DEFAULT_SONNET_MODEL: "glm-5.1" }),
+        "subagent",
+      ),
+    ).toBe("glm-5.1")
+    expect(
+      configRoleModel(configWith({ ANTHROPIC_MODEL: "glm-5.1" }), "subagent"),
+    ).toBe("glm-5.1")
+    expect(configRoleModel(configWith({}), "subagent")).toBe("")
+  })
+
+  it("returns the raw env value, 1M marker included", () => {
+    expect(
+      configRoleModel(configWith({ ANTHROPIC_MODEL: "glm-5.1[1M]" }), "sonnet"),
+    ).toBe("glm-5.1[1M]")
+  })
+
+  it("returns empty strings for garbage / empty config", () => {
+    expect(configRoleModel("not-json", "sonnet")).toBe("")
+    expect(configRoleModel("", "fable")).toBe("")
+    expect(configRoleModel('{"env": [1, 2]}', "opus")).toBe("")
+  })
+
+  it("reads role models out of preset snapshots (production path)", () => {
+    const kimi = PROVIDER_PRESETS.find((p) => p.name === "Kimi")
+    const draft = providerFromPreset(kimi!)
+    expect(configRoleModel(draft.settingsConfig, "sonnet")).toBe(
+      "kimi-k2.7-code",
+    )
+    expect(configRoleModel(draft.settingsConfig, "haiku")).toBe(
+      "kimi-k2.7-code",
+    )
+    // Fable 经 Opus 角色键回填，Subagent 经 Sonnet 角色键回填。
+    expect(configRoleModel(draft.settingsConfig, "fable")).toBe(
+      "kimi-k2.7-code",
+    )
+    expect(configRoleModel(draft.settingsConfig, "subagent")).toBe(
+      "kimi-k2.7-code",
+    )
+    const deepseek = PROVIDER_PRESETS.find((p) => p.name === "DeepSeek")
+    const ds = providerFromPreset(deepseek!)
+    // Haiku / Sonnet 角色键与主模型不同，回填必须取到各自的值。
+    expect(configRoleModel(ds.settingsConfig, "haiku")).toBe(
+      "deepseek-v4-flash",
+    )
+    expect(configRoleModel(ds.settingsConfig, "subagent")).toBe(
+      "deepseek-v4-pro",
+    )
+  })
+})
+
+describe("configRoleName / configRoleFields", () => {
+  it("prefers the _NAME key over the model name", () => {
+    const text = configWith({
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "glm-5.1",
+      ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "我的主力",
+    })
+    expect(configRoleName(text, "sonnet")).toBe("我的主力")
+  })
+
+  it("defaults to the marker-free model name", () => {
+    expect(
+      configRoleName(configWith({ ANTHROPIC_MODEL: "glm-5.1[1M]" }), "sonnet"),
+    ).toBe("glm-5.1")
+    expect(configRoleName(configWith({}), "sonnet")).toBe("")
+  })
+
+  it("configRoleFields returns model / name / oneM together", () => {
+    expect(
+      configRoleFields(
+        configWith({ ANTHROPIC_DEFAULT_SONNET_MODEL: "glm-5.1[1M]" }),
+        "sonnet",
+      ),
+    ).toEqual({ model: "glm-5.1[1M]", name: "glm-5.1", oneM: true })
+  })
+
+  it("haiku never reports oneM even when its model carries a stray marker", () => {
+    expect(
+      configRoleHasOneM(
+        configWith({ ANTHROPIC_DEFAULT_HAIKU_MODEL: "glm-5-flash[1M]" }),
+        "haiku",
+      ),
+    ).toBe(false)
+  })
+
+  it("oneM derives from a backfilled model too", () => {
+    expect(
+      configRoleHasOneM(
+        configWith({ ANTHROPIC_MODEL: "glm-5.1[1M]" }),
+        "opus",
+      ),
+    ).toBe(true)
+  })
+})
+
+describe("withRoleModelInText", () => {
+  it("writes the role model and preserves the rest of the snapshot", () => {
+    const next = withRoleModelInText(
+      JSON.stringify({
+        includeCoAuthoredBy: false,
+        env: { ANTHROPIC_MODEL: "glm-5.1" },
+      }),
+      "sonnet",
+      "glm-5.2",
+    )
+    expect(JSON.parse(next)).toMatchObject({
+      includeCoAuthoredBy: false,
+      env: {
+        ANTHROPIC_MODEL: "glm-5.1",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "glm-5.2",
+        ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "glm-5.2",
+      },
+    })
+  })
+
+  it("syncs the display name when it equals the old model name", () => {
+    const next = withRoleModelInText(
+      configWith({
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "glm-5.1",
+        ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: "glm-5.1",
+      }),
+      "opus",
+      "glm-5.2",
+    )
+    const env = envOf(next)
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("glm-5.2")
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME).toBe("glm-5.2")
+  })
+
+  it("writes the marker-free default display name when the key is absent", () => {
+    const next = withRoleModelInText(
+      configWith({ ANTHROPIC_MODEL: "glm-5.1" }),
+      "sonnet",
+      "glm-5.2[1M]",
+    )
+    const env = envOf(next)
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("glm-5.2[1M]")
+    // 显示名跟随剥掉标记的模型名，不带 [1M]。
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME).toBe("glm-5.2")
+  })
+
+  it("keeps a custom display name untouched", () => {
+    const next = withRoleModelInText(
+      configWith({
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "glm-5.1",
+        ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "主力模型",
+      }),
+      "sonnet",
+      "glm-5.2",
+    )
+    const env = envOf(next)
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("glm-5.2")
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME).toBe("主力模型")
+  })
+
+  it("keeps the marker for 1M-capable roles", () => {
+    const next = withRoleModelInText(
+      configWith({}),
+      "sonnet",
+      "glm-5.1[1M]",
+    )
+    expect(envOf(next).ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("glm-5.1[1M]")
+  })
+
+  it("strips the 1M marker for haiku on write", () => {
+    const next = withRoleModelInText(configWith({}), "haiku", "glm-5-flash[1M]")
+    const env = envOf(next)
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("glm-5-flash")
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME).toBe("glm-5-flash")
+  })
+
+  it("deletes the legacy small-fast key on every write", () => {
+    const next = withRoleModelInText(
+      configWith({
+        ANTHROPIC_SMALL_FAST_MODEL: "glm-5-flash",
+        ANTHROPIC_MODEL: "glm-5.1",
+      }),
+      "sonnet",
+      "glm-5.2",
+    )
+    expect(envOf(next).ANTHROPIC_SMALL_FAST_MODEL).toBeUndefined()
+  })
+
+  it("an empty model clears the key and a synced display name", () => {
+    const next = withRoleModelInText(
+      configWith({
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "glm-5.1",
+        ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "glm-5.1",
+      }),
+      "sonnet",
+      "",
+    )
+    expect(envOf(next)).toEqual({})
+  })
+
+  it("an empty model keeps a custom display name", () => {
+    const next = withRoleModelInText(
+      configWith({
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "glm-5.1",
+        ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "主力模型",
+      }),
+      "sonnet",
+      "",
+    )
+    expect(envOf(next)).toEqual({
+      ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "主力模型",
+    })
+  })
+})
+
+describe("withRoleNameInText", () => {
+  it("writes the display name key and clears it when emptied", () => {
+    const written = withRoleNameInText(configWith({}), "sonnet", "我的主力")
+    expect(envOf(written).ANTHROPIC_DEFAULT_SONNET_MODEL_NAME).toBe("我的主力")
+    const cleared = withRoleNameInText(written, "sonnet", "")
+    expect(envOf(cleared)).toEqual({})
+  })
+})
+
+describe("withRoleOneMInText", () => {
+  it("checking appends the marker and unchecking strips it", () => {
+    const checked = withRoleOneMInText(
+      configWith({ ANTHROPIC_DEFAULT_SONNET_MODEL: "glm-5.1" }),
+      "sonnet",
+      true,
+    )
+    expect(envOf(checked).ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("glm-5.1[1M]")
+    const unchecked = withRoleOneMInText(checked, "sonnet", false)
+    expect(envOf(unchecked).ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("glm-5.1")
+  })
+
+  it("keeps the display name marker-free while toggling", () => {
+    const checked = withRoleOneMInText(
+      configWith({ ANTHROPIC_DEFAULT_SONNET_MODEL: "glm-5.1" }),
+      "sonnet",
+      true,
+    )
+    const env = envOf(checked)
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME).toBe("glm-5.1")
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("glm-5.1[1M]")
+  })
+
+  it("writes the marker into the role key when the model only comes from backfill", () => {
+    const checked = withRoleOneMInText(
+      configWith({ ANTHROPIC_MODEL: "glm-5.1" }),
+      "sonnet",
+      true,
+    )
+    const env = envOf(checked)
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("glm-5.1[1M]")
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME).toBe("glm-5.1")
+    // 主模型键不受影响。
+    expect(env.ANTHROPIC_MODEL).toBe("glm-5.1")
+  })
+
+  it("is a no-op for haiku", () => {
+    const text = configWith({ ANTHROPIC_DEFAULT_HAIKU_MODEL: "glm-5-flash" })
+    expect(withRoleOneMInText(text, "haiku", true)).toBe(text)
+  })
+})
+
+describe("withAllRolesFromFirstInText", () => {
+  it("applies the primary model to every role with synced display names", () => {
+    const next = withAllRolesFromFirstInText(
+      configWith({ ANTHROPIC_MODEL: "glm-5.1" }),
+    )
+    expect(envOf(next)).toEqual({
+      ANTHROPIC_MODEL: "glm-5.1",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "glm-5.1",
+      ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "glm-5.1",
+      ANTHROPIC_DEFAULT_OPUS_MODEL: "glm-5.1",
+      ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: "glm-5.1",
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: "glm-5.1",
+      ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "glm-5.1",
+      ANTHROPIC_DEFAULT_FABLE_MODEL: "glm-5.1",
+      ANTHROPIC_DEFAULT_FABLE_MODEL_NAME: "glm-5.1",
+      ANTHROPIC_DEFAULT_SUBAGENT_MODEL: "glm-5.1",
+      ANTHROPIC_DEFAULT_SUBAGENT_MODEL_NAME: "glm-5.1",
+    })
+  })
+
+  it("propagates the 1M marker to capable roles and strips it for haiku", () => {
+    const next = withAllRolesFromFirstInText(
+      configWith({ ANTHROPIC_DEFAULT_OPUS_MODEL: "glm-5.1[1M]" }),
+    )
+    const env = envOf(next)
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("glm-5.1[1M]")
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("glm-5.1[1M]")
+    expect(env.ANTHROPIC_DEFAULT_FABLE_MODEL).toBe("glm-5.1[1M]")
+    expect(env.ANTHROPIC_DEFAULT_SUBAGENT_MODEL).toBe("glm-5.1[1M]")
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("glm-5.1")
+    // 显示名一律不带标记。
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME).toBe("glm-5.1")
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME).toBe("glm-5.1")
+  })
+
+  it("picks the first filled role when the primary model is absent", () => {
+    const next = withAllRolesFromFirstInText(
+      configWith({ ANTHROPIC_DEFAULT_FABLE_MODEL: "glm-5.1" }),
+    )
+    const env = envOf(next)
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("glm-5.1")
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("glm-5.1")
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("glm-5.1")
+    expect(env.ANTHROPIC_DEFAULT_SUBAGENT_MODEL).toBe("glm-5.1")
+  })
+
+  it("prefers an earlier role over a later one", () => {
+    const next = withAllRolesFromFirstInText(
+      configWith({
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "glm-5.1",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "glm-5-flash",
+      }),
+    )
+    expect(envOf(next).ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("glm-5.1")
+  })
+
+  it("deletes the legacy small-fast key and preserves the rest of the snapshot", () => {
+    const next = withAllRolesFromFirstInText(
+      JSON.stringify({
+        includeCoAuthoredBy: false,
+        env: {
+          ANTHROPIC_SMALL_FAST_MODEL: "glm-5-flash",
+          ANTHROPIC_MODEL: "glm-5.1",
+        },
+      }),
+    )
+    const parsed = JSON.parse(next) as {
+      includeCoAuthoredBy: boolean
+      env: Record<string, string>
+    }
+    expect(parsed.includeCoAuthoredBy).toBe(false)
+    expect(parsed.env.ANTHROPIC_SMALL_FAST_MODEL).toBeUndefined()
+  })
+
+  it("returns null when no model is filled anywhere", () => {
+    expect(withAllRolesFromFirstInText(configWith({}))).toBeNull()
+    expect(
+      withAllRolesFromFirstInText(
+        configWith({ ANTHROPIC_BASE_URL: "https://x.dev" }),
+      ),
+    ).toBeNull()
+    expect(withAllRolesFromFirstInText("not-json")).toBeNull()
+  })
+
+  it("ignores whitespace-only env values when picking", () => {
+    expect(
+      withAllRolesFromFirstInText(
+        configWith({
+          ANTHROPIC_MODEL: "  ",
+          ANTHROPIC_DEFAULT_OPUS_MODEL: "glm-5.1",
+        }),
+      ),
+    ).not.toBeNull()
   })
 })
