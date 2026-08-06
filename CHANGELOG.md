@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The 840×600 minimum window actually sticks now** — the lightweight-mode restore commands were re-applying an old 720×520 floor via `set_min_size`, silently overriding the raised minimum. The dashboard no longer restores undersized after a glance-card round-trip.
+- **Sessions table no longer overlaps at narrow widths** — the seven fixed columns squeezed the title column to zero and spilled the header into the Project column. The table now keeps a readable width and scrolls horizontally instead.
+
 ## [1.7.1] - 2026-08-06
 
 ### Added
@@ -184,7 +189,7 @@ First public, open-source release.
 - **macOS**: Apple Silicon (arm64) only; builds are unsigned — right-click → **Open** on first launch (or `xattr -dr com.apple.quarantine /Applications/VaultOne.app`). Intel Mac users can build from source.
 - **Providers**: Claude Code only; additional providers (Codex, Cursor, …) are planned.
 
-[Unreleased]: https://github.com/Buktal/VaultOne/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/Buktal/VaultOne/compare/v1.7.1...HEAD
 [1.6.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.6.0
 [1.5.1]: https://github.com/Buktal/VaultOne/releases/tag/v1.5.1
 [1.5.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.5.0

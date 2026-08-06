@@ -6,6 +6,11 @@ VaultOne の主な変更点をすべて記録します。
 
 ## [Unreleased]
 
+### 修正
+
+- **840×600 の最小ウィンドウが実際に効くように** —— 軽量モード復元時に古い 720×520 の下限が `set_min_size` で再適用され、引き上げた最小サイズを静かに上書きしていました。グランスカード往復後のダッシュボードが欠け小さいサイズで復元されなくなります。
+- **狭いウィンドウでセッション表が重ならなくなった** —— 固定 7 列がタイトル列を 0 まで圧縮し、ヘッダー文字がプロジェクト列に溢れていました。表は読みやすい幅を保ち、あふれた分は横スクロールします。
+
 ## [1.7.1] - 2026-08-06
 
 ### 追加
@@ -183,7 +188,7 @@ VaultOne の主な変更点をすべて記録します。
 - **macOS**: Apple Silicon（arm64）のみ。ビルドは未署名——初回起動時に右クリック → **開く**（または `xattr -dr com.apple.quarantine /Applications/VaultOne.app`）。Intel Mac ユーザーはソースからビルド可能。
 - **プロバイダ**: 現在は Claude Code のみ。追加プロバイダ（Codex、Cursor など）を計画中。
 
-[Unreleased]: https://github.com/Buktal/VaultOne/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/Buktal/VaultOne/compare/v1.7.1...HEAD
 [1.6.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.6.0
 [1.5.1]: https://github.com/Buktal/VaultOne/releases/tag/v1.5.1
 [1.5.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.5.0

@@ -6,6 +6,11 @@ VaultOne 的所有显著变更记录于此。
 
 ## [Unreleased]
 
+### 修复
+
+- **840×600 最小窗口现在真正生效** —— 轻量模式恢复时会用旧的 720×520 底值重新 `set_min_size`，悄悄盖掉提高后的最小尺寸；从速览卡片切回完整看板后不再缩回欠小的尺寸。
+- **窄窗口下会话表格不再重叠** —— 七个固定列把标题列挤到 0，表头文字溢到「项目」列；表格现在保持可读宽度，超出部分横向滚动。
+
 ## [1.7.1] - 2026-08-06
 
 ### 新增
@@ -183,7 +188,7 @@ VaultOne 的所有显著变更记录于此。
 - **macOS**：仅 Apple Silicon（arm64）；构建未签名——首次启动右键 →「打开」（或 `xattr -dr com.apple.quarantine /Applications/VaultOne.app`）。Intel Mac 用户可从源码构建。
 - **Provider**：当前仅 Claude Code；更多 provider（Codex、Cursor 等）规划中。
 
-[Unreleased]: https://github.com/Buktal/VaultOne/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/Buktal/VaultOne/compare/v1.7.1...HEAD
 [1.6.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.6.0
 [1.5.1]: https://github.com/Buktal/VaultOne/releases/tag/v1.5.1
 [1.5.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.5.0
