@@ -41,25 +41,70 @@ function parseSettingsConfig(config: string): SettingsConfig {
   }
 }
 
-function envValue(provider: Provider, key: string): string {
-  return parseSettingsConfig(provider.settingsConfig).env?.[key] ?? ""
+function envValue(configText: string, key: string): string {
+  return parseSettingsConfig(configText).env?.[key] ?? ""
 }
 
 /** The provider's base URL (endpoint), from `env.ANTHROPIC_BASE_URL`. */
 export function providerEndpoint(provider: Provider): string {
-  return envValue(provider, ENV_BASE_URL)
+  return envValue(provider.settingsConfig, ENV_BASE_URL)
 }
 
 /** The API key — reads AUTH_TOKEN first, then API_KEY (the form writes the
  *  former; the latter is a legacy spelling some providers use). */
 export function providerApiKey(provider: Provider): string {
-  return envValue(provider, ENV_AUTH_TOKEN) || envValue(provider, ENV_API_KEY)
+  return (
+    envValue(provider.settingsConfig, ENV_AUTH_TOKEN) ||
+    envValue(provider.settingsConfig, ENV_API_KEY)
+  )
+}
+
+/** Text-level twin of `providerEndpoint` — reads the endpoint straight from a
+ *  settingsConfig JSON text (the JSON editor's working value). */
+export function configEndpoint(configText: string): string {
+  return envValue(configText, ENV_BASE_URL)
+}
+
+/** Text-level twin of `providerApiKey` — reads the API key straight from a
+ *  settingsConfig JSON text, AUTH_TOKEN first then the legacy API_KEY. */
+export function configApiKey(configText: string): string {
+  return (
+    envValue(configText, ENV_AUTH_TOKEN) || envValue(configText, ENV_API_KEY)
+  )
 }
 
 /** The primary model, from `env.ANTHROPIC_MODEL`. Display-only for now — the
  *  five-role model mapping is a later ticket. */
 export function providerModel(provider: Provider): string {
-  return envValue(provider, ENV_MODEL)
+  return envValue(provider.settingsConfig, ENV_MODEL)
+}
+
+/**
+ * Merge the basic form fields (endpoint / API key) into a settingsConfig JSON
+ * text, keeping every field the form does not own (extra env keys, non-env
+ * settings) untouched — the text-level twin of `withBasicFields` that the form
+ * sheet uses to keep the JSON editor in sync while typing. Callers must only
+ * pass config that parses to an object (`parseJsonObject`), else a garbage
+ * snapshot would be replaced by a bare `{"env": …}` and the in-progress edit
+ * lost. A non-empty key is written as AUTH_TOKEN and the legacy API_KEY
+ * spelling dropped; an empty endpoint / key removes the stale env entry.
+ */
+export function withBasicFieldsInText(
+  configText: string,
+  fields: { endpoint: string; apiKey: string },
+): string {
+  const config = parseSettingsConfig(configText)
+  const env = { ...(config.env ?? {}) }
+  if (fields.endpoint) env[ENV_BASE_URL] = fields.endpoint
+  else delete env[ENV_BASE_URL]
+  if (fields.apiKey) {
+    env[ENV_AUTH_TOKEN] = fields.apiKey
+    delete env[ENV_API_KEY]
+  } else {
+    delete env[ENV_AUTH_TOKEN]
+    delete env[ENV_API_KEY]
+  }
+  return JSON.stringify({ ...config, env }, null, 2)
 }
 
 /**
@@ -76,20 +121,9 @@ export function withBasicFields(
   provider: Provider,
   fields: { endpoint: string; apiKey: string },
 ): Provider {
-  const config = parseSettingsConfig(provider.settingsConfig)
-  const env = { ...(config.env ?? {}) }
-  if (fields.endpoint) env[ENV_BASE_URL] = fields.endpoint
-  else delete env[ENV_BASE_URL]
-  if (fields.apiKey) {
-    env[ENV_AUTH_TOKEN] = fields.apiKey
-    delete env[ENV_API_KEY]
-  } else {
-    delete env[ENV_AUTH_TOKEN]
-    delete env[ENV_API_KEY]
-  }
   return {
     ...provider,
-    settingsConfig: JSON.stringify({ ...config, env }, null, 2),
+    settingsConfig: withBasicFieldsInText(provider.settingsConfig, fields),
   }
 }
 

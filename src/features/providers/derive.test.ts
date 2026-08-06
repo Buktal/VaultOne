@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest"
 import {
+  configApiKey,
+  configEndpoint,
   emptyProvider,
   providerApiKey,
   providerEndpoint,
   providerModel,
   withBasicFields,
+  withBasicFieldsInText,
 } from "@/features/providers/derive"
 import type { Provider } from "@/types/generated/bindings"
 
@@ -152,5 +155,61 @@ describe("emptyProvider", () => {
     expect(p.category).toBe("custom")
     expect(providerEndpoint(p)).toBe("")
     expect(providerApiKey(p)).toBe("")
+  })
+})
+
+describe("configEndpoint / configApiKey", () => {
+  it("reads the env-backed fields straight from a JSON text", () => {
+    const text = JSON.stringify({
+      env: {
+        ANTHROPIC_BASE_URL: "https://api.x.dev",
+        ANTHROPIC_AUTH_TOKEN: "sk-x",
+      },
+    })
+    expect(configEndpoint(text)).toBe("https://api.x.dev")
+    expect(configApiKey(text)).toBe("sk-x")
+  })
+
+  it("reads the legacy API_KEY spelling from a JSON text", () => {
+    expect(
+      configApiKey(JSON.stringify({ env: { ANTHROPIC_API_KEY: "sk-l" } })),
+    ).toBe("sk-l")
+  })
+
+  it("returns empty strings for garbage / empty text", () => {
+    expect(configEndpoint("not-json")).toBe("")
+    expect(configApiKey("")).toBe("")
+    expect(configEndpoint('"a bare string"')).toBe("")
+  })
+})
+
+describe("withBasicFieldsInText", () => {
+  it("is the text-level twin of withBasicFields", () => {
+    const text = JSON.stringify({
+      includeCoAuthoredBy: false,
+      env: {
+        ANTHROPIC_BASE_URL: "old-url",
+        ANTHROPIC_AUTH_TOKEN: "old-key",
+        ANTHROPIC_MODEL: "keep-me",
+      },
+    })
+    const next = withBasicFieldsInText(text, {
+      endpoint: "new-url",
+      apiKey: "new-key",
+    })
+    expect(configEndpoint(next)).toBe("new-url")
+    expect(configApiKey(next)).toBe("new-key")
+    expect(JSON.parse(next)).toMatchObject({
+      includeCoAuthoredBy: false,
+      env: { ANTHROPIC_MODEL: "keep-me" },
+    })
+  })
+
+  it("formats the result with 2-space indentation", () => {
+    const next = withBasicFieldsInText('{"env":{"ANTHROPIC_BASE_URL":"u"}}', {
+      endpoint: "",
+      apiKey: "",
+    })
+    expect(next).toBe('{\n  "env": {}\n}')
   })
 })
