@@ -396,3 +396,27 @@
     animation: none;
   }
 }
+
+/*
+ * Turn-jump flash. When a turn-nav click lands on a message, the target bubble
+ * pulses its brand ring three times so the eye lands with the scroll. A
+ * box-shadow ring (not border) keeps the pulse from shifting the layout.
+ * prefers-reduced-motion → no animation.
+ */
+.msg-flash {
+  animation: msg-flash 0.3s ease-in-out 3;
+}
+@keyframes msg-flash {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+  50% {
+    box-shadow: 0 0 0 2px var(--color-accent-brand);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .msg-flash {
+    animation: none;
+  }
+}

@@ -38,6 +38,7 @@ import {
   type ReactNode,
   type RefObject,
   useCallback,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -86,6 +87,11 @@ const NO_GROUP = "__none__"
 
 /** How far below the transcript's top a jumped-to user turn lands. */
 const TURN_OFFSET = 72
+
+/** How long the jumped-to bubble keeps flashing its ring (3 pulses, .msg-flash,
+ *  plus a little slack so the animation always finishes before the state drops
+ *  and the ring is never left half-drawn). */
+const FLASH_MS = 1200
 
 /** Turn-nav panel layout. Width ≈ 16 Chinese characters; both margins are the
  *  breathing room around the small panel. The detail sheet's right offset is
@@ -289,6 +295,7 @@ export function SessionDetailSheet(props: SessionDetailSheetProps) {
             onRangeChanged={turnNav.onRangeChanged}
             isOpen={isOpen}
             onToggle={toggleCollapsed}
+            flashUuid={turnNav.flashUuid}
           />
         </SheetContent>
       </Sheet>
@@ -310,6 +317,7 @@ function TranscriptBody({
   onRangeChanged,
   isOpen,
   onToggle,
+  flashUuid,
 }: {
   messages: SessionMessage[]
   loading: boolean
@@ -319,6 +327,7 @@ function TranscriptBody({
   onRangeChanged: (range: { startIndex: number }) => void
   isOpen: (uuid: string, role: string) => boolean
   onToggle: (uuid: string) => void
+  flashUuid: string | null
 }) {
   const { t } = useTranslation()
 
@@ -370,6 +379,7 @@ function TranscriptBody({
             message={m}
             open={isOpen(m.uuid, m.role)}
             onToggle={() => onToggle(m.uuid)}
+            flash={m.uuid === flashUuid}
           />
         </div>
       )}
@@ -397,6 +407,11 @@ function useTurnNav(messages: SessionMessage[]) {
     [messages],
   )
   const [activeUuid, setActiveUuid] = useState<string | null>(null)
+  // The bubble a turn-nav click most recently landed on, until FLASH_MS passes
+  // (then it drops so the ring doesn't linger). Re-jumping resets the timer.
+  const [flashUuid, setFlashUuid] = useState<string | null>(null)
+  const flashTimer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(flashTimer.current), [])
 
   // Virtuoso reports the first visible message index; the active turn is the
   // last user turn at or above it — i.e. the message the user is reading near
@@ -418,15 +433,21 @@ function useTurnNav(messages: SessionMessage[]) {
     (uuid: string) => {
       const turn = turns.find((t) => t.message.uuid === uuid)
       if (!turn) return
+      // Ring the target bubble for a beat so the eye lands with the jump.
+      setFlashUuid(uuid)
+      window.clearTimeout(flashTimer.current)
+      flashTimer.current = window.setTimeout(() => setFlashUuid(null), FLASH_MS)
       // Virtuoso adds `offset` onto the target scrollTop, so a positive value
       // shoves the row above the viewport top; a negative one parks it
       // TURN_OFFSET below it (the same landing spot as the pre-virtualization
-      // measurement).
+      // measurement). `auto` (not smooth): with dynamic row heights, a smooth
+      // scroll visibly over-shoots to an estimate and glides back, so the
+      // ring flash carries the feedback instead.
       virtuosoRef.current?.scrollToIndex({
         index: turn.index,
         align: "start",
         offset: -TURN_OFFSET,
-        behavior: "smooth",
+        behavior: "auto",
       })
     },
     [turns],
@@ -435,6 +456,7 @@ function useTurnNav(messages: SessionMessage[]) {
   return {
     turns: turns.map((t) => t.message),
     activeUuid,
+    flashUuid,
     jumpTo,
     virtuosoRef,
     onRangeChanged,
@@ -526,10 +548,13 @@ function MessageRow({
   message: m,
   open,
   onToggle,
+  flash,
 }: {
   message: SessionMessage
   open: boolean
   onToggle: () => void
+  /** Ring the bubble briefly — set when a turn-nav click lands on this row. */
+  flash?: boolean
 }) {
   switch (m.role) {
     case "assistant":
@@ -542,6 +567,7 @@ function MessageRow({
           open={open}
           onToggle={onToggle}
           copyText={m.content}
+          flash={flash}
         >
           <Content text={m.content} className={cn(!open && "line-clamp-1")} />
         </BaseRow>
@@ -555,6 +581,7 @@ function MessageRow({
           open={open}
           onToggle={onToggle}
           copyText={m.content}
+          flash={flash}
         >
           <Content text={m.content} className={cn(!open && "line-clamp-1")} />
         </BaseRow>
@@ -570,6 +597,7 @@ function MessageRow({
           open={open}
           onToggle={onToggle}
           copyText={m.content}
+          flash={flash}
         >
           <Content text={m.content} className={cn(!open && "line-clamp-1")} />
         </BaseRow>
@@ -665,6 +693,7 @@ function BaseRow({
   open,
   onToggle,
   copyText,
+  flash,
   children,
 }: {
   icon: typeof Bot
@@ -674,6 +703,8 @@ function BaseRow({
   open: boolean
   onToggle: () => void
   copyText: string
+  /** Ring the bubble briefly after a turn-nav jump lands on it. */
+  flash?: boolean
   children: ReactNode
 }) {
   // Voice layout: assistant floats left, user floats right (mirrored so its
@@ -681,9 +712,11 @@ function BaseRow({
   // cut toward each edge is the chat-bubble gesture; max-w = min(72ch, 80%)
   // caps line length on wide sheets and keeps narrow windows from filling the
   // whole row (72ch alone exceeds the content width once the sheet shrinks).
-  // The whole bubble is the collapse toggle; the header row lines up icon +
-  // time + model on the voice side (the user voice mirrors it to the bubble's
-  // right edge) with the collapse chevron and copy button on the far side.
+  // The whole bubble is the collapse toggle; the header row is two blocks —
+  // icon + time + model on the voice side, chevron + copy on the other,
+  // pinned to the row's two ends by justify-between so even a narrow bubble
+  // keeps them apart. The user voice flips the whole row with flex-row-reverse
+  // (each block reverses internally) for a true mirror of the assistant's.
   const voiceClass =
     tone === "assistant"
       ? "mr-auto max-w-[min(72ch,80%)] rounded-lg rounded-bl-sm bg-muted/60"
@@ -710,14 +743,20 @@ function BaseRow({
         className={cn(
           "group focus-visible:ring-ring/40 flex cursor-pointer px-3 py-2 text-left text-sm focus-visible:ring-2 focus-visible:outline-none",
           voiceClass,
+          flash && "msg-flash",
         )}
       >
         <div className="min-w-0 flex-1">
-          <div className="text-muted-foreground mb-1 flex items-center gap-1.5 text-[10px]">
+          <div
+            className={cn(
+              "text-muted-foreground mb-1 flex items-center justify-between gap-1.5 text-[10px]",
+              tone === "user" && "flex-row-reverse",
+            )}
+          >
             <div
               className={cn(
                 "flex items-center gap-1.5",
-                tone === "user" && "ml-auto flex-row-reverse",
+                tone === "user" && "flex-row-reverse",
               )}
             >
               <Icon
@@ -741,7 +780,7 @@ function BaseRow({
             <div
               className={cn(
                 "flex items-center gap-0.5",
-                tone !== "user" && "ml-auto",
+                tone === "user" && "flex-row-reverse",
               )}
             >
               <ChevronDown

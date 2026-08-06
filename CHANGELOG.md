@@ -10,13 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Jump between user turns** — opening a session now also mounts a slim panel beside the transcript listing every user message (width of ~16 Chinese characters, overflowing rows ellipsize). Click a row to jump straight to that message, the row for the message you're reading stays highlighted, and hovering any row shows its full text. The two panels open and close together.
+- **Jump flashes the target** — clicking a turn in the nav panel rings the message it lands on with three quick pulses of the accent ring, so the eye arrives exactly where the scroll did.
 
 ### Changed
 
 - **Long sessions open instantly** — the transcript now renders through a virtualized list (react-virtuoso), keeping only the messages near the viewport in the DOM. A multi-thousand-message session no longer stalls while every row is laid out at once, and scrolling stays smooth regardless of length.
+- **Message header rows mirror cleanly** — on both the assistant and user voices the toolbar (collapse chevron + copy) and the time/model block are pinned to opposite ends of the bubble, so a short user message no longer crams the two together against the edge.
 
 ### Fixed
 
+- **Turn jumps no longer overshoot** — jumping scrolled smoothly past the target to an estimated position and glided back, visibly running to the bottom of the transcript before springing to the message. Jumps now land instantly, with the ring flash carrying the feedback.
 - **The 840×600 minimum window actually sticks now** — the lightweight-mode restore commands were re-applying an old 720×520 floor via `set_min_size`, silently overriding the raised minimum. The dashboard no longer restores undersized after a glance-card round-trip.
 - **Sessions table no longer overlaps at narrow widths** — the seven fixed columns squeezed the title column to zero and spilled the header into the Project column. The table now keeps a readable width and scrolls horizontally instead.
 
