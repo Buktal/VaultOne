@@ -31,13 +31,22 @@ function SkinEffect() {
 export function AppProviders({ children }: { children: ReactNode }) {
   // Event-driven refresh: Rust emits `usage_changed` after writing the
   // Local Store (collect / sync); invalidate the derived caches so views
-  // re-query. `Devices` is included so a peer first seen via usage rows (or a
+  // re-query. `Sessions` is included because collect also updates session
+  // metadata (a `/rename` in Claude Code lands as a JSONL `custom-title`
+  // line) — without it, those titles would only surface on an unrelated
+  // refetch. `Devices` is included so a peer first seen via usage rows (or a
   // renamed device) refreshes the picker without waiting for a manual sync.
   // The consolidated `vaultApi` owns every endpoint.
   useEffect(() => {
     const off = listen("usage_changed", () => {
       store.dispatch(
-        vaultApi.util.invalidateTags(["Usage", "Logs", "Models", "Devices"]),
+        vaultApi.util.invalidateTags([
+          "Usage",
+          "Logs",
+          "Models",
+          "Devices",
+          "Sessions",
+        ]),
       )
     })
     return () => {
