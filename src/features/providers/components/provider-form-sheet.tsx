@@ -1,24 +1,29 @@
 // Provider editor as a Sheet (side panel) — new and edit both flow through
-// here. The basic form owns three fields (name / endpoint / API key); on save
-// it maps them onto the provider's settingsConfig snapshot via the derive.ts
-// helpers (withBasicFields preserves every field the form doesn't own), then
-// calls the upsert mutation and closes.
+// here. The basic form owns the name / endpoint / API key fields; the model
+// mapping section owns the five role models (Sonnet / Opus / Haiku / Fable /
+// Subagent), their display names and the 1M toggles, plus the one-click apply
+// button. On save the form maps everything onto the provider's settingsConfig
+// snapshot via the derive.ts helpers (withBasicFields preserves every field
+// the form doesn't own), then calls the upsert mutation and closes.
 //
 // The settings.json editor at the bottom makes the JSON snapshot the single
 // source of truth: editing the JSON re-derives the endpoint / API key fields
-// (they are a quick view of `env`), and editing a field merges it back into
-// the JSON. The merge is guarded by `parseJsonObject` — while the JSON text
-// does not parse to an object, field edits only update the field state and the
-// in-progress JSON edit is never clobbered; once it parses again the fields
-// re-derive. Save still goes through withBasicFields, so the field values win
-// for the two keys they own and everything else survives verbatim.
+// and the role rows (they are a quick view of `env`), and editing a field
+// merges it back into the JSON. The merge is guarded by `parseJsonObject` —
+// while the JSON text does not parse to an object, field edits only update the
+// field state and the in-progress JSON edit is never clobbered; once it
+// parses again the fields re-derive. Save still goes through withBasicFields,
+// so the field values win for the keys they own and everything else survives
+// verbatim.
 
-import { useEffect, useState } from "react"
+import { Wand2 } from "lucide-react"
+import { useEffect, useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 import { useSaveProviderMutation } from "@/app/store/api"
 import { JsonEditor } from "@/components/json-editor"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -28,15 +33,23 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
+import type { ModelRoleId } from "@/features/providers/derive"
 import {
   configApiKey,
   configEndpoint,
+  configRoleFields,
   emptyProvider,
+  MODEL_ROLES,
   providerApiKey,
   providerEndpoint,
   providerFromPreset,
+  stripOneM,
+  withAllRolesFromFirstInText,
   withBasicFields,
   withBasicFieldsInText,
+  withRoleModelInText,
+  withRoleNameInText,
+  withRoleOneMInText,
 } from "@/features/providers/derive"
 import type { ProviderPreset } from "@/features/providers/presets"
 import { useMutateWithToast } from "@/hooks/use-toast-mutation"
@@ -91,6 +104,25 @@ export function ProviderFormSheet({
     setApiKey(configApiKey(configText))
   }, [configText])
 
+  // The five model roles are derived straight from the snapshot text (no
+  // mirrored state to keep in sync): reads are pure, and every write goes
+  // through the derive helpers below, so the JSON editor and the role rows can
+  // never disagree. Garbage text derives to empty rows and blocks writes until
+  // it parses again.
+  const roleRows = useMemo(
+    () =>
+      MODEL_ROLES.map((role) => ({
+        role,
+        fields: configRoleFields(configText, role.id),
+      })),
+    [configText],
+  )
+
+  const canApplyAll = useMemo(() => {
+    if (!parseJsonObject(configText).ok) return false
+    return withAllRolesFromFirstInText(configText) !== null
+  }, [configText])
+
   function onEndpointChange(value: string) {
     setEndpoint(value)
     if (parseJsonObject(configText).ok) {
@@ -107,6 +139,32 @@ export function ProviderFormSheet({
         withBasicFieldsInText(prev, { endpoint, apiKey: value }),
       )
     }
+  }
+
+  function onRoleModelChange(role: ModelRoleId, value: string) {
+    if (parseJsonObject(configText).ok) {
+      setConfigText((prev) => withRoleModelInText(prev, role, value))
+    }
+  }
+
+  function onRoleNameChange(role: ModelRoleId, value: string) {
+    if (parseJsonObject(configText).ok) {
+      setConfigText((prev) => withRoleNameInText(prev, role, value))
+    }
+  }
+
+  function onRoleOneMChange(role: ModelRoleId, oneM: boolean) {
+    if (parseJsonObject(configText).ok) {
+      setConfigText((prev) => withRoleOneMInText(prev, role, oneM))
+    }
+  }
+
+  function onApplyAll() {
+    if (!parseJsonObject(configText).ok) return
+    const next = withAllRolesFromFirstInText(configText)
+    if (next === null) return
+    setConfigText(next)
+    toast.success(t("providers.toast.applyAllSuccess"))
   }
 
   async function onSave() {
@@ -183,6 +241,72 @@ export function ProviderFormSheet({
               spellCheck={false}
             />
           </Field>
+          <div className="rounded-md border p-3">
+            <div className="flex items-center justify-between gap-2">
+              <Label className="text-muted-foreground text-xs">
+                {t("providers.form.modelMapping")}
+              </Label>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onApplyAll}
+                disabled={!canApplyAll}
+              >
+                <Wand2 className="size-3.5" />
+                {t("providers.form.applyAll")}
+              </Button>
+            </div>
+            <p className="mt-1.5 mb-2 text-xs text-muted-foreground">
+              {t("providers.form.modelMappingHint")}
+            </p>
+            <div className="space-y-3">
+              {roleRows.map(({ role, fields }) => (
+                <div key={role.id} className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-muted-foreground text-xs">
+                      {t(`providers.form.role.${role.id}`)}
+                    </Label>
+                    {role.supportsOneM ? (
+                      <label
+                        htmlFor={`model-role-one-m-${role.id}`}
+                        className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground"
+                      >
+                        <Checkbox
+                          id={`model-role-one-m-${role.id}`}
+                          checked={fields.oneM}
+                          onCheckedChange={(checked) =>
+                            onRoleOneMChange(role.id, checked)
+                          }
+                        />
+                        {t("providers.form.oneM")}
+                      </label>
+                    ) : null}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Field label={t("providers.form.displayName")}>
+                      <Input
+                        value={fields.name}
+                        onChange={(e) =>
+                          onRoleNameChange(role.id, e.target.value)
+                        }
+                        placeholder={stripOneM(fields.model)}
+                        spellCheck={false}
+                      />
+                    </Field>
+                    <Field label={t("providers.form.requestModel")}>
+                      <Input
+                        value={fields.model}
+                        onChange={(e) =>
+                          onRoleModelChange(role.id, e.target.value)
+                        }
+                        spellCheck={false}
+                      />
+                    </Field>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
           <Field label={t("providers.form.settingsJson")}>
             <JsonEditor
               value={configText}
