@@ -171,7 +171,10 @@ fn parse_target_or_empty(target: &str) -> AppResult<serde_json::Value> {
     parse_object(trimmed, "provider settingsConfig")
 }
 
-fn parse_object(raw: &str, what: &str) -> AppResult<serde_json::Value> {
+/// 解析 JSON 文本为对象：非法 JSON 或非对象 → `Err`。供本模块的
+/// `parse_live_or_empty` / `parse_target_or_empty` 与 `snippet` 模块共用
+/// （片段校验与合并走同一条解析规则）。
+pub(crate) fn parse_object(raw: &str, what: &str) -> AppResult<serde_json::Value> {
     let v: serde_json::Value = serde_json::from_str(raw)
         .map_err(|e| AppError::Config(format!("{what} is not valid JSON: {e}")))?;
     if !v.is_object() {

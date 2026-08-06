@@ -73,6 +73,18 @@ pub struct Provider {
     pub updated_at: String,
 }
 
+/// 通用配置片段（全局一条，跨供应商共享）：手写 settings.json 片段 +
+/// 勾选启用，切换写盘时合并进受控字段。存本机 config.json（不同步）；
+/// `content` 是片段 JSON 原文，编辑器直接编辑。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommonConfigSnippet {
+    /// 勾选「应用通用配置」启用；写盘时片段合并进受控字段。
+    pub enabled: bool,
+    /// 片段 JSON 原文（原始文本；空串合法 = 无操作片段）。
+    pub content: String,
+}
+
 /// A short random id for a user-created provider (8 lowercase hex chars, the
 /// same shape as `sessions::generate_local_group_id` — each module owns its own
 /// id space so a prefix is unnecessary).

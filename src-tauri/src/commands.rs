@@ -17,9 +17,9 @@ use crate::db::Store;
 use crate::error::{AppError, AppResult};
 use crate::library::{self, DeviceLibrarySummary, LibraryEntry, UploadItem};
 use crate::model::{
-    DeviceInfo, LocalGroup, LogsQuery, ModelStatsRow, PricingEntry, Provider, RunMode,
-    SessionFilter, SessionGroup, SessionMessage, SessionRow, SyncedGroup, TrendBucket, TrendPoint,
-    UsageFilter, UsageLogRow, UsageStats,
+    CommonConfigSnippet, DeviceInfo, LocalGroup, LogsQuery, ModelStatsRow, PricingEntry, Provider,
+    RunMode, SessionFilter, SessionGroup, SessionMessage, SessionRow, SyncedGroup, TrendBucket,
+    TrendPoint, UsageFilter, UsageLogRow, UsageStats,
 };
 use crate::pricing;
 use crate::sessions;
@@ -850,11 +850,11 @@ pub fn reorder_providers_cmd(
     Ok(())
 }
 
-/// 切换供应商（核心动作）：查 provider → 读 live → 受控合并 → 备份 .bak →
-/// 原子写 → 记激活状态。写盘语义：只替换受控字段（env + 少数顶层
-/// 开关），非受控字段（hooks / MCP / permissions / model 等）从 live 原地保留，
-/// 不整文件覆盖、不做 Backfill。「保存」只写 DB（save_provider_cmd），本命令
-/// 才真正写盘。
+/// 切换供应商（核心动作）：查 provider → 读 live → （片段启用则先合并
+/// 片段）→ 受控合并 → 备份 .bak → 原子写 → 记激活状态。写盘语义：只替换
+/// 受控字段（env + 少数顶层开关），非受控字段（hooks / MCP / permissions /
+/// model 等）从 live 原地保留，不整文件覆盖、不做 Backfill。「保存」只写
+/// DB（save_provider_cmd），本命令才真正写盘。
 #[tauri::command]
 #[specta::specta]
 pub async fn switch_provider_cmd(
@@ -869,7 +869,16 @@ pub async fn switch_provider_cmd(
             .get_provider(&id)?
             .ok_or_else(|| AppError::Config(format!("provider not found: {id}")))?;
         let path = crate::provider::live::claude_settings_path()?;
-        crate::provider::live::switch_live_settings(&path, &provider.settings_config)?;
+        // 通用配置片段：启用了先合并进 settingsConfig 再走受控写盘（片段是
+        // 共享默认值，供应商显式配置优先；非受控键被忽略）。启用片段解析
+        // 不了会让切换失败——宁可显式报错，也不静默丢片段效果。
+        let cfg = config.get();
+        let settings_config = crate::provider::snippet::apply_snippet(
+            &provider.settings_config,
+            &cfg.common_config_snippet,
+            cfg.common_config_snippet_enabled,
+        )?;
+        crate::provider::live::switch_live_settings(&path, &settings_config)?;
         config.update(|c| c.active_provider_id = Some(id))?;
         Ok(provider)
     })
@@ -889,6 +898,38 @@ pub fn get_active_provider_cmd(state: State<'_, AppState>) -> AppResult<Option<P
         None => return Ok(None),
     };
     state.store.get_provider(&id)
+}
+
+/// 读全局通用配置片段（内容 + 启用开关）。一条记录跨供应商共享，存本机
+/// config.json。
+#[tauri::command]
+#[specta::specta]
+pub fn get_common_config_snippet_cmd(state: State<'_, AppState>) -> AppResult<CommonConfigSnippet> {
+    let cfg = state.config.get();
+    Ok(CommonConfigSnippet {
+        enabled: cfg.common_config_snippet_enabled,
+        content: cfg.common_config_snippet,
+    })
+}
+
+/// 保存全局通用配置片段。内容必须是合法 JSON 对象（空串视为空片段）；
+/// 非法 JSON 拒绝保存（`AppError::Config`）。写盘合并只认受控字段，非受控
+/// 键在写盘时被忽略。
+#[tauri::command]
+#[specta::specta]
+pub fn set_common_config_snippet_cmd(
+    state: State<'_, AppState>,
+    snippet: CommonConfigSnippet,
+) -> AppResult<CommonConfigSnippet> {
+    crate::provider::snippet::validate_snippet(&snippet.content)?;
+    let cfg = state.config.update(|c| {
+        c.common_config_snippet_enabled = snippet.enabled;
+        c.common_config_snippet = snippet.content;
+    })?;
+    Ok(CommonConfigSnippet {
+        enabled: cfg.common_config_snippet_enabled,
+        content: cfg.common_config_snippet,
+    })
 }
 
 // ---------------- Library ----------------

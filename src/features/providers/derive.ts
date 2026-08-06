@@ -167,3 +167,46 @@ export function providerFromPreset(preset: ProviderPreset): Provider {
     updatedAt: "",
   }
 }
+
+// ---- 通用配置片段（snippet）----
+//
+// `snippetMissingKeys` 是「片段子集判定」：对比片段与某份 settingsConfig，
+// 报告片段里存在、而配置里缺失的受控字段——这些是切换写盘时片段实际会补上
+// 的部分。写盘合并的权威在 Rust（provider::snippet 只认受控字段），这里只
+// 为 UI 提示（片段卡片显示当前激活供应商会从片段得到什么）维护同一份受控
+// 字段清单，必须与后端 `provider::live::CONTROLLED_FIELDS` 保持同步。
+
+/** 写盘路径承认的受控字段（镜像后端常量；仅供 UI 提示使用，写盘权威在后端）。 */
+const CONTROLLED_FIELDS = [
+  "env",
+  "includeCoAuthoredBy",
+  "attribution",
+  "effortLevel",
+  "enabledPlugins",
+  "skipWebFetchPreflight",
+] as const
+
+/** 片段对 settingsConfig 的补充（子集判定）：片段里出现、而配置里缺失的
+ *  受控字段键——这些是切换写盘时片段会补上的部分。`env` 按键级判定：片段
+ *  env 有任一键缺失即报告 `env`。非受控键不算（写盘合并时被忽略，报了是
+ *  误导）。配置/片段为空或解析不了 → `[]`。 */
+export function snippetMissingKeys(
+  configText: string,
+  snippetText: string,
+): string[] {
+  const config = parseSettingsConfig(configText)
+  const snippet = parseSettingsConfig(snippetText)
+  const missing: string[] = []
+  for (const key of CONTROLLED_FIELDS) {
+    if (key === "env") {
+      const configEnv = config.env ?? {}
+      const snippetEnv = snippet.env ?? {}
+      if (Object.keys(snippetEnv).some((k) => !(k in configEnv))) {
+        missing.push("env")
+      }
+    } else if (key in snippet && !(key in config)) {
+      missing.push(key)
+    }
+  }
+  return missing
+}

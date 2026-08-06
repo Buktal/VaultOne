@@ -7,6 +7,7 @@ import {
   providerEndpoint,
   providerFromPreset,
   providerModel,
+  snippetMissingKeys,
   withBasicFields,
   withBasicFieldsInText,
 } from "@/features/providers/derive"
@@ -278,5 +279,54 @@ describe("providerFromPreset", () => {
     const draft = providerFromPreset(PROVIDER_PRESETS[0]!)
     expect(draft.settingsConfig).toBe(PROVIDER_PRESETS[0]!.settingsConfig)
     expect(JSON.stringify(PROVIDER_PRESETS)).toBe(before)
+  })
+})
+
+describe("snippetMissingKeys", () => {
+  const snippet = JSON.stringify({ includeCoAuthoredBy: false })
+
+  it("reports controlled keys the config does not have", () => {
+    // 配置里没有 includeCoAuthoredBy → 片段会在写盘时补上它。
+    expect(snippetMissingKeys('{"env":{}}', snippet)).toEqual([
+      "includeCoAuthoredBy",
+    ])
+  })
+
+  it("reports env only when at least one snippet env key is missing", () => {
+    const cfg = JSON.stringify({ env: { ANTHROPIC_MODEL: "m" } })
+    expect(snippetMissingKeys(cfg, JSON.stringify({ env: { A: "1" } }))).toEqual(
+      ["env"],
+    )
+    // 片段 env 全被配置覆盖 → 空。
+    expect(
+      snippetMissingKeys(
+        cfg,
+        JSON.stringify({ env: { ANTHROPIC_MODEL: "snippet-default" } }),
+      ),
+    ).toEqual([])
+  })
+
+  it("ignores snippet keys that are not controlled fields", () => {
+    const bad = JSON.stringify({
+      permissions: { deny: ["Bash"] },
+      hooks: { PostToolUse: [] },
+      model: "claude-opus-4-5",
+    })
+    expect(snippetMissingKeys('{"env":{}}', bad)).toEqual([])
+  })
+
+  it("reports only the keys actually missing (subset)", () => {
+    const cfg = JSON.stringify({ includeCoAuthoredBy: true, env: {} })
+    const snip = JSON.stringify({
+      includeCoAuthoredBy: false,
+      skipWebFetchPreflight: true,
+    })
+    expect(snippetMissingKeys(cfg, snip)).toEqual(["skipWebFetchPreflight"])
+  })
+
+  it("returns empty for empty or garbage input", () => {
+    expect(snippetMissingKeys("", "")).toEqual([])
+    expect(snippetMissingKeys("{nope", snippet)).toEqual([])
+    expect(snippetMissingKeys('{"env":{}}', "{nope")).toEqual([])
   })
 })

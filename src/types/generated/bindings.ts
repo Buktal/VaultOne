@@ -216,6 +216,17 @@ export const commands = {
 	updatedAt: string,
 } | null, AppError>(__TAURI_INVOKE("get_active_provider_cmd")),
 	/**
+	 *  读全局通用配置片段（内容 + 启用开关）。一条记录跨供应商共享，存本机
+	 *  config.json。
+	 */
+	getCommonConfigSnippetCmd: () => typedError<CommonConfigSnippet, AppError>(__TAURI_INVOKE("get_common_config_snippet_cmd")),
+	/**
+	 *  保存全局通用配置片段。内容必须是合法 JSON 对象（空串视为空片段）；
+	 *  非法 JSON 拒绝保存（`AppError::Config`）。写盘合并只认受控字段，非受控
+	 *  键在写盘时被忽略。
+	 */
+	setCommonConfigSnippetCmd: (snippet: CommonConfigSnippet) => typedError<CommonConfigSnippet, AppError>(__TAURI_INVOKE("set_common_config_snippet_cmd", { snippet })),
+	/**
 	 *  Dock the given window against the right edge of its current monitor.
 	 * 
 	 *  `client_logical_w/h` is the desired CLIENT (visible content) size in logical
@@ -313,6 +324,18 @@ export type CloseBehavior =
 "minimize" | 
 /**  Always quit. */
 "quit";
+
+/**
+ *  通用配置片段（全局一条，跨供应商共享）：手写 settings.json 片段 +
+ *  勾选启用，切换写盘时合并进受控字段。存本机 config.json（不同步）；
+ *  `content` 是片段 JSON 原文，编辑器直接编辑。
+ */
+export type CommonConfigSnippet = {
+	/**  勾选「应用通用配置」启用；写盘时片段合并进受控字段。 */
+	enabled: boolean,
+	/**  片段 JSON 原文（原始文本；空串合法 = 无操作片段）。 */
+	content: string,
+};
 
 /**  A known device. `is_self` marks the device running this instance. */
 export type DeviceInfo = {

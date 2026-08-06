@@ -3,6 +3,7 @@ import type {
   AlignReport,
   AppError,
   AppInfo,
+  CommonConfigSnippet,
   DeviceInfo,
   DeviceLibrarySummary,
   LibraryEntry,
@@ -441,6 +442,16 @@ export const vaultApi = createApi({
       queryFn: async (id) => run(commands.switchProviderCmd(id)),
       invalidatesTags: ["Providers"],
     }),
+    /** 全局通用配置片段（一条记录跨供应商共享）。 */
+    getCommonConfigSnippet: b.query<CommonConfigSnippet, void>({
+      queryFn: async () => run(commands.getCommonConfigSnippetCmd()),
+      providesTags: ["Providers"],
+    }),
+    /** 保存全局通用配置片段（后端校验 JSON 合法性）。 */
+    setCommonConfigSnippet: b.mutation<CommonConfigSnippet, CommonConfigSnippet>({
+      queryFn: async (snippet) => run(commands.setCommonConfigSnippetCmd(snippet)),
+      invalidatesTags: ["Providers"],
+    }),
 
     // ---- preferences ----
     // Go through the generated `commands.*` so tauri-specta's `typedError`
@@ -539,6 +550,8 @@ export const {
   useDeleteProviderMutation,
   useReorderProvidersMutation,
   useSwitchProviderMutation,
+  useGetCommonConfigSnippetQuery,
+  useSetCommonConfigSnippetMutation,
 } = vaultApi
 
 export type VaultApi = typeof vaultApi
