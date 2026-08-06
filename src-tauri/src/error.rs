@@ -18,9 +18,9 @@ pub enum AppError {
     /// SQLite Local Store error.
     #[error("db error: {0}")]
     Db(String),
-    /// Provider failed to discover/parse Source logs.
-    #[error("provider error: {0}")]
-    Provider(String),
+    /// A parser failed to discover/parse Source logs.
+    #[error("parser error: {0}")]
+    SourceParser(String),
     /// Pricing lookup / cost calc error.
     #[error("pricing error: {0}")]
     Pricing(String),

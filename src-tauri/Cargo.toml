@@ -68,5 +68,5 @@ windows = { version = "0.61", features = [
 winreg = "0.52"
 
 [dev-dependencies]
-# Test-only temp dirs for db / config / ingest / providers tests (S1).
+# Test-only temp dirs for db / config / ingest / source_parser tests (S1).
 tempfile = "3"

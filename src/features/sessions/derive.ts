@@ -50,7 +50,7 @@ export interface GroupedSessions {
  * the session row.
  */
 export interface SessionListFilter {
-  /** Provider tag, e.g. "claude_code". */
+  /** Source tag, e.g. "claude_code". */
   source?: string | null
   /** Inclusive lower bound on `last_active_at` (ISO8601). */
   fromTs?: string | null

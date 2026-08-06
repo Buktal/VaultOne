@@ -1,6 +1,8 @@
-// Request log table — per-API-call ledger. Columns: Time / Provider / Billed
+// Request log table — per-API-call ledger. Columns: Time / Source / Billed
 // Model / 输入 / 输出 / 缓存创建 / 缓存命中 / 总 Token / Cost / 停止原因 /
-// Source / Device. `stop_reason` (end_turn / tool_use / max_tokens …) is the
+// Device. The Source cell shows the human-readable tag (`sourceLabel`), with the
+// raw tag (e.g. `claude_code`) in the title tooltip. `stop_reason` (end_turn /
+// tool_use / max_tokens …) is the
 // per-call end semantic. No latency / TTFT / HTTP-status columns.
 // Fixed time-desc (no sort UI); paginated; empty state offers an inline 采集
 // CTA so the user isn't bounced to the command bar to seed the first rows.
@@ -102,7 +104,7 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
               <TableHeader>
                 <TableRow>
                   <TableHead>{t("usage.logs.col.time")}</TableHead>
-                  <TableHead>{t("usage.logs.col.provider")}</TableHead>
+                  <TableHead>{t("usage.logs.col.source")}</TableHead>
                   <TableHead>{t("usage.logs.col.billedModel")}</TableHead>
                   <TokHead>{t("usage.tokens.input")}</TokHead>
                   <TokHead>{t("usage.tokens.output")}</TokHead>
@@ -113,7 +115,6 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
                     {t("usage.logs.col.cost")}
                   </TableHead>
                   <TableHead>{t("usage.logs.col.stopReason")}</TableHead>
-                  <TableHead>{t("usage.logs.col.source")}</TableHead>
                   <TableHead>{t("usage.logs.col.device")}</TableHead>
                 </TableRow>
               </TableHeader>
@@ -123,7 +124,9 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
                     <TableCell className="tabular-nums whitespace-nowrap">
                       {formatTime(r.timestamp)}
                     </TableCell>
-                    <TableCell>{providerLabel(r.source)}</TableCell>
+                    <TableCell title={r.source}>
+                      {sourceLabel(r.source) || "—"}
+                    </TableCell>
                     <TableCell className="font-mono text-xs">
                       {r.model}
                     </TableCell>
@@ -147,9 +150,6 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
                     </TableCell>
                     <TableCell>
                       <StopReasonCell value={r.stop_reason} />
-                    </TableCell>
-                    <TableCell className="text-muted-foreground text-xs">
-                      {r.source}
                     </TableCell>
                     <TableCell
                       className="text-muted-foreground text-xs"
@@ -197,14 +197,6 @@ export function RequestLogTable({ filter }: { filter: UsageFilter }) {
       </CardContent>
     </Card>
   )
-}
-
-function providerLabel(source: string): string {
-  // 平台名复用单一来源 `sourceLabel` —— 不在此重抄映射表 (上一份副本就把
-  // claude_code 抄成 "Claude"、漏了 "Code"). "(Session)" 后缀是日志页语义
-  // (一行 ≈ 一个 session), 留给调用方组合, 不进共享映射.
-  if (!source) return "—"
-  return `${sourceLabel(source)} (Session)`
 }
 
 function StopReasonCell({ value }: { value: string }) {

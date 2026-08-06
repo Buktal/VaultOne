@@ -30,7 +30,7 @@ function isAppError(e: unknown): e is { type: string; data: string } {
 /** A failure reason in structured form — localizable at the render boundary,
  *  not before dispatch. The `app` shape carries the backend's `{ type, data }`
  *  discriminator (re-translatable on a language switch); the `raw` shape is an
- *  already-final string (a thrown `Error.message`, a provider string) with no
+ *  already-final string (a thrown `Error.message`, a source-parser error string) with no
  *  translation to apply. */
 export type StructuredError =
   | { kind: "app"; type: string; data: string }

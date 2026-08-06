@@ -15,9 +15,9 @@
 /// place. This is a strict subset of the SQLite `sessions` row (which also
 /// adds the user-data columns and the local-only `local_group_id`).
 ///
-/// Also serves as the provider output type alias [`RawSession`] — there is no
+/// Also serves as the parser output type alias [`RawSession`] — there is no
 /// device/cost attaching step for sessions (unlike `RawUsage` → `UsageRecord`),
-/// so the provider-output shape and the system-data layer are identical. One
+/// so the parser-output shape and the system-data layer are identical. One
 /// struct, one source of truth.
 #[derive(
     Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type,
@@ -25,7 +25,7 @@
 pub struct SessionSystemData {
     /// Session id (Claude = the jsonl file stem).
     pub id: String,
-    /// Provider tag, e.g. `claude_code`.
+    /// Source tag, e.g. `claude_code`.
     pub source: String,
     /// Working directory the session ran in (Claude `cwd`).
     pub project_dir: String,
@@ -37,7 +37,7 @@ pub struct SessionSystemData {
     pub last_active_at: String,
 }
 
-/// Provider-output alias for a parsed session (pre-device). Identical to
+/// Parser-output alias for a parsed session (pre-device). Identical to
 /// [`SessionSystemData`] — no device/cost step exists for sessions, so the two
 /// concepts share one struct (single source of truth).
 pub type RawSession = SessionSystemData;
@@ -84,10 +84,10 @@ impl SessionMessageRole {
     }
 }
 
-/// One transcript line. Single source of truth across three roles: provider
+/// One transcript line. Single source of truth across three roles: parser
 /// output, the per-session JSONL Artifact (`sessions/<id>.jsonl`), and the DTO
 /// crossing to the frontend. The shape is identical for all three, so one
-/// struct (single source of truth) — a provider-emitted message is this same
+/// struct (single source of truth) — a parser-emitted message is this same
 /// shape, not a separate type.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct SessionMessage {

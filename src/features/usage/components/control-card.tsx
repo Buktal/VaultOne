@@ -139,7 +139,7 @@ function ModelChip({
   )
 }
 
-/** 来源 (provider) 维度筛选 — 与 ModelChip 对称, 选项来自 queryDistinctSources. */
+/** 来源 (source) 维度筛选 — 与 ModelChip 对称, 选项来自 queryDistinctSources. */
 function SourceChip({
   align = "start",
   bar = false,

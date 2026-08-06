@@ -513,7 +513,7 @@ fn build_session_where(filter: Option<&SessionFilter>) -> (String, Vec<SqlValue>
         if !m.is_empty() {
             // EXISTS semantics: the session matched iff ANY usage record in
             // this session used the model. Both keys are required — a session
-            // id is a provider file stem, so ids can collide across devices.
+            // id is a parser file stem, so ids can collide across devices.
             conds.push(
                 "EXISTS (SELECT 1 FROM usage_records u \
                  WHERE u.session_id = s.id AND u.device_id = s.device_id AND u.model = ?)"

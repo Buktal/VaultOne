@@ -1,6 +1,6 @@
 //! VaultOne Tauri backend library.
 //!
-//! Module tree: config / db / providers / ingest / artifact / session_snapshot
+//! Module tree: config / db / source_parser / ingest / artifact / session_snapshot
 //! / jsonl / collect / pricing / sync / proxy / commands / window_geom, behind a tauri-specta typed
 //! contract. First start bootstraps the local data dir + deviceId and defaults
 //! to Standalone
@@ -25,9 +25,9 @@ mod error;
 mod library;
 mod model;
 mod pricing;
-mod providers;
 mod proxy;
 mod sessions;
+mod source_parser;
 mod sync;
 mod time;
 mod window_geom;

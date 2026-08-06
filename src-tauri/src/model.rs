@@ -1,7 +1,7 @@
 //! Core domain model for the rebuilt VaultOne.
 //!
 //! Two grains (re-derivation 2026-07-21):
-//!   - [`UsageRecord`]: one model API call (per-call). The unit a provider
+//!   - [`UsageRecord`]: one model API call (per-call). The unit a parser
 //!     emits, the Local Store stores, and one JSONL line serializes.
 //!   - [`TurnDuration`]: one turn's wall-clock (per-turn), sourced from the
 //!     `system/turn_duration` event. Separate from per-call records because a
@@ -31,7 +31,7 @@ pub use usage::*;
 // ---- Model-key normalization (single source of truth) ----
 //
 // One canonical form for a model key, applied at every site that matches a
-// model name against the pricing book: providers normalize the raw names they
+// model name against the pricing book: parsers normalize the raw names they
 // parse (e.g. Codex's `openai/gpt-5.4-2026-03-05`), the pricing book
 // normalizes both its table keys and its lookup candidates, and ingest
 // normalizes the rebill key. One rule everywhere, so a model can never match
@@ -90,7 +90,7 @@ pub(crate) fn strip_compact_date_suffix(name: &str) -> &str {
 }
 
 /// Canonical model-key normalization, applied at every pricing-match site
-/// (providers, the pricing book's keys and lookup candidates, and the ingest
+/// (parsers, the pricing book's keys and lookup candidates, and the ingest
 /// rebill key): ASCII-lowercase, strip a `provider/` prefix, strip `[...]`
 /// brackets, then strip trailing ISO (`-YYYY-MM-DD`) and compact
 /// (`-YYYYMMDD`) date suffixes. Every sub-step is a no-op when its pattern is

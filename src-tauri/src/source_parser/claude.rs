@@ -1,4 +1,4 @@
-//! Claude Code session-log provider.
+//! Claude Code session-log parser.
 
 use std::path::{Path, PathBuf};
 
@@ -6,27 +6,27 @@ use crate::error::{AppError, AppResult};
 use crate::model::{RawSession, ServerToolUse, SessionMessage, SessionMessageRole, TokenCounts};
 
 use super::{
-    collect_jsonl_incremental, truncate, CollectResult, Provider, RawTurnDuration, RawUsage,
-    ScanProgress, ScanProgressDelta, TITLE_MAX, TRIM_LIMIT,
+    collect_jsonl_incremental, truncate, CollectResult, RawTurnDuration, RawUsage, ScanProgress,
+    ScanProgressDelta, SourceParser, TITLE_MAX, TRIM_LIMIT,
 };
 
-/// Claude Code session-log provider.
+/// Claude Code session-log parser.
 ///
 /// Reads `~/.claude/projects/**/*.jsonl`; each line is a JSON event. Assistant
 /// events carry `message.usage` (token four-pack + server tool use + service
 /// tier + iterations) and `message.stop_reason`. `system` events with
 /// `subtype:"turn_duration"` carry `durationMs`. Top-level `timestamp` and
 /// `uuid` identify each event.
-pub struct ClaudeCodeProvider {
+pub struct ClaudeCodeSourceParser {
     /// Root of the Claude projects dir (overridable for tests).
     projects_dir: PathBuf,
 }
 
-impl ClaudeCodeProvider {
-    /// Default provider rooted at `~/.claude/projects`.
+impl ClaudeCodeSourceParser {
+    /// Default parser rooted at `~/.claude/projects`.
     pub fn new() -> AppResult<Self> {
-        let home =
-            dirs::home_dir().ok_or_else(|| AppError::Provider("cannot resolve home dir".into()))?;
+        let home = dirs::home_dir()
+            .ok_or_else(|| AppError::SourceParser("cannot resolve home dir".into()))?;
         Ok(Self {
             projects_dir: home.join(".claude").join("projects"),
         })
@@ -230,7 +230,7 @@ impl ClaudeCodeProvider {
     }
 }
 
-impl Default for ClaudeCodeProvider {
+impl Default for ClaudeCodeSourceParser {
     fn default() -> Self {
         Self::new().unwrap_or_else(|_| Self {
             projects_dir: PathBuf::from(".claude/projects"),
@@ -238,7 +238,7 @@ impl Default for ClaudeCodeProvider {
     }
 }
 
-impl Provider for ClaudeCodeProvider {
+impl SourceParser for ClaudeCodeSourceParser {
     fn name(&self) -> &'static str {
         "claude_code"
     }
@@ -455,7 +455,7 @@ impl SessionEvent {
 // (one assistant text message + one tool line per tool_use block).
 
 // The soft cap (TRIM_LIMIT = 32 KiB), the original-title max (TITLE_MAX = 80),
-// and the `truncate` helper all live in [`super`] as shared provider helpers,
+// and the `truncate` helper all live in [`super`] as shared parser helpers,
 // so the truncation rule cannot drift between Claude and Codex.
 
 /// Pick the session's project dir as the most frequent non-empty `cwd` seen in
@@ -660,7 +660,7 @@ mod tests {
         let user = r#"{"type":"user","uuid":"abc-2","message":{}}"#;
         write_lines(&file, &[assistant, user, "", "{not json"]);
 
-        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let p = ClaudeCodeSourceParser::with_dir(dir.path().to_path_buf());
         let files = p.discover().unwrap();
         assert_eq!(files.len(), 1);
         let result = p.parse(&files).unwrap();
@@ -691,7 +691,7 @@ mod tests {
         let not_td = r#"{"type":"system","subtype":"other","uuid":"x","durationMs":10}"#;
         write_lines(&file, &[td, not_td]);
 
-        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let p = ClaudeCodeSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.turn_durations.len(), 1);
         assert_eq!(result.events.len(), 0);
@@ -710,7 +710,7 @@ mod tests {
             r#""message":{"model":"glm-5.2","usage":{"input_tokens":0,"output_tokens":0}}}"#
         );
         write_lines(&file, &[zero]);
-        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let p = ClaudeCodeSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.events.len(), 0);
     }
@@ -727,7 +727,7 @@ mod tests {
         let b1 = r#"{"type":"assistant","timestamp":"2026-07-21T16:00:00.000Z","uuid":"u3","message":{"id":"msg_B","model":"glm-5.2","stop_reason":"end_turn","usage":{"input_tokens":200,"output_tokens":20,"cache_read_input_tokens":2000}}}"#;
         write_lines(&file, &[a1, a2, b1]);
 
-        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let p = ClaudeCodeSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(
             result.events.len(),
@@ -752,7 +752,7 @@ mod tests {
         let final_block = r#"{"type":"assistant","timestamp":"2026-07-21T15:56:08.000Z","uuid":"u2","message":{"id":"msg_A","model":"glm-5.2","stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":1349,"cache_read_input_tokens":1000}}}"#;
         // Snapshot first, then final.
         write_lines(&file, &[start, final_block]);
-        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let p = ClaudeCodeSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].tokens.output, 1349);
@@ -769,7 +769,7 @@ mod tests {
     #[test]
     fn discover_on_missing_dir_returns_empty_not_error() {
         let base = tempfile::tempdir().unwrap();
-        let p = ClaudeCodeProvider::with_dir(base.path().join("does-not-exist"));
+        let p = ClaudeCodeSourceParser::with_dir(base.path().join("does-not-exist"));
         assert!(p.discover().unwrap().is_empty());
     }
 
@@ -787,11 +787,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("s.jsonl");
         write_lines(&file, &[assistant_line("u1", "msg_A", 10)]);
-        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let p = ClaudeCodeSourceParser::with_dir(dir.path().to_path_buf());
         let (result, delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
         assert_eq!(result.events.len(), 1, "first run is a full parse");
         assert_eq!(delta.len(), 1, "a cursor is recorded for the file");
-        let key = crate::providers::scan_progress_key(&file);
+        let key = crate::source_parser::scan_progress_key(&file);
         let cursor = delta.get(&key).unwrap();
         assert!(cursor.last_line_offset >= 1);
         assert!(cursor.last_modified > 0);
@@ -802,7 +802,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("s.jsonl");
         write_lines(&file, &[assistant_line("u1", "msg_A", 10)]);
-        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let p = ClaudeCodeSourceParser::with_dir(dir.path().to_path_buf());
         let (r1, delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
         assert_eq!(r1.events.len(), 1);
         let progress: ScanProgress = delta;
@@ -817,7 +817,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("s.jsonl");
         write_lines(&file, &[assistant_line("u1", "msg_A", 10)]);
-        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let p = ClaudeCodeSourceParser::with_dir(dir.path().to_path_buf());
         let (_, progress) = p.collect_incremental(&ScanProgress::new()).unwrap();
         // Append a new event — content change bumps mtime past the gate.
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -846,7 +846,7 @@ mod tests {
                 assistant_line("u3", "msg_C", 30),
             ],
         );
-        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let p = ClaudeCodeSourceParser::with_dir(dir.path().to_path_buf());
         let (_, progress) = p.collect_incremental(&ScanProgress::new()).unwrap();
         // Simulate a truncation: rewrite with fewer lines + a new message id.
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -871,9 +871,9 @@ mod tests {
             writeln!(f, "{complete}").unwrap();
             write!(f, r#"{{"type":"assistant","#).unwrap();
         }
-        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let p = ClaudeCodeSourceParser::with_dir(dir.path().to_path_buf());
         let (r1, delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
-        let key = crate::providers::scan_progress_key(&file);
+        let key = crate::source_parser::scan_progress_key(&file);
         let cursor = delta.get(&key).unwrap();
         // 2 lines visible (1 complete + 1 partial), but no trailing newline ⇒
         // cursor stops at line 1, leaving the partial line for next collect.
@@ -900,7 +900,7 @@ mod tests {
             // Partial "中": only the first two of three bytes — invalid UTF-8.
             f.write_all(&[0xE4, 0xB8]).unwrap();
         }
-        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let p = ClaudeCodeSourceParser::with_dir(dir.path().to_path_buf());
         let (result, delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
         assert_eq!(
             result.events.len(),
@@ -935,7 +935,7 @@ mod tests {
         let assistant = r#"{"type":"assistant","timestamp":"2026-08-01T11:00:00Z","uuid":"a1","cwd":"/home/me/proj","summary":"Build a thing","message":{"id":"msg_A","model":"glm-5.2","role":"assistant","stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":50}}}"#;
         write_lines(&file, &[user, assistant]);
 
-        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let p = ClaudeCodeSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
 
         // One session, id = file stem.
@@ -960,7 +960,7 @@ mod tests {
         let file = dir.path().join("s.jsonl");
         let user = r#"{"type":"user","timestamp":"2026-08-01T10:00:00Z","uuid":"u1","message":{"role":"user","content":"Please refactor this function for me"}}"#;
         write_lines(&file, &[user]);
-        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let p = ClaudeCodeSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.sessions.len(), 1);
         assert!(result.sessions[0].title_orig.starts_with("Please refactor"));
@@ -985,7 +985,7 @@ mod tests {
         let user = r#"{"type":"user","timestamp":"2026-08-01T10:00:00Z","uuid":"u1","message":{"role":"user","content":"hi"}}"#;
         let assistant = r#"{"type":"assistant","timestamp":"2026-08-01T10:01:00Z","uuid":"a1","message":{"id":"m1","model":"glm-5.2","role":"assistant","content":[{"type":"thinking","thinking":"internal reasoning"},{"type":"text","text":"Sure"},{"type":"tool_use","name":"Read","input":{"path":"/x"}}]}}"#;
         write_lines(&file, &[user, assistant]);
-        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let p = ClaudeCodeSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
 
         let roles: Vec<_> = result.messages.iter().map(|m| m.role).collect();
@@ -1023,7 +1023,7 @@ mod tests {
         let file = dir.path().join("sess-inc.jsonl");
         let u1 = r#"{"type":"user","timestamp":"2026-08-01T10:00:00Z","uuid":"u1","message":{"role":"user","content":"first"}}"#;
         write_lines(&file, &[u1]);
-        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let p = ClaudeCodeSourceParser::with_dir(dir.path().to_path_buf());
         let (r1, progress) = p.collect_incremental(&ScanProgress::new()).unwrap();
         assert_eq!(r1.messages.len(), 1, "first pass: one message");
         assert_eq!(r1.sessions[0].started_at, "2026-08-01T10:00:00Z");
@@ -1066,7 +1066,7 @@ mod tests {
             r#"{"type":"custom-title","timestamp":"2026-08-01T10:03:00Z","uuid":"c2","customTitle":"New name"}"#,
         ];
         write_lines(&file, &lines);
-        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let p = ClaudeCodeSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.sessions.len(), 1);
         // Latest custom-title wins over summary and the first prompt.
@@ -1084,7 +1084,7 @@ mod tests {
             r#"{"type":"assistant","timestamp":"2026-08-01T11:00:00Z","uuid":"a2","summary":"Late summary","message":{"id":"m2","model":"glm-5.2","role":"assistant","usage":{"input_tokens":1,"output_tokens":1}}}"#,
         ];
         write_lines(&file, &lines);
-        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let p = ClaudeCodeSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.sessions[0].title_orig, "Late summary");
     }
@@ -1101,7 +1101,7 @@ mod tests {
             r#"{"type":"user","timestamp":"2026-08-01T10:01:00Z","uuid":"u2","message":{"role":"user","content":"Refactor the parser"}}"#,
         ];
         write_lines(&file, &lines);
-        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let p = ClaudeCodeSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert!(
             result.sessions[0]
@@ -1123,7 +1123,7 @@ mod tests {
         // only cwd is available for the title.
         let line = r#"{"type":"assistant","timestamp":"2026-08-01T10:00:00Z","uuid":"a1","cwd":"/home/me/O_VaultOne","message":{"id":"m1","model":"glm-5.2","role":"assistant","usage":{"input_tokens":1,"output_tokens":1}}}"#;
         write_lines(&file, &[line]);
-        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let p = ClaudeCodeSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.sessions[0].title_orig, "O_VaultOne");
         assert_eq!(result.sessions[0].project_dir, "/home/me/O_VaultOne");
@@ -1184,7 +1184,7 @@ mod tests {
         let root1 = r#"{"type":"user","timestamp":"2026-08-01T10:00:00Z","uuid":"u1","cwd":"D:\\Project\\O_VaultOne","message":{"role":"user","content":"hi"}}"#;
         let root2 = r#"{"type":"assistant","timestamp":"2026-08-01T10:01:00Z","uuid":"a1","cwd":"D:\\Project\\O_VaultOne","message":{"id":"m1","model":"glm-5.2","role":"assistant","usage":{"input_tokens":1,"output_tokens":1}}}"#;
         write_lines(&file, &[sub, root1, root2]);
-        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let p = ClaudeCodeSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(
             result.sessions[0].project_dir, "D:\\Project\\O_VaultOne",
@@ -1201,7 +1201,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("s.jsonl");
         write_lines(&file, &[assistant_line("u1", "msg_A", 10)]);
-        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let p = ClaudeCodeSourceParser::with_dir(dir.path().to_path_buf());
         let (r1, progress) = p.collect_incremental(&ScanProgress::new()).unwrap();
         assert_eq!(
             r1.session_ids,
@@ -1237,7 +1237,7 @@ mod tests {
             &proj.join("agent-a10c476b.jsonl"),
             &[assistant_line("u2", "msg_B", 20)],
         );
-        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let p = ClaudeCodeSourceParser::with_dir(dir.path().to_path_buf());
         let files = p.discover().unwrap();
         assert_eq!(files.len(), 1, "discover already skips agent files");
         assert_eq!(
@@ -1269,7 +1269,7 @@ mod tests {
             &proj.join("agent-a1366047.jsonl"),
             &[assistant_line("u3", "msg_C", 30)],
         );
-        let p = ClaudeCodeProvider::with_dir(dir.path().to_path_buf());
+        let p = ClaudeCodeSourceParser::with_dir(dir.path().to_path_buf());
         let files = p.discover().unwrap();
         assert_eq!(
             files.len(),

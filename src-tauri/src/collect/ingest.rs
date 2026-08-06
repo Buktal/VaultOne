@@ -2,7 +2,7 @@
 //! → TurnDuration, written to the SQLite Local Store, with the rows' days
 //! flagged dirty for the push path.
 //!
-//! The provider emits raw per-call events + raw per-turn durations (no cost, no
+//! The parser emits raw per-call events + raw per-turn durations (no cost, no
 //! device). Here we attach the owning device_id, derive the day bucket and
 //! pricing_model, compute cost via the pure CostCalculator, and write the new
 //! rows to SQLite (deduped by the `(uuid, device_id)` primary key). The JSONL
@@ -15,8 +15,8 @@ use crate::db::Store;
 use crate::error::AppResult;
 use crate::model::{RawSession, SessionMessage, TurnDuration, UsageRecord};
 use crate::pricing::{CostCalculator, PricingBook};
-use crate::providers::{CollectResult, RawTurnDuration, RawUsage};
 use crate::sessions::snapshot_policy::{decide_snapshot_action, SnapshotAction};
+use crate::source_parser::{CollectResult, RawTurnDuration, RawUsage};
 
 /// Summary of one ingest run.
 #[derive(Debug, Clone, Default, serde::Serialize, specta::Type)]
@@ -65,7 +65,7 @@ fn turn_durationify(raw: &RawTurnDuration, device_id: &str) -> TurnDuration {
     }
 }
 
-/// Ingest a provider's collect result: compute cost + day, then write the rows
+/// Ingest a parser's collect result: compute cost + day, then write the rows
 /// to the SQLite Local Store, flagging each new row's day dirty in the same
 /// transaction. The usage/turn JSONL Artifact and session snapshot are NOT
 /// touched here — they are derived snapshots the push path recomputes from the
@@ -134,7 +134,7 @@ pub fn ingest_collected(
 /// are one unit — a ghost row's transcript would otherwise linger forever.
 /// Returns the number of sessions removed. Scoped by `(device_id, source)` in
 /// SQL, so a peer's rows and other sources are never touched. `seen_ids` comes
-/// from the provider's DISCOVERED files (not the parsed output — the mtime gate
+/// from the parser's DISCOVERED files (not the parsed output — the mtime gate
 /// skips unchanged files, so the parsed set would shrink to zero on a no-change
 /// collect and wipe real sessions).
 fn reconcile_session_data(
@@ -184,7 +184,7 @@ fn reconcile_session_data(
 // sessions' derived `sessions/<id>.jsonl` snapshots are a push-path concern
 // (see `session_snapshot`); collect never writes them.
 
-/// Ingest a provider's session output:
+/// Ingest a parser's session output:
 ///   1. Refresh system data in the `sessions` table (UPSERT preserves user data).
 ///   2. Write ALL transcript messages to `session_messages` (db single source of
 ///      truth — favorited or not) and mark their sessions dirty for the push path.
@@ -226,7 +226,7 @@ mod tests {
     use super::*;
     use crate::model::{ServerToolUse, TokenCounts};
     use crate::pricing::seed_book;
-    use crate::providers::RawTurnDuration;
+    use crate::source_parser::RawTurnDuration;
 
     fn raw(uuid: &str, model: &str) -> RawUsage {
         RawUsage {

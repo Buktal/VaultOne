@@ -1,15 +1,15 @@
-//! Codex (`~/.codex`) session-log provider.
+//! Codex (`~/.codex`) session-log parser.
 //!
 //! Reads `<codex_dir>/sessions/**/*.jsonl` (depth ≤ 3, i.e. `YYYY/MM/DD`) and
 //! `<codex_dir>/archived_sessions/*.jsonl` (flat). Each line is one JSON event;
-//! the provider consumes:
+//! the parser consumes:
 //!   - `session_meta` — session id + cwd (→ one [`RawSession`] per file);
 //!   - `turn_context` — current model;
 //!   - `event_msg` (subtype `token_count`) — cumulative usage → per-call delta;
 //!   - `response_item` — transcript messages (user/assistant text + tool calls).
 //!
 //! Codex's `total_token_usage` is **cumulative** and its `input_tokens` is
-//! cache-inclusive, so the provider computes per-call deltas and subtracts
+//! cache-inclusive, so the parser computes per-call deltas and subtracts
 //! `cache_read` to yield a fresh `input` (parse-time fresh-input
 //! normalization). Sub-agent / fork logs replay the parent thread's history
 //! before their own usage; that replay only re-establishes the cumulative
@@ -23,30 +23,31 @@ use crate::model::{RawSession, ServerToolUse, SessionMessage, SessionMessageRole
 
 use super::{
     collect_jsonl_incremental, normalize_cache_inclusive, truncate, CollectResult,
-    FileParseOutcome, Provider, RawUsage, ScanProgress, ScanProgressDelta, TITLE_MAX, TRIM_LIMIT,
+    FileParseOutcome, RawUsage, ScanProgress, ScanProgressDelta, SourceParser, TITLE_MAX,
+    TRIM_LIMIT,
 };
 
-/// Codex (`~/.codex`) session-log provider.
+/// Codex (`~/.codex`) session-log parser.
 ///
 /// Reads `<codex_dir>/sessions/**/*.jsonl` (depth ≤ 3, i.e. `YYYY/MM/DD`) and
 /// `<codex_dir>/archived_sessions/*.jsonl` (flat). Only `session_meta`,
 /// `turn_context`, and `event_msg` (subtype `token_count`) events are consumed.
 ///
 /// Codex's `total_token_usage` is **cumulative** and its `input_tokens` is
-/// cache-inclusive, so the provider computes per-call deltas and subtracts
+/// cache-inclusive, so the parser computes per-call deltas and subtracts
 /// `cache_read` to yield a fresh `input` (parse-time fresh-input
 /// normalization). Sub-agent / fork logs replay the parent thread's history
 /// before their own usage; that replay only re-establishes the cumulative
 /// baseline and is never emitted.
-pub struct CodexProvider {
+pub struct CodexSourceParser {
     codex_dir: PathBuf,
 }
 
-impl CodexProvider {
-    /// Default provider rooted at `~/.codex`.
+impl CodexSourceParser {
+    /// Default parser rooted at `~/.codex`.
     pub fn new() -> AppResult<Self> {
-        let home =
-            dirs::home_dir().ok_or_else(|| AppError::Provider("cannot resolve home dir".into()))?;
+        let home = dirs::home_dir()
+            .ok_or_else(|| AppError::SourceParser("cannot resolve home dir".into()))?;
         Ok(Self {
             codex_dir: home.join(".codex"),
         })
@@ -79,7 +80,7 @@ impl CodexProvider {
     }
 }
 
-impl Provider for CodexProvider {
+impl SourceParser for CodexSourceParser {
     fn name(&self) -> &'static str {
         "codex_cli"
     }
@@ -879,7 +880,7 @@ mod tests {
     }
 
     /// Codex model names flow through `crate::model::normalize_model_key` (the
-    /// shared superset normalizer). This pins the provider's observable
+    /// shared superset normalizer). This pins the parser's observable
     /// normalization contract: lowercase, strip `provider/` prefix, and strip
     /// `-YYYY-MM-DD` / `-YYYYMMDD` date suffixes.
     #[test]
@@ -997,7 +998,7 @@ mod tests {
     #[test]
     fn codex_discover_missing_dir_returns_empty() {
         let base = tempfile::tempdir().unwrap();
-        let p = CodexProvider::with_dir(base.path().join("nope"));
+        let p = CodexSourceParser::with_dir(base.path().join("nope"));
         assert!(p.discover().unwrap().is_empty());
     }
 
@@ -1043,7 +1044,7 @@ mod tests {
                 codex_token_count(1_300, 1_050, 150),
             ],
         );
-        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let p = CodexSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.source, "codex_cli");
         assert_eq!(
@@ -1086,7 +1087,7 @@ mod tests {
                 codex_token_count(200, 100, 20),
             ],
         );
-        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let p = CodexSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         let mut uuids: Vec<String> = result.events.iter().map(|e| e.uuid.clone()).collect();
         uuids.sort();
@@ -1120,7 +1121,7 @@ mod tests {
                 codex_token_count(100, 50, 10),
             ],
         );
-        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let p = CodexSourceParser::with_dir(dir.path().to_path_buf());
         let (r1, delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
         assert_eq!(r1.events.len(), 1);
         let progress: ScanProgress = delta;
@@ -1156,7 +1157,7 @@ mod tests {
                 codex_token_count(100, 50, 10),
             ],
         );
-        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let p = CodexSourceParser::with_dir(dir.path().to_path_buf());
         let (r1, delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
         assert_eq!(r1.events.len(), 1);
         let progress: ScanProgress = delta;
@@ -1226,7 +1227,7 @@ mod tests {
                 codex_token_count(100, 50, 10),
             ],
         );
-        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let p = CodexSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
 
         // One session, system data from the full file.
@@ -1262,7 +1263,7 @@ mod tests {
                 ),
             ],
         );
-        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let p = CodexSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.sessions[0].title_orig, "O_VaultOne");
         assert_eq!(result.sessions[0].project_dir, "/home/me/O_VaultOne");
@@ -1301,7 +1302,7 @@ mod tests {
                 ),
             ],
         );
-        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let p = CodexSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.sessions[0].title_orig, "Fix the login bug");
     }
@@ -1326,7 +1327,7 @@ mod tests {
                 ),
             ],
         );
-        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let p = CodexSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(
             result.sessions[0].title_orig,
@@ -1360,7 +1361,7 @@ mod tests {
                 ),
             ],
         );
-        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let p = CodexSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.sessions[0].title_orig, "Fix the login bug");
     }
@@ -1402,7 +1403,7 @@ mod tests {
                 ),
             ],
         );
-        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let p = CodexSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
 
         let roles: Vec<_> = result.messages.iter().map(|m| m.role).collect();
@@ -1449,7 +1450,7 @@ mod tests {
                 ),
             ],
         );
-        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let p = CodexSourceParser::with_dir(dir.path().to_path_buf());
         let (r1, progress) = p.collect_incremental(&ScanProgress::new()).unwrap();
         assert_eq!(r1.messages.len(), 1);
         assert_eq!(r1.messages[0].uuid, "m_u1");
@@ -1507,7 +1508,7 @@ mod tests {
                 codex_token_count(100, 50, 10),
             ],
         );
-        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let p = CodexSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert!(result.sessions.is_empty(), "sub-agent emits no session");
         assert!(result.messages.is_empty(), "sub-agent emits no transcript");
@@ -1544,7 +1545,7 @@ mod tests {
                 ),
             ],
         );
-        let p = CodexProvider::with_dir(dir.path().to_path_buf());
+        let p = CodexSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.sessions.len(), 1);
         assert_eq!(

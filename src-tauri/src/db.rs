@@ -45,7 +45,7 @@ use crate::model::{
     SESSION_SNAPSHOT_VERSION,
 };
 use crate::pricing::{ModelPricing, PricingBook};
-use crate::providers::{FileCursor, ScanProgress, ScanProgressDelta};
+use crate::source_parser::{FileCursor, ScanProgress, ScanProgressDelta};
 
 /// Thread-safe wrapper over a single SQLite connection.
 pub struct Store {

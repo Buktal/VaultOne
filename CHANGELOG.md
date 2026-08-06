@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Source parsers renamed to `SourceParser`** — the log-parser module (`providers/`) becomes `source_parser/`, freeing the word "Provider" for the upcoming vendor-management feature. Pure rename, no behavior change.
+- **Request-log table drops its duplicate Source columns** — the two columns both derived from the same `source` field (a readable name with a stale "(Session)" suffix, and the raw tag) merge into one Source column: the readable name, with the raw tag on hover. The misleading suffix is gone — each row is a single API call, not a session.
+
 - **Long sessions open instantly** — the transcript now renders through a virtualized list (react-virtuoso), keeping only the messages near the viewport in the DOM. A multi-thousand-message session no longer stalls while every row is laid out at once, and scrolling stays smooth regardless of length.
 - **Message header rows mirror cleanly** — on both the assistant and user voices the toolbar (collapse chevron + copy) and the time/model block are pinned to opposite ends of the bubble, so a short user message no longer crams the two together against the edge.
 

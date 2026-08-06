@@ -52,7 +52,7 @@ pub struct AppInfo {
 #[specta::specta]
 pub fn get_app_info(state: State<'_, AppState>) -> AppResult<AppInfo> {
     let cfg = state.config.get();
-    let claude_dir = crate::providers::default_projects_dir().map(|p| p.display().to_string());
+    let claude_dir = crate::source_parser::default_projects_dir().map(|p| p.display().to_string());
     Ok(AppInfo {
         device_id: cfg.device_id.clone(),
         display_name: cfg.display_name.clone(),

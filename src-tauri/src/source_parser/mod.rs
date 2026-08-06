@@ -1,13 +1,13 @@
-//! Source-log providers (parse local session logs).
+//! Source-log parsers (parse local session logs).
 //!
-//! Plugin trait + shared incremental driver. Concrete providers live in
-//! submodules (`claude`, `codex`, `gemini`, `grok`, `opencode`). A provider
+//! Plugin trait + shared incremental driver. Concrete parsers live in
+//! submodules (`claude`, `codex`, `gemini`, `grok`, `opencode`). A parser
 //! discovers Source files and parses them into two raw streams:
 //!   - per-call [`RawUsage`] (one per `assistant` event = one API request), and
 //!   - per-turn [`RawTurnDuration`] (from `system/turn_duration` events).
 //!
-//! Both are pre-device / pre-cost — the provider does NOT know about deviceId
-//! or pricing. That is applied by the ingest layer, so the same provider output
+//! Both are pre-device / pre-cost — the parser does NOT know about deviceId
+//! or pricing. That is applied by the ingest layer, so the same parser output
 //! can land in the Local Store (Standalone) and the JSONL Artifact.
 
 use std::path::{Path, PathBuf};
@@ -21,7 +21,7 @@ mod gemini;
 mod grok;
 mod opencode;
 
-/// A single parsed per-call usage event (provider output, pre-cost / pre-device).
+/// A single parsed per-call usage event (parser output, pre-cost / pre-device).
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawUsage {
     /// Globally-unique id from the Source log — the dedup key.
@@ -30,10 +30,10 @@ pub struct RawUsage {
     pub timestamp: String,
     /// Billed / mapped model string, e.g. `glm-5.2`.
     pub model: String,
-    /// Provider tag, e.g. `claude_code`.
+    /// Source tag, e.g. `claude_code`.
     pub source: String,
     /// Session this call belongs to (the source log's session identifier).
-    /// Empty for providers not yet wired for sessions (every source but Claude
+    /// Empty for parsers not yet wired for sessions (every source but Claude
     /// in this phase). NOT part of the dedup key — grouping info only.
     pub session_id: String,
     pub tokens: TokenCounts,
@@ -46,7 +46,7 @@ pub struct RawUsage {
     pub iterations: u32,
 }
 
-/// A single parsed per-turn duration (provider output, pre-device). Sourced from
+/// A single parsed per-turn duration (parser output, pre-device). Sourced from
 /// the `system/turn_duration` event's `durationMs`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawTurnDuration {
@@ -57,7 +57,7 @@ pub struct RawTurnDuration {
     pub duration_ms: u32,
 }
 
-/// Outcome of parsing one provider's sources.
+/// Outcome of parsing one parser's sources.
 #[derive(Debug, Clone, Default)]
 pub struct CollectResult {
     pub source: String,
@@ -66,12 +66,12 @@ pub struct CollectResult {
     pub turn_durations: Vec<RawTurnDuration>,
     /// Sessions discovered this pass (system data: id/source/project/title/
     /// timestamps). One per source log file (Claude: one session per jsonl).
-    /// Empty for providers not yet wired for sessions.
+    /// Empty for parsers not yet wired for sessions.
     pub sessions: Vec<RawSession>,
     /// Transcript messages extracted this pass (only the new lines past each
     /// file's cursor). Collected for ALL sessions so the ingest layer can decide
     /// per-session (only favorited ones land in `sessions/<id>.jsonl`). Empty
-    /// for providers not yet wired for sessions.
+    /// for parsers not yet wired for sessions.
     pub messages: Vec<SessionMessage>,
     /// Files scanned.
     pub files_scanned: u32,
@@ -82,7 +82,7 @@ pub struct CollectResult {
     /// parsed set would shrink to zero on a no-change collect and treat every
     /// real session as a ghost). Powers the sessions-table reconciliation at
     /// ingest: rows in `(device_id, source)` not in this set are deleted.
-    /// Empty for providers without file-backed sessions (opencode), which
+    /// Empty for parsers without file-backed sessions (opencode), which
     /// disables reconciliation for them.
     pub session_ids: Vec<String>,
 }
@@ -106,19 +106,19 @@ pub type ScanProgress = std::collections::HashMap<String, FileCursor>;
 /// opened and read. Saved as an UPSERT. Same shape as `ScanProgress` (a subset).
 pub type ScanProgressDelta = std::collections::HashMap<String, FileCursor>;
 
-/// Provider plugin interface (extensible to Codex / Gemini / …).
-pub trait Provider: Send + Sync {
-    /// Stable provider tag, e.g. `claude_code`. Becomes `RawUsage.source`.
+/// Source-parser plugin interface (extensible to Codex / Gemini / …).
+pub trait SourceParser: Send + Sync {
+    /// Stable parser tag, e.g. `claude_code`. Becomes `RawUsage.source`.
     fn name(&self) -> &'static str;
 
-    /// Discover Source files for this provider.
+    /// Discover Source files for this parser.
     fn discover(&self) -> AppResult<Vec<PathBuf>>;
 
     /// Full-scan parse of the given files into usage events + turn durations.
     /// Diagnostic/test surface and the semantic reference for a "parse
     /// everything" run; the production collect path is
-    /// [`Provider::collect_incremental`] (which, with empty progress, also
-    /// yields a full scan). Each provider's `parse` delegates to the same
+    /// [`SourceParser::collect_incremental`] (which, with empty progress, also
+    /// yields a full scan). Each parser's `parse` delegates to the same
     /// parsing helpers its `collect_incremental` closure uses, so testing via
     /// `parse` exercises production logic — not a divergent path.
     #[allow(dead_code)] // off the production path by design; kept as the test/diagnostic full-scan surface
@@ -126,11 +126,11 @@ pub trait Provider: Send + Sync {
 
     /// Incremental collect: parse only what each file's recorded cursor says is
     /// new, returning the advanced cursors to persist. This is the ONLY collect
-    /// entry point the production path (`collect_into`) calls. Each provider
-    /// implements its own — the JSONL providers delegate to the shared
+    /// entry point the production path (`collect_into`) calls. Each parser
+    /// implements its own — the JSONL parsers delegate to the shared
     /// [`collect_jsonl_incremental`] driver; OpenCode (SQLite, two-level
     /// watermark) keeps its own. There is intentionally no default impl: a
-    /// provider that skipped this would have no production collect path.
+    /// parser that skipped this would have no production collect path.
     fn collect_incremental(
         &self,
         progress: &ScanProgress,
@@ -139,10 +139,10 @@ pub trait Provider: Send + Sync {
     /// Session ids represented by the discovered files — the reconciliation
     /// "seen" set. Default = file stem (Claude: one session per jsonl and the
     /// id IS the stem; discover already filters `agent-*`, so stale agent rows
-    /// clear on the first reconciled collect). Providers whose session id lives
+    /// clear on the first reconciled collect). Parsers whose session id lives
     /// INSIDE the file (Codex thread id, Gemini `sessionId`) or in the path
     /// shape (Grok parent-dir name) MUST override — the stem default would
-    /// mis-delete real sessions. Providers without file-backed sessions
+    /// mis-delete real sessions. Parsers without file-backed sessions
     /// (opencode, SQLite-managed) override with an empty set to disable
     /// reconciliation entirely.
     fn session_ids_seen(&self, files: &[PathBuf]) -> Vec<String> {
@@ -154,28 +154,28 @@ pub trait Provider: Send + Sync {
     }
 }
 
-/// All enabled Source-log providers, in collection order. A provider whose
+/// All enabled Source-log parsers, in collection order. A parser whose
 /// source dir is absent simply discovers no files (not an error), so every
-/// provider is always instantiated; the shared `scan_progress` table keys by
-/// file path, which is naturally disjoint across providers.
-pub fn all_providers() -> AppResult<Vec<Box<dyn Provider>>> {
+/// parser is always instantiated; the shared `scan_progress` table keys by
+/// file path, which is naturally disjoint across parsers.
+pub fn all_source_parsers() -> AppResult<Vec<Box<dyn SourceParser>>> {
     Ok(vec![
-        Box::new(claude::ClaudeCodeProvider::new()?),
-        Box::new(codex::CodexProvider::new()?),
-        Box::new(gemini::GeminiCliProvider::new()?),
-        Box::new(opencode::OpenCodeProvider::new()?),
-        Box::new(grok::GrokProvider::new()?),
+        Box::new(claude::ClaudeCodeSourceParser::new()?),
+        Box::new(codex::CodexSourceParser::new()?),
+        Box::new(gemini::GeminiCliSourceParser::new()?),
+        Box::new(opencode::OpenCodeSourceParser::new()?),
+        Box::new(grok::GrokSourceParser::new()?),
     ])
 }
 
-/// One JSONL file's parse result. The provider's per-file parser returns this;
+/// One JSONL file's parse result. The parser's per-file parser returns this;
 /// the shared incremental driver below handles everything else (mtime gate,
 /// truncation self-heal, partial-last-line guard, cursor advance, ordering).
 pub(super) struct FileParseOutcome {
     pub(super) events: Vec<RawUsage>,
     pub(super) turn_durations: Vec<RawTurnDuration>,
     /// Sessions discovered in this file (one per Claude jsonl; empty for
-    /// providers not yet wired for sessions).
+    /// parsers not yet wired for sessions).
     pub(super) sessions: Vec<RawSession>,
     /// Transcript messages parsed this pass (only lines past the cursor).
     pub(super) messages: Vec<SessionMessage>,
@@ -187,17 +187,17 @@ pub(super) struct FileParseOutcome {
 /// `parse_file` ignores `start_line` and re-parses the whole text on each gate
 /// pass). Walks every discovered file: mtime-gates unchanged ones, re-reads
 /// changed ones past their line cursor, and hands the file text + start line to
-/// `parse_file` — the only thing that differs across these providers is "how a
+/// `parse_file` — the only thing that differs across these parsers is "how a
 /// file's text becomes events". `parse_file` receives the 1-based start line
 /// (already self-healed on truncation) and must skip lines at or before it.
 /// OpenCode (SQLite, two-level watermark) keeps its own `collect_incremental` —
 /// its source shape does not fit this driver.
 pub(super) fn collect_jsonl_incremental(
-    provider: &dyn Provider,
+    parser: &dyn SourceParser,
     progress: &ScanProgress,
     parse_file: impl Fn(&Path, &str, i64) -> FileParseOutcome,
 ) -> AppResult<(CollectResult, ScanProgressDelta)> {
-    let files = provider.discover()?;
+    let files = parser.discover()?;
     let mut events: Vec<RawUsage> = Vec::new();
     let mut turn_durations: Vec<RawTurnDuration> = Vec::new();
     let mut sessions: Vec<RawSession> = Vec::new();
@@ -273,14 +273,14 @@ pub(super) fn collect_jsonl_incremental(
     // session_ids come from the FILES, not the parsed sessions — the mtime gate
     // would otherwise empty them on a no-change collect (see the field docs).
     let result = CollectResult {
-        source: provider.name().to_string(),
+        source: parser.name().to_string(),
         events,
         turn_durations,
         sessions,
         messages,
         files_scanned: files.len() as u32,
         lines_skipped: skipped,
-        session_ids: provider.session_ids_seen(&files),
+        session_ids: parser.session_ids_seen(&files),
     };
     Ok((result, delta))
 }
@@ -288,23 +288,23 @@ pub(super) fn collect_jsonl_incremental(
 /// Deterministic ordering for collected results: events by (timestamp, uuid),
 /// sessions by (last_active_at, id). Applied by every parse/collect path so
 /// repeated runs over the same sources yield identical grain lines — the single
-/// rule, replacing the sort copy each provider used to inline.
+/// rule, replacing the sort copy each parser used to inline.
 pub(super) fn order_results(events: &mut [RawUsage], sessions: &mut [RawSession]) {
     events.sort_by(|a, b| (&a.timestamp, &a.uuid).cmp(&(&b.timestamp, &b.uuid)));
     sessions.sort_by(|a, b| (&a.last_active_at, &a.id).cmp(&(&b.last_active_at, &b.id)));
 }
 
 /// Full-scan parse for line-oriented JSONL sources — the shared "parse every
-/// discovered file in full" loop that each JSONL provider's `parse` used to
+/// discovered file in full" loop that each JSONL parser's `parse` used to
 /// inline. Hands each file's text to `parse_file` (start_line 0 — full scan),
 /// aggregates events / turn durations / sessions / messages, and applies the
-/// deterministic ordering. The only per-provider thing is "how a file's text
-/// becomes events", supplied as the same `parse_file` closure the provider's
+/// deterministic ordering. The only per-parser thing is "how a file's text
+/// becomes events", supplied as the same `parse_file` closure the parser's
 /// `collect_incremental` uses — so the test path (`parse`) and the production
 /// path (`collect_incremental`) run identical per-file logic. OpenCode (SQLite)
 /// keeps its own `parse`; its source shape does not fit this driver.
 pub(super) fn parse_jsonl_full(
-    provider: &dyn Provider,
+    parser: &dyn SourceParser,
     files: &[PathBuf],
     parse_file: impl Fn(&Path, &str, i64) -> FileParseOutcome,
 ) -> AppResult<CollectResult> {
@@ -330,14 +330,14 @@ pub(super) fn parse_jsonl_full(
     }
     order_results(&mut events, &mut sessions);
     Ok(CollectResult {
-        source: provider.name().to_string(),
+        source: parser.name().to_string(),
         events,
         turn_durations,
         sessions,
         messages,
         files_scanned: files.len() as u32,
         lines_skipped: skipped,
-        session_ids: provider.session_ids_seen(files),
+        session_ids: parser.session_ids_seen(files),
     })
 }
 
@@ -348,7 +348,7 @@ pub(super) fn parse_jsonl_full(
 ///
 /// Cache-inclusive sources (Codex, Gemini, Grok) call this at parse time so the
 /// `RawUsage.input` they emit is always fresh — the one hard contract every
-/// provider must satisfy. Fresh sources (Claude, OpenCode) carry fresh input
+/// parser must satisfy. Fresh sources (Claude, OpenCode) carry fresh input
 /// natively and skip this step.
 pub(super) fn normalize_cache_inclusive(input: u32, cache_read: u32) -> (u32, u32) {
     let clamped = cache_read.min(input);
@@ -358,16 +358,16 @@ pub(super) fn normalize_cache_inclusive(input: u32, cache_read: u32) -> (u32, u3
 
 /// Soft cap on any single content string (32 KiB). Oversized content is
 /// truncated; a per-session 5 MiB soft cap is warned-on only at the ingest
-/// layer, not enforced here. Shared across JSONL providers so the rule cannot
+/// layer, not enforced here. Shared across JSONL parsers so the rule cannot
 /// drift between them (single source of truth).
 pub(super) const TRIM_LIMIT: usize = 32 * 1024;
 
 /// Max chars of the original title (summary or first user message). Shared
-/// across session-emitting providers.
+/// across session-emitting parsers.
 pub(super) const TITLE_MAX: usize = 80;
 
 /// Truncate a string to `limit` chars, appending an ellipsis when shortened.
-/// Shared across providers — one truncation rule so Claude / Codex / … cannot
+/// Shared across parsers — one truncation rule so Claude / Codex / … cannot
 /// silently diverge (architecture review: single source of truth).
 pub(super) fn truncate(s: &str, limit: usize) -> String {
     if s.chars().count() <= limit {

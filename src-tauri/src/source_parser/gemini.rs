@@ -1,4 +1,4 @@
-//! Gemini CLI (`~/.gemini`) session-log provider.
+//! Gemini CLI (`~/.gemini`) session-log parser.
 
 use std::path::{Path, PathBuf};
 
@@ -7,10 +7,11 @@ use crate::model::{RawSession, ServerToolUse, SessionMessage, SessionMessageRole
 
 use super::{
     collect_jsonl_incremental, normalize_cache_inclusive, truncate, CollectResult,
-    FileParseOutcome, Provider, RawUsage, ScanProgress, ScanProgressDelta, TITLE_MAX, TRIM_LIMIT,
+    FileParseOutcome, RawUsage, ScanProgress, ScanProgressDelta, SourceParser, TITLE_MAX,
+    TRIM_LIMIT,
 };
 
-/// Gemini CLI (`~/.gemini`) session-log provider.
+/// Gemini CLI (`~/.gemini`) session-log parser.
 ///
 /// Reads `<gemini_dir>/tmp/<project_hash>/chats/session-*.json`. Each file is a
 /// single JSON object with a `messages` array; only `type:"gemini"` messages
@@ -19,15 +20,15 @@ use super::{
 /// parse; `cached` is cache_read, and `thoughts` is folded into `output`
 /// (thinking tokens are billed as output). `cache_creation` is always 0 —
 /// Gemini uses implicit caching and does not expose a write bucket.
-pub struct GeminiCliProvider {
+pub struct GeminiCliSourceParser {
     gemini_dir: PathBuf,
 }
 
-impl GeminiCliProvider {
-    /// Default provider rooted at `~/.gemini`.
+impl GeminiCliSourceParser {
+    /// Default parser rooted at `~/.gemini`.
     pub fn new() -> AppResult<Self> {
-        let home =
-            dirs::home_dir().ok_or_else(|| AppError::Provider("cannot resolve home dir".into()))?;
+        let home = dirs::home_dir()
+            .ok_or_else(|| AppError::SourceParser("cannot resolve home dir".into()))?;
         Ok(Self {
             gemini_dir: home.join(".gemini"),
         })
@@ -72,7 +73,7 @@ impl GeminiCliProvider {
     }
 }
 
-impl Provider for GeminiCliProvider {
+impl SourceParser for GeminiCliSourceParser {
     fn name(&self) -> &'static str {
         "gemini_cli"
     }
@@ -124,7 +125,7 @@ impl Provider for GeminiCliProvider {
     /// Incremental collect: a Gemini session file is a single JSON object, so
     /// there is no line cursor — only the mtime gate (owned by the shared JSONL
     /// driver) is meaningful, and a gated file is re-parsed in full. The line
-    /// cursor the driver advances is harmless: this provider's `parse_file`
+    /// cursor the driver advances is harmless: this parser's `parse_file`
     /// ignores `start_line` and parses the whole text every gate pass. The
     /// store dedups already-seen message ids at ingest; a CLI rewrite that
     /// changes an existing message's tokens is NOT re-costed (freeze + top-up
@@ -450,7 +451,7 @@ mod tests {
     #[test]
     fn gemini_discover_missing_dir_returns_empty() {
         let base = tempfile::tempdir().unwrap();
-        let p = GeminiCliProvider::with_dir(base.path().join("nope"));
+        let p = GeminiCliSourceParser::with_dir(base.path().join("nope"));
         assert!(p.discover().unwrap().is_empty());
     }
 
@@ -472,7 +473,7 @@ mod tests {
             ]
         }"#;
         write_gemini_session(dir.path(), "hashA", "session-1.json", json);
-        let p = GeminiCliProvider::with_dir(dir.path().to_path_buf());
+        let p = GeminiCliSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.source, "gemini_cli");
         assert_eq!(
@@ -507,7 +508,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let json = r#"{"sessionId":"s1","messages":[{"type":"gemini","id":"m1","model":"gemini-2.5-pro","timestamp":"2026-07-15T12:34:56.789Z","tokens":{"input":10,"output":1,"cached":2,"thoughts":0}}]}"#;
         let path = write_gemini_session(dir.path(), "h", "session-1.json", json);
-        let p = GeminiCliProvider::with_dir(dir.path().to_path_buf());
+        let p = GeminiCliSourceParser::with_dir(dir.path().to_path_buf());
         let (r1, delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
         assert_eq!(r1.events.len(), 1);
         let progress: ScanProgress = delta;
@@ -548,7 +549,7 @@ mod tests {
         write_gemini_session(dir.path(), "hashA", "session-abc.json", json);
         write_project_root(dir.path(), "hashA", "/home/me/project");
 
-        let p = GeminiCliProvider::with_dir(dir.path().to_path_buf());
+        let p = GeminiCliSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
 
         // ---- RawSession ----
@@ -609,7 +610,7 @@ mod tests {
             {"id":"m2","type":"gemini","timestamp":"2026-08-01T10:01:00Z","model":"gemini-2.5-pro","content":"reply"}
         ]}"#;
         write_gemini_session(dir.path(), "h", "session-1.json", json);
-        let p = GeminiCliProvider::with_dir(dir.path().to_path_buf());
+        let p = GeminiCliSourceParser::with_dir(dir.path().to_path_buf());
 
         let r1 = p.parse(&p.discover().unwrap()).unwrap();
         let r2 = p.parse(&p.discover().unwrap()).unwrap();
@@ -627,7 +628,7 @@ mod tests {
         let json = r#"{"sessionId":"s1","startTime":"2026-08-01T10:00:00Z","lastUpdated":"2026-08-01T10:00:00Z","messages":[{"id":"m1","type":"user","timestamp":"2026-08-01T10:00:00Z","content":"hi"}]}"#;
         write_gemini_session(dir.path(), "h", "session-1.json", json);
         // No .project_root written.
-        let p = GeminiCliProvider::with_dir(dir.path().to_path_buf());
+        let p = GeminiCliSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.sessions[0].project_dir, "");
     }
@@ -641,7 +642,7 @@ mod tests {
             r#"{{"sessionId":"s1","messages":[{{"id":"m1","type":"user","timestamp":"2026-08-01T10:00:00Z","content":"{long_text}"}}]}}"#
         );
         write_gemini_session(dir.path(), "h", "session-1.json", &json);
-        let p = GeminiCliProvider::with_dir(dir.path().to_path_buf());
+        let p = GeminiCliSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.messages.len(), 1);
         let content = &result.messages[0].content;
@@ -650,14 +651,14 @@ mod tests {
     }
 
     /// Incremental: a rewrite (new mtime) triggers a full re-parse — both meta
-    /// and messages are rebuilt. The provider re-emits already-seen message ids
+    /// and messages are rebuilt. The parser re-emits already-seen message ids
     /// (the ledger dedups at ingest, not here).
     #[test]
     fn gemini_incremental_rebuilds_meta_and_messages_on_rewrite() {
         let dir = tempfile::tempdir().unwrap();
         let json_v1 = r#"{"sessionId":"s1","startTime":"2026-08-01T10:00:00Z","lastUpdated":"2026-08-01T10:00:00Z","messages":[{"id":"m1","type":"user","timestamp":"2026-08-01T10:00:00Z","content":"first"}]}"#;
         let path = write_gemini_session(dir.path(), "h", "session-1.json", json_v1);
-        let p = GeminiCliProvider::with_dir(dir.path().to_path_buf());
+        let p = GeminiCliSourceParser::with_dir(dir.path().to_path_buf());
 
         let (r1, progress) = p.collect_incremental(&ScanProgress::new()).unwrap();
         assert_eq!(r1.messages.len(), 1);
@@ -687,7 +688,7 @@ mod tests {
             {"id":"ok","type":"user","timestamp":"2026-08-01T10:03:00Z","content":"kept"}
         ]}"#;
         write_gemini_session(dir.path(), "h", "session-1.json", json);
-        let p = GeminiCliProvider::with_dir(dir.path().to_path_buf());
+        let p = GeminiCliSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         // Only the "ok" message survives (non-empty content + has id).
         assert_eq!(result.messages.len(), 1);

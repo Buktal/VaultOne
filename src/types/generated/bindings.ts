@@ -248,8 +248,8 @@ export type AppError =
 { type: "Config"; data: string } | 
 /**  SQLite Local Store error. */
 { type: "Db"; data: string } | 
-/**  Provider failed to discover/parse Source logs. */
-{ type: "Provider"; data: string } | 
+/**  A parser failed to discover/parse Source logs. */
+{ type: "SourceParser"; data: string } | 
 /**  Pricing lookup / cost calc error. */
 { type: "Pricing"; data: string } | 
 /**  Sync (git2 / network) error — only raised in Synced mode. */
@@ -475,10 +475,10 @@ export type SessionGroup = {
 };
 
 /**
- *  One transcript line. Single source of truth across three roles: provider
+ *  One transcript line. Single source of truth across three roles: parser
  *  output, the per-session JSONL Artifact (`sessions/<id>.jsonl`), and the DTO
  *  crossing to the frontend. The shape is identical for all three, so one
- *  struct (single source of truth) — a provider-emitted message is this same
+ *  struct (single source of truth) — a parser-emitted message is this same
  *  shape, not a separate type.
  */
 export type SessionMessage = SessionMessage_Serialize | SessionMessage_Deserialize;
@@ -490,10 +490,10 @@ export type SessionMessage = SessionMessage_Serialize | SessionMessage_Deseriali
 export type SessionMessageRole = "user" | "assistant" | "tool" | "system";
 
 /**
- *  One transcript line. Single source of truth across three roles: provider
+ *  One transcript line. Single source of truth across three roles: parser
  *  output, the per-session JSONL Artifact (`sessions/<id>.jsonl`), and the DTO
  *  crossing to the frontend. The shape is identical for all three, so one
- *  struct (single source of truth) — a provider-emitted message is this same
+ *  struct (single source of truth) — a parser-emitted message is this same
  *  shape, not a separate type.
  */
 export type SessionMessage_Deserialize = {
@@ -517,10 +517,10 @@ export type SessionMessage_Deserialize = {
 };
 
 /**
- *  One transcript line. Single source of truth across three roles: provider
+ *  One transcript line. Single source of truth across three roles: parser
  *  output, the per-session JSONL Artifact (`sessions/<id>.jsonl`), and the DTO
  *  crossing to the frontend. The shape is identical for all three, so one
- *  struct (single source of truth) — a provider-emitted message is this same
+ *  struct (single source of truth) — a parser-emitted message is this same
  *  shape, not a separate type.
  */
 export type SessionMessage_Serialize = {

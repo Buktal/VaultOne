@@ -174,7 +174,7 @@ mod tests {
     use crate::collect::ingest::ingest_collected;
     use crate::model::{ServerToolUse, TokenCounts};
     use crate::pricing::seed_book;
-    use crate::providers::{CollectResult, RawTurnDuration, RawUsage};
+    use crate::source_parser::{CollectResult, RawTurnDuration, RawUsage};
 
     fn raw(uuid: &str, model: &str) -> RawUsage {
         RawUsage {

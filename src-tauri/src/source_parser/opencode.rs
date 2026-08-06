@@ -1,4 +1,4 @@
-//! OpenCode (`~/.local/share/opencode/opencode.db`) session-log provider.
+//! OpenCode (`~/.local/share/opencode/opencode.db`) session-log parser.
 
 use std::path::{Path, PathBuf};
 
@@ -7,25 +7,25 @@ use crate::model::{RawSession, ServerToolUse, SessionMessage, SessionMessageRole
 use crate::time::epoch_millis_to_iso;
 
 use super::{
-    metadata_modified_nanos, truncate, CollectResult, FileCursor, Provider, RawUsage, ScanProgress,
-    ScanProgressDelta, TRIM_LIMIT,
+    metadata_modified_nanos, truncate, CollectResult, FileCursor, RawUsage, ScanProgress,
+    ScanProgressDelta, SourceParser, TRIM_LIMIT,
 };
 
-/// OpenCode (`~/.local/share/opencode/opencode.db`) session-log provider.
+/// OpenCode (`~/.local/share/opencode/opencode.db`) session-log parser.
 ///
 /// OpenCode stores sessions in a SQLite db (WAL mode). `message.data` is a JSON
 /// string with Anthropic-style tokens: `input` is fresh, `cache.{read,write}`
-/// are separate, `reasoning` folds into `output`. The provider opens the db
+/// are separate, `reasoning` folds into `output`. The parser opens the db
 /// read-only and queries per session. The main db file only updates on
 /// checkpoint, so fresh commits in `-wal` are merged into the mtime gate; a
 /// two-level watermark (file + per-session `time_updated`) skips unchanged work.
-pub struct OpenCodeProvider {
+pub struct OpenCodeSourceParser {
     db_path: Option<PathBuf>,
 }
 
-impl OpenCodeProvider {
-    /// Default provider rooted at the resolved opencode db path (absent ⇒ the
-    /// provider discovers nothing).
+impl OpenCodeSourceParser {
+    /// Default parser rooted at the resolved opencode db path (absent ⇒ the
+    /// parser discovers nothing).
     pub fn new() -> AppResult<Self> {
         Ok(Self {
             db_path: opencode_db_path(),
@@ -41,7 +41,7 @@ impl OpenCodeProvider {
     }
 }
 
-impl Provider for OpenCodeProvider {
+impl SourceParser for OpenCodeSourceParser {
     fn name(&self) -> &'static str {
         "opencode"
     }
@@ -240,8 +240,8 @@ fn open_opencode_readonly(db_path: &Path) -> AppResult<rusqlite::Connection> {
 
 /// Full-scan collect: every session's [`RawSession`] + completed-assistant
 /// usage events + transcript messages (no watermark gate). Reached only from
-/// [`Provider::parse`] — the test/diagnostic full-scan path. Production runs
-/// [`OpenCodeProvider::collect_incremental`] (per-session, two-level watermark).
+/// [`SourceParser::parse`] — the test/diagnostic full-scan path. Production runs
+/// [`OpenCodeSourceParser::collect_incremental`] (per-session, two-level watermark).
 #[allow(dead_code)] // parse-only; production runs collect_incremental
 fn collect_all(
     conn: &rusqlite::Connection,
@@ -555,7 +555,7 @@ fn query_assistant_messages(
 /// Parse a `message.data` JSON value into token fields. Returns `None` for an
 /// all-zero message. OpenCode's self-reported `cost` is deliberately ignored —
 /// VaultOne recomputes cost from its own pricing so the four-bucket split stays
-/// consistent across providers.
+/// consistent across parsers.
 fn parse_opencode_message_data(value: &serde_json::Value) -> Option<OpenCodeMessageData> {
     let tokens = value.get("tokens")?;
     let n = |k: &str| tokens.get(k).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
@@ -760,7 +760,7 @@ mod tests {
             )
             .unwrap();
         }
-        let p = OpenCodeProvider::with_db(db.clone());
+        let p = OpenCodeSourceParser::with_db(db.clone());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.source, "opencode");
         assert_eq!(result.events.len(), 2);
@@ -802,7 +802,7 @@ mod tests {
             )
             .unwrap();
         }
-        let p = OpenCodeProvider::with_db(db);
+        let p = OpenCodeSourceParser::with_db(db);
         let (r1, delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
         assert_eq!(r1.events.len(), 1);
         let progress: ScanProgress = delta;
@@ -965,7 +965,7 @@ mod tests {
             )
             .unwrap();
         }
-        let p = OpenCodeProvider::with_db(db.clone());
+        let p = OpenCodeSourceParser::with_db(db.clone());
         let result = p.parse(&p.discover().unwrap()).unwrap();
 
         // RawSession: title from DB, ISO timestamps, source tagged opencode.
@@ -1012,7 +1012,7 @@ mod tests {
             )
             .unwrap();
         }
-        let p = OpenCodeProvider::with_db(db);
+        let p = OpenCodeSourceParser::with_db(db);
         let (r1, _delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
         // First collect: session meta + transcript + session-stamped usage.
         assert_eq!(r1.sessions.len(), 1);

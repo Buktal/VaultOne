@@ -26,14 +26,14 @@ use crate::sync;
 /// Shared by the manual `collect_now` command and the background scheduler so
 /// both follow the exact same ingest path.
 ///
-/// Iterates every enabled provider. The per-file cursor table is loaded once
-/// and shared (keys are file paths, disjoint across providers); each provider's
+/// Iterates every enabled parser. The per-file cursor table is loaded once
+/// and shared (keys are file paths, disjoint across parsers); each parser's
 /// cursor advances are merged and persisted AFTER all ingests — so a failed
 /// ingest leaves cursors untouched (next collect re-parses the same lines; the
 /// store's primary-key dedup absorbs the re-read). First run / empty table ⇒
 /// full scan.
 pub fn collect_into(store: &Store, config: &ConfigStore) -> AppResult<IngestReport> {
-    let providers = crate::providers::all_providers()?;
+    let parsers = crate::source_parser::all_source_parsers()?;
     let cfg = config.get();
     let paths = config.paths();
     let progress = store.load_scan_progress()?;
@@ -41,10 +41,10 @@ pub fn collect_into(store: &Store, config: &ConfigStore) -> AppResult<IngestRepo
     let book = store.load_pricing_book()?;
 
     let mut merged = IngestReport::default();
-    let mut merged_delta = crate::providers::ScanProgressDelta::new();
+    let mut merged_delta = crate::source_parser::ScanProgressDelta::new();
     let mut sources_with_rows: Vec<String> = Vec::new();
-    for provider in &providers {
-        let (result, delta) = provider.collect_incremental(&progress)?;
+    for parser in &parsers {
+        let (result, delta) = parser.collect_incremental(&progress)?;
         let report = ingest::ingest_collected(store, &paths, &cfg.device_id, &book, result)?;
         if report.rows_inserted > 0 {
             sources_with_rows.push(report.source.clone());

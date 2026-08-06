@@ -107,9 +107,9 @@ impl CostBreakdown {
     }
 }
 
-// ---- Per-call Usage Record (provider output → SQLite + JSONL) ----
+// ---- Per-call Usage Record (parser output → SQLite + JSONL) ----
 
-/// One model API call (per-call granularity). This is the unit a provider
+/// One model API call (per-call granularity). This is the unit a parser
 /// emits, the Local Store stores, and one JSONL line serializes.
 ///
 /// `uuid` is the dedup key. `pricing_model` records the normalized model key
@@ -129,12 +129,12 @@ pub struct UsageRecord {
     pub model: String,
     /// Normalized model key used for pricing lookup (rebill key).
     pub pricing_model: String,
-    /// Provider tag, e.g. `claude_code`.
+    /// Source tag, e.g. `claude_code`.
     pub source: String,
     /// Session this call belongs to: the source log's session identifier
     /// (Claude = the jsonl file stem). Attached grouping info only — the dedup
     /// key stays `(uuid, device_id)`; `session_id` is NOT part of it. Empty when
-    /// a provider has not been wired for sessions yet (every source but Claude
+    /// a parser has not been wired for sessions yet (every source but Claude
     /// in this phase).
     #[serde(default)]
     pub session_id: String,

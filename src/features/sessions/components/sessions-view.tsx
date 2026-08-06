@@ -369,7 +369,7 @@ const ALL_SOURCES = "__all__"
 /** "All devices" sentinel for the device dropdown. */
 const ALL_DEVICES = "__all__"
 
-/** Fixed source options — the providers sessions are collected from. Brand
+/** Fixed source options — the sources sessions are collected from. Brand
  *  names are stable, so they live here rather than in i18n (mirrors the usage
  *  view's source-labels); only the "all" option and labels are localized. */
 const SOURCE_OPTIONS: string[] = [

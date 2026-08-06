@@ -27,7 +27,14 @@ describe("describeError", () => {
   })
 
   it("covers every backend AppError variant", () => {
-    const variants = ["Config", "Db", "Provider", "Pricing", "Sync", "Internal"]
+    const variants = [
+      "Config",
+      "Db",
+      "SourceParser",
+      "Pricing",
+      "Sync",
+      "Internal",
+    ]
     for (const type of variants) {
       expect(describeError({ type, data: "x" }, t)).toBe(`errors.${type}:x`)
     }

@@ -289,9 +289,9 @@ mod tests {
 
     // ---- S2b high-level flow tests ----
 
-    fn raw_usage(uuid: &str) -> crate::providers::RawUsage {
+    fn raw_usage(uuid: &str) -> crate::source_parser::RawUsage {
         use crate::model::{ServerToolUse, TokenCounts};
-        crate::providers::RawUsage {
+        crate::source_parser::RawUsage {
             uuid: uuid.into(),
             timestamp: "2026-07-13T16:55:22.467Z".into(),
             model: "glm-5.2".into(),

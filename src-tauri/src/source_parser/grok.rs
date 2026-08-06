@@ -1,4 +1,4 @@
-//! Grok CLI ("Grok Build") session-log provider.
+//! Grok CLI ("Grok Build") session-log parser.
 //!
 //! One Grok session = one directory under `~/.grok/{sessions,archived_sessions}/
 //! <enc-cwd>/<session-id>/`, holding up to three sibling files:
@@ -33,10 +33,11 @@ use crate::model::{RawSession, ServerToolUse, SessionMessage, SessionMessageRole
 
 use super::{
     collect_jsonl_incremental, normalize_cache_inclusive, truncate, CollectResult,
-    FileParseOutcome, Provider, RawUsage, ScanProgress, ScanProgressDelta, TITLE_MAX, TRIM_LIMIT,
+    FileParseOutcome, RawUsage, ScanProgress, ScanProgressDelta, SourceParser, TITLE_MAX,
+    TRIM_LIMIT,
 };
 
-/// Grok CLI ("Grok Build") session-log provider.
+/// Grok CLI ("Grok Build") session-log parser.
 ///
 /// Reads `~/.grok/{sessions,archived_sessions}/<enc-cwd>/<session-id>/{summary,
 /// chat_history, updates}`. See the module docs for the per-file breakdown.
@@ -48,15 +49,15 @@ use super::{
 /// (`usage.modelUsage`), each emitted as its own record. The CLI's
 /// `costUsdTicks` / `apiDurationMs` are ignored — cost is recomputed from local
 /// pricing at ingest.
-pub struct GrokProvider {
+pub struct GrokSourceParser {
     grok_dir: PathBuf,
 }
 
-impl GrokProvider {
-    /// Default provider rooted at `~/.grok`.
+impl GrokSourceParser {
+    /// Default parser rooted at `~/.grok`.
     pub fn new() -> AppResult<Self> {
-        let home =
-            dirs::home_dir().ok_or_else(|| AppError::Provider("cannot resolve home dir".into()))?;
+        let home = dirs::home_dir()
+            .ok_or_else(|| AppError::SourceParser("cannot resolve home dir".into()))?;
         Ok(Self {
             grok_dir: home.join(".grok"),
         })
@@ -86,7 +87,7 @@ impl GrokProvider {
     }
 }
 
-impl Provider for GrokProvider {
+impl SourceParser for GrokSourceParser {
     fn name(&self) -> &'static str {
         "grok_cli"
     }
@@ -622,7 +623,7 @@ mod tests {
     #[test]
     fn grok_discover_missing_dir_returns_empty() {
         let base = tempfile::tempdir().unwrap();
-        let p = GrokProvider::with_dir(base.path().join("nope"));
+        let p = GrokSourceParser::with_dir(base.path().join("nope"));
         assert!(p.discover().unwrap().is_empty());
     }
 
@@ -640,7 +641,7 @@ mod tests {
             grok_event_line(1_700_000_000, "p1", &grok_model("grok-4.5-build", 16632, 104, 0)),
         ];
         write_grok_session(dir.path(), "s1", &lines);
-        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let p = GrokSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.source, "grok_cli");
         assert_eq!(result.events.len(), 1);
@@ -676,7 +677,7 @@ mod tests {
             ),
         ];
         write_grok_session(dir.path(), "s2", &lines);
-        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let p = GrokSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.events.len(), 2);
         let by_prompt: std::collections::HashMap<&str, &RawUsage> =
@@ -706,7 +707,7 @@ mod tests {
             ),
         ];
         write_grok_session(dir.path(), "s3", &lines);
-        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let p = GrokSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(
             result.events.len(),
@@ -725,7 +726,7 @@ mod tests {
         );
         let lines = vec![grok_event_line(1_700_000_000, "p1", &both)];
         write_grok_session(dir.path(), "s4", &lines);
-        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let p = GrokSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.events.len(), 2);
         // Deterministic order: sorted by model name.
@@ -741,7 +742,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let line = r#"{"timestamp":1700000000,"method":"_x.ai/session/update","params":{"update":{"prompt_id":"p1","usage":{"inputTokens":100,"outputTokens":10,"cachedReadTokens":5}}}}"#.to_string();
         write_grok_session(dir.path(), "s5", &[line]);
-        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let p = GrokSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].model, "unknown");
@@ -764,7 +765,7 @@ mod tests {
             grok_event_line(1_700_000_000, "p1", &grok_model("grok-4.5-build", 10, 1, 0)),
         )
         .unwrap();
-        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let p = GrokSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].uuid, "grok:turn:arch1:p1:grok-4.5-build");
@@ -782,7 +783,7 @@ mod tests {
                 &grok_model("grok-4.5-build", 100, 10, 0),
             )],
         );
-        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let p = GrokSourceParser::with_dir(dir.path().to_path_buf());
         let (r1, delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
         assert_eq!(r1.events.len(), 1);
         let progress: ScanProgress = delta;
@@ -818,7 +819,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let summary = r#"{"info":{"id":"s-meta","cwd":"/work/proj"},"generated_title":"My Title","session_summary":"summary text","created_at":1700000000,"last_active_at":1700000060}"#;
         write_grok_full_session(dir.path(), "s-meta", Some(summary), &[], &[]);
-        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let p = GrokSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.sessions.len(), 1);
         let s = &result.sessions[0];
@@ -839,7 +840,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let summary = r#"{"info":{"id":"s-sum","cwd":"/p"},"session_summary":"Summary only"}"#;
         write_grok_full_session(dir.path(), "s-sum", Some(summary), &[], &[]);
-        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let p = GrokSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.sessions[0].title_orig, "Summary only");
     }
@@ -855,7 +856,7 @@ mod tests {
             r#"{"type":"user","content":"First prompt here","timestamp":1700000000}"#,
         ];
         write_grok_full_session(dir.path(), "s-user", Some(summary), &chat, &[]);
-        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let p = GrokSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.sessions[0].title_orig, "First prompt here");
     }
@@ -867,7 +868,7 @@ mod tests {
         let summary =
             r#"{"info":{"id":"s-up","cwd":"/p"},"created_at":1700000000,"updated_at":1700000120}"#;
         write_grok_full_session(dir.path(), "s-up", Some(summary), &[], &[]);
-        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let p = GrokSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(
             result.sessions[0].last_active_at, "2023-11-14T22:15:20.000Z",
@@ -892,7 +893,7 @@ mod tests {
         mk("ts-sec", "1700000000"); // epoch seconds
         mk("ts-ms", "1700000000000"); // epoch milliseconds
         mk("ts-iso", r#""2023-11-14T22:13:20Z""#); // RFC3339 string
-        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let p = GrokSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         let by_id: std::collections::HashMap<&str, &RawSession> =
             result.sessions.iter().map(|s| (s.id.as_str(), s)).collect();
@@ -907,7 +908,7 @@ mod tests {
     fn grok_summary_malformed_degrades_to_dir_id() {
         let dir = tempfile::tempdir().unwrap();
         write_grok_full_session(dir.path(), "s-bad", Some("{not json"), &[], &[]);
-        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let p = GrokSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.sessions.len(), 1);
         let s = &result.sessions[0];
@@ -938,7 +939,7 @@ mod tests {
             r#"{"type":"tool","name":"Read","content":"file contents","ts":1700000120}"#,
         ];
         write_grok_full_session(dir.path(), "s-chat", Some(summary), &chat, &[]);
-        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let p = GrokSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
 
         let roles: Vec<_> = result.messages.iter().map(|m| m.role).collect();
@@ -975,7 +976,7 @@ mod tests {
         let chat = [r#"{"type":"user","content":"Hello degraded","timestamp":1700000000}"#];
         // No summary.json — only chat_history.
         write_grok_full_session(dir.path(), "s-deg", None, &chat, &[]);
-        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let p = GrokSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(
             result.sessions.len(),
@@ -1005,7 +1006,7 @@ mod tests {
             &grok_model("grok-4.5-build", 100, 10, 0),
         )];
         write_grok_full_session(dir.path(), "s-usage", None, &[], &updates);
-        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let p = GrokSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(result.events.len(), 1);
         assert_eq!(
@@ -1032,7 +1033,7 @@ mod tests {
             &grok_model("grok-4.5-build", 100, 10, 0),
         )];
         write_grok_full_session(dir.path(), "s-full", Some(summary), &chat, &updates);
-        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let p = GrokSourceParser::with_dir(dir.path().to_path_buf());
         let result = p.parse(&p.discover().unwrap()).unwrap();
         assert_eq!(
             result.sessions.len(),
@@ -1057,7 +1058,7 @@ mod tests {
         let chat = [r#"{"type":"user","content":"first","timestamp":1700000000}"#];
         let session_dir = write_grok_full_session(dir.path(), "s-inc", Some(summary), &chat, &[]);
         let chat_path = session_dir.join("chat_history.jsonl");
-        let p = GrokProvider::with_dir(dir.path().to_path_buf());
+        let p = GrokSourceParser::with_dir(dir.path().to_path_buf());
         let (r1, delta) = p.collect_incremental(&ScanProgress::new()).unwrap();
         assert_eq!(r1.messages.len(), 1, "first pass: one message");
         let progress: ScanProgress = delta;

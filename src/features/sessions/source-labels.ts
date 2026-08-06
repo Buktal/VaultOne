@@ -1,14 +1,14 @@
 // Session source tag → display label. Single source for the sessions feature so
 // the list table, the detail sheet's source line, and the source-filter dropdown
-// all agree (architecture.md: 单一事实来源 — previously two copies, providerLabel
-// in sessions-view and sourceLabel in session-detail-sheet, had drifted into a
-// third use site).
+// all agree (architecture.md: 单一事实来源 — previously two copies, one in
+// sessions-view and one in session-detail-sheet, had drifted into a third use
+// site).
 //
-// `source` is the stable provider tag on every session row (e.g. "claude_code").
+// `source` is the stable source tag on every session row (e.g. "claude_code").
 // Sessions use the full product name incl. "CLI" — unlike the usage view
 // (features/usage/source-labels.ts, short "Codex"/"Grok"), a session row carries
 // no extra context to disambiguate. Unknown tags fall through verbatim so a new
-// provider shows up before a mapping is added; an empty tag shows "—".
+// source shows up before a mapping is added; an empty tag shows "—".
 
 const SESSION_SOURCE_LABELS: Record<string, string> = {
   claude_code: "Claude Code",
