@@ -69,7 +69,8 @@ pub fn claude_settings_path() -> AppResult<PathBuf> {
 ///
 /// 边界：`live` 为空串/纯空白 → 视为 `{}`（没有现存配置可保留）；`live` 是
 /// 非空非法 JSON 或非对象 → `Err`（解析不了就没法保留用户手动配置，宁可失败）；
-/// `target` 为空串 → 视为 `{}`；`target` 非法 JSON 或非对象 → `Err`。
+/// `target` 为空串 → 视为 `{}`；`target` 非法 JSON、非对象、或 `env` 非对象
+/// → `Err`（坏配置不能进用户 settings.json）。
 pub fn merge_live_settings(live: &str, target: &str, internal_keys: &[&str]) -> AppResult<String> {
     let mut merged = parse_live_or_empty(live)?;
     let mut target_obj = parse_target_or_empty(target)?;
@@ -78,6 +79,17 @@ pub fn merge_live_settings(live: &str, target: &str, internal_keys: &[&str]) -> 
     if let Some(obj) = target_obj.as_object_mut() {
         for key in internal_keys {
             obj.remove(*key);
+        }
+    }
+
+    // 目标 `env` 必须是对象：env 是受控字段，写盘时整块替换 live 的 env——
+    // 非对象（手写/导入的坏配置）会被原样带进用户 settings.json。宁可报错
+    // 阻止写盘，与「目标非法 JSON 报错」同一原则：配置坏了就显式失败。
+    if let Some(env) = target_obj.get("env") {
+        if !env.is_object() {
+            return Err(AppError::Config(
+                "provider settingsConfig env is not a JSON object".into(),
+            ));
         }
     }
 
@@ -349,6 +361,19 @@ mod tests {
     fn non_object_target_is_an_error() {
         let r = merge_live_settings("{}", r#""just a string""#, LIVE_INTERNAL_KEYS);
         assert!(matches!(r, Err(AppError::Config(_))));
+    }
+
+    #[test]
+    fn non_object_target_env_is_an_error() {
+        // 目标 env 非对象（手写/导入的坏配置）——若放行会被整块写进用户的
+        // settings.json，必须报错阻止写盘。
+        for bad in [r#"{"env": "garbage"}"#, r#"{"env": ["A=1"]}"#] {
+            let r = merge_live_settings("{}", bad, LIVE_INTERNAL_KEYS);
+            assert!(
+                matches!(r, Err(AppError::Config(_))),
+                "目标 env 非对象必须失败: {bad}"
+            );
+        }
     }
 
     #[test]

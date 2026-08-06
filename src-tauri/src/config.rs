@@ -245,8 +245,7 @@ pub struct ConfigData {
     pub active_provider_id: Option<String>,
     /// 通用配置片段（全局一条，跨供应商共享）：settings.json 片段原文，
     /// 勾选启用后切换写盘时合并进受控字段。存本机 config.json——与
-    /// `active_provider_id` 同属本机配置，不进 git、不随同步仓库走；片段
-    /// 将来若要随供应商结构同步，由同步 ticket 迁移。默认
+    /// `active_provider_id` 同属本机配置，不进 git、不随同步仓库走。默认
     /// `{"includeCoAuthoredBy": false}`（隐藏署名）。
     #[serde(default = "default_common_config_snippet")]
     pub common_config_snippet: String,

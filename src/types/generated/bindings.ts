@@ -524,21 +524,23 @@ export type Provider = {
 
 /**
  *  Provider category. `Custom` is the value for user-created providers; the
- *  rest describe the built-in presets (added by the preset ticket) so the
- *  list view can label and theme them.
+ *  rest label and theme the built-in presets in the list view.
  */
 export type ProviderCategory = "official" | "cn_official" | "aggregator" | "cloud_provider" | "custom";
 
 /**
  *  导入冲突模式：merge = 已有 id 跳过（保留双方，按 id 去重）；overwrite =
  *  同 id 以导入为准（后者胜），本地独有 id 保留（不做删除——保守迁移）。
+ *  两种模式都不还原导出方的排序：已存在行保留本地 `sort_index`（排序是本地
+ *  偏好，导入不做重排），导入的新行追加在末尾（`save_provider` 语义）。
  */
 export type ProviderImportMode = "merge" | "overwrite";
 
 /**
  *  导入结果计数，前端 toast 展示「导入 N 个、跳过 M 个」。用 `u32` 而非
- *  `usize`：specta 拒绝导出 BigInt 型（usize/u64...）字段，绑定的
- *  `bindings.ts` 会生成失败（#30 遗留，合入时靠手改 bindings 绕过）。
+ *  `usize`：本类型跨 Rust→JS 边界走 tauri-specta 的 typed 导出，specta 拒绝
+ *  BigInt 型（`usize`/`u64`/`i64`…）字段以避免 JS 精度损失——用 `usize`
+ *  会让 bindings.ts 生成失败。计数是行数（一次导入顶多几条），`u32` 足够。
  */
 export type ProviderImportReport = {
 	/**  实际写入的行数（merge = 新 id；overwrite = 全部导入行）。 */

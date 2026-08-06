@@ -135,7 +135,11 @@ pub fn read_all_peer_providers(paths: &Paths, self_device_id: &str) -> AppResult
 /// Both configs must parse (a blank/unparseable side ⇒ `Err`, and the caller
 /// skips that import): a peer version we can't merge into is not imported
 /// over a local row, and a local row whose key location we can't see is never
-/// replaced. A local row without an `env` block simply contributes no keys.
+/// replaced. A local row without an `env` object (missing, or not an object)
+/// contributes no keys instead of erroring: secret keys live only inside an
+/// `env` object, so a missing one means there is nothing to preserve — and
+/// refusing the import would freeze this row forever behind any peer edit,
+/// so its structure would never receive the peer's later updates.
 fn merge_local_keys(local: &Provider, peer: &Provider) -> AppResult<Provider> {
     let parse = |raw: &str, what: &str| -> AppResult<serde_json::Value> {
         serde_json::from_str(raw.trim())
@@ -147,15 +151,14 @@ fn merge_local_keys(local: &Provider, peer: &Provider) -> AppResult<Provider> {
     })?;
     if let Some(env) = config_obj.get_mut("env").and_then(|e| e.as_object_mut()) {
         let local_config = parse(&local.settings_config, "local provider")?;
-        let local_env = local_config
-            .get("env")
-            .and_then(|e| e.as_object())
-            .ok_or_else(|| {
-                AppError::Config("local provider settingsConfig has no env object".into())
-            })?;
-        for key in SECRET_ENV_KEYS {
-            if let Some(v) = local_env.get(*key) {
-                env.insert((*key).to_string(), v.clone());
+        // 本机行没有 env 对象（缺失或非对象）→ 没有可回填的 key：密钥只住在
+        // env 对象里，缺了就是没有可丢的 key——贡献零 key，让 peer 结构照常
+        // 导入，不阻塞该行接收后续结构更新。
+        if let Some(local_env) = local_config.get("env").and_then(|e| e.as_object()) {
+            for key in SECRET_ENV_KEYS {
+                if let Some(v) = local_env.get(*key) {
+                    env.insert((*key).to_string(), v.clone());
+                }
             }
         }
     }
@@ -605,6 +608,87 @@ mod tests {
         assert!(
             row.settings_config.contains("sk-local-key"),
             "local row untouched"
+        );
+    }
+
+    /// 本机行没有 env 块（或 env 非对象）不阻塞导入：密钥只住在 env 对象里，
+    /// 缺了就没有可丢的 key——贡献零 key，peer 的新结构照常落地，该行不会
+    /// 永远收不到 peer 的结构更新。
+    #[test]
+    fn import_peer_providers_local_without_env_still_imports_peer_structure() {
+        let s = mem();
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        // Local row has NO env block (older structure, t1).
+        s.import_provider(&provider(
+            "aaaaaaaa",
+            "Kimi",
+            r#"{"includeCoAuthoredBy":false}"#,
+            "2026-08-01T00:00:00.000Z",
+        ))
+        .unwrap();
+        // Peer: NEWER structure with an env block.
+        write_file(
+            &paths,
+            "bbccddee0011",
+            &[provider(
+                "aaaaaaaa",
+                "Kimi",
+                r#"{"env":{"ANTHROPIC_BASE_URL":"https://api.kimi.com"}}"#,
+                "2026-08-02T00:00:00.000Z",
+            )],
+        );
+
+        import_peer_providers(&s, &paths, "aabbccddeeff").unwrap();
+
+        let row = s.get_provider("aaaaaaaa").unwrap().unwrap();
+        assert_eq!(
+            row.updated_at, "2026-08-02T00:00:00.000Z",
+            "peer structure imported despite local row having no env"
+        );
+        let cfg: serde_json::Value = serde_json::from_str(&row.settings_config).unwrap();
+        assert_eq!(
+            cfg["env"]["ANTHROPIC_BASE_URL"], "https://api.kimi.com",
+            "peer env imported, zero keys merged"
+        );
+        assert!(!row.settings_config.contains("ANTHROPIC_AUTH_TOKEN"));
+    }
+
+    #[test]
+    fn import_peer_providers_local_garbage_env_contributes_zero_keys() {
+        let s = mem();
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        // Local env is not an object (garbage) — same zero-keys rule as missing.
+        s.import_provider(&provider(
+            "aaaaaaaa",
+            "Kimi",
+            r#"{"env":"garbage"}"#,
+            "2026-08-01T00:00:00.000Z",
+        ))
+        .unwrap();
+        write_file(
+            &paths,
+            "bbccddee0011",
+            &[provider(
+                "aaaaaaaa",
+                "Kimi",
+                r#"{"env":{"ANTHROPIC_BASE_URL":"https://api.kimi.com"}}"#,
+                "2026-08-02T00:00:00.000Z",
+            )],
+        );
+
+        import_peer_providers(&s, &paths, "aabbccddeeff").unwrap();
+
+        let row = s.get_provider("aaaaaaaa").unwrap().unwrap();
+        let cfg: serde_json::Value = serde_json::from_str(&row.settings_config).unwrap();
+        assert_eq!(
+            cfg["env"]["ANTHROPIC_BASE_URL"], "https://api.kimi.com",
+            "peer structure imported"
+        );
+        assert!(
+            cfg["env"].get("ANTHROPIC_AUTH_TOKEN").is_none(),
+            "本地 env 非对象 → 没有 key 可回填"
         );
     }
 

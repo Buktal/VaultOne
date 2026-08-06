@@ -26,6 +26,8 @@ pub const EXPORT_VERSION: u32 = 1;
 
 /// 导入冲突模式：merge = 已有 id 跳过（保留双方，按 id 去重）；overwrite =
 /// 同 id 以导入为准（后者胜），本地独有 id 保留（不做删除——保守迁移）。
+/// 两种模式都不还原导出方的排序：已存在行保留本地 `sort_index`（排序是本地
+/// 偏好，导入不做重排），导入的新行追加在末尾（`save_provider` 语义）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderImportMode {
@@ -45,8 +47,9 @@ pub struct ProviderExportDocument {
 }
 
 /// 导入结果计数，前端 toast 展示「导入 N 个、跳过 M 个」。用 `u32` 而非
-/// `usize`：specta 拒绝导出 BigInt 型（usize/u64...）字段，绑定的
-/// `bindings.ts` 会生成失败（#30 遗留，合入时靠手改 bindings 绕过）。
+/// `usize`：本类型跨 Rust→JS 边界走 tauri-specta 的 typed 导出，specta 拒绝
+/// BigInt 型（`usize`/`u64`/`i64`…）字段以避免 JS 精度损失——用 `usize`
+/// 会让 bindings.ts 生成失败。计数是行数（一次导入顶多几条），`u32` 足够。
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderImportReport {
@@ -192,16 +195,9 @@ pub fn apply_import(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
+    use crate::db::testutil::mem;
     use crate::model::ProviderCategory;
-
-    /// 空内存库（`db::testutil` 是 db 子模块私有，这里走公共的
-    /// `Store::open(":memory:")`，与 sync 模块测试一致）。
-    fn mem() -> Store {
-        Store::open(Path::new(":memory:")).unwrap()
-    }
 
     /// 构造一份带 env 密钥的 settingsConfig 文本（含非密钥 env 键和顶层字段，
     /// 模拟真实快照）。
@@ -423,6 +419,56 @@ mod tests {
             );
             assert_eq!(a.meta, b.meta);
         }
+    }
+
+    /// overwrite 导入已存在行时保留本地排序：不还原导出方的 `sort_index`
+    /// （排序是本地偏好），本地独有行保留，导入的新行追加在末尾。
+    #[test]
+    fn apply_import_overwrite_keeps_local_order_and_appends_new_rows() {
+        let s = mem();
+        let alpha = s
+            .save_provider(provider("", "Alpha", r#"{"env":{}}"#))
+            .unwrap();
+        let beta = s
+            .save_provider(provider("", "Beta", r#"{"env":{}}"#))
+            .unwrap();
+        // 本地顺序：Beta 在前、Alpha 在后。
+        s.reorder_providers(&[beta.id.clone(), alpha.id.clone()])
+            .unwrap();
+        let alpha_local = s.get_provider(&alpha.id).unwrap().unwrap();
+        assert_eq!(alpha_local.sort_index, 1, "本地顺序已生效");
+
+        // 「另一台设备」的导出：同 id 但携带不同的 sort_index，外加一个本地
+        // 没有的新 id。
+        let doc = export_document(
+            &[
+                provider(&alpha.id, "Alpha-imported", r#"{"env":{}}"#),
+                provider(&beta.id, "Beta-imported", r#"{"env":{}}"#),
+                provider("gammagamma", "Gamma", r#"{"env":{}}"#),
+            ],
+            true,
+            "ts",
+        )
+        .unwrap();
+
+        let report = apply_import(&s, &doc, ProviderImportMode::Overwrite).unwrap();
+        assert_eq!(report.imported, 3);
+        assert_eq!(report.skipped, 0);
+
+        let after = s.list_providers().unwrap();
+        let names: Vec<&str> = after.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["Beta-imported", "Alpha-imported", "Gamma"],
+            "已存在行保留本地顺序，新行追加在末尾"
+        );
+        let alpha_after = after.iter().find(|p| p.id == alpha.id).unwrap();
+        assert_eq!(
+            alpha_after.sort_index, alpha_local.sort_index,
+            "已存在行保留本地 sort_index，不还原导出方排序"
+        );
+        let gamma_after = after.iter().find(|p| p.id == "gammagamma").unwrap();
+        assert_eq!(gamma_after.sort_index, 2, "新行追加在末尾");
     }
 
     /// merge 导入不碰已有行：冲突行跳过，`updated_at` 不被刷新。

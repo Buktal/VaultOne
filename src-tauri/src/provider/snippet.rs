@@ -18,8 +18,7 @@
 //! 存储：片段是**全局一条**记录，存本机 config.json（`ConfigData` 的
 //! `common_config_snippet` / `common_config_snippet_enabled`），与
 //! `active_provider_id` 同属本机配置——config.json 从不进 git、不随同步仓库
-//! 走，因此本模块不碰任何 sync 文件；片段将来若要随供应商结构同步，由同步
-//! ticket 迁移，与本模块无关。
+//! 走，因此本模块不碰任何 sync 文件。
 //!
 //! 校验：`validate_snippet` 供 set 命令用——非法 JSON 或非对象 → `Err`；
 //! 空/纯空白合法（合并时视为 `{}`，即无操作）。写盘时启用的片段解析不了 →

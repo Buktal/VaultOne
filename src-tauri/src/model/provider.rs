@@ -16,8 +16,7 @@ use specta::Type;
 use crate::error::{AppError, AppResult};
 
 /// Provider category. `Custom` is the value for user-created providers; the
-/// rest describe the built-in presets (added by the preset ticket) so the
-/// list view can label and theme them.
+/// rest label and theme the built-in presets in the list view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderCategory {
