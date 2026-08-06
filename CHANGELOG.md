@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Jump between user turns** — opening a session now also mounts a slim panel beside the transcript listing every user message (width of ~16 Chinese characters, overflowing rows ellipsize). Click a row to jump straight to that message, the row for the message you're reading stays highlighted, and hovering any row shows its full text. The two panels open and close together.
+
+### Changed
+
+- **Long sessions open instantly** — the transcript now renders through a virtualized list (react-virtuoso), keeping only the messages near the viewport in the DOM. A multi-thousand-message session no longer stalls while every row is laid out at once, and scrolling stays smooth regardless of length.
+
 ### Fixed
 
 - **The 840×600 minimum window actually sticks now** — the lightweight-mode restore commands were re-applying an old 720×520 floor via `set_min_size`, silently overriding the raised minimum. The dashboard no longer restores undersized after a glance-card round-trip.

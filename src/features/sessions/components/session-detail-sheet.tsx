@@ -1,16 +1,23 @@
-// Session detail Sheet — the signature element of the sessions view. Header
-// carries the title (inline-renameable), source / project / timing / usage
-// stats, the favorite star, and the move-to-group picker. Body renders the
-// transcript as a three-voice timeline: assistant bubbles sit left, user
-// bubbles right (mirrored, corner-cut toward the edge), tool / system rows
-// span full width in the middle as the "workbench". Position encodes who spoke
-// — assistant with a model badge, user in its own tone, tool rows collapsible,
-// system muted. Messages collapse on click, expanded by default; tool rows
-// collapse to their name, collapsed by default.
+// Session detail — two panels that mount and unmount as one unit: the big
+// detail sheet (header + transcript timeline) parked right-56, and the small
+// turn-nav panel at the far right listing each user message for quick jumps.
 //
-// Pure rendering — all state + queries live in useSessionsBrowser. The
-// per-message expand state for tool rows is the only local state here; it is
-// transient UI interaction that does not belong in the hook.
+// Header carries the title (inline-renameable), source / project / timing /
+// usage stats, the favorite star, and the move-to-group picker. The transcript
+// is a three-voice timeline: assistant bubbles sit left, user bubbles right
+// (mirrored, corner-cut toward the edge), tool / system rows span full width in
+// the middle as the "workbench". Messages collapse on click, expanded by
+// default; tool rows collapse to their name, collapsed by default.
+//
+// Pure rendering — all state + queries live in useSessionsBrowser. The only
+// local state here is transient UI interaction that does not belong in the
+// hook: the per-message collapse map (lifted out of the rows because the
+// virtualized list unmounts off-screen rows and would lose per-row state) and
+// the turn-nav bookkeeping (useTurnNav). The transcript is virtualized
+// (react-virtuoso): only the rows near the viewport are in the DOM, so a
+// multi-thousand-message session stays fast no matter how long it grows.
+// Virtuoso measures each row's height dynamically, so collapsing a bubble
+// re-lays the list without any manual bookkeeping.
 
 import dayjs from "dayjs"
 import relativeTime from "dayjs/plugin/relativeTime"
@@ -27,13 +34,21 @@ import {
   User as UserIcon,
   Wrench,
 } from "lucide-react"
-import { type ReactNode, useState } from "react"
+import {
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import { useTranslation } from "react-i18next"
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso"
 import { EmptyState } from "@/components/empty-state"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Select,
   SelectContent,
@@ -47,6 +62,11 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { formatCost, formatInt, formatTokens } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import type {
@@ -54,6 +74,7 @@ import type {
   SessionMessage,
   SessionRow,
 } from "@/types/generated/bindings"
+import { firstLine } from "../derive"
 import { sessionSourceLabel } from "../source-labels"
 
 dayjs.extend(relativeTime)
@@ -62,6 +83,18 @@ dayjs.extend(relativeTime)
  *  Mirrors the sidebar's ALL/UNGROUPED sentinels but the detail picker only
  *  needs "none" (clear the assignment) vs a real group. */
 const NO_GROUP = "__none__"
+
+/** How far below the transcript's top a jumped-to user turn lands. */
+const TURN_OFFSET = 72
+
+/** Turn-nav panel layout. Width ≈ 16 Chinese characters; both margins are the
+ *  breathing room around the small panel. The detail sheet's right offset is
+ *  their sum (right margin + panel width + inter-panel gap), so the two panels
+ *  tile with a gap whatever these become. Set inline because it must beat the
+ *  sheet primitive's own `right-0` / `right-56` positioning. */
+const NAV_PANEL_WIDTH = "14rem" // w-56
+const NAV_PANEL_RIGHT = "0.75rem" // 12px from the window edge
+const NAV_PANEL_GAP = "0.75rem" // 12px between the two panels
 
 export interface SessionDetailSheetProps {
   session: SessionRow
@@ -110,128 +143,161 @@ export function SessionDetailSheet(props: SessionDetailSheetProps) {
     onRefreshTranscript,
     deviceLabel,
   } = props
+  const turnNav = useTurnNav(transcript)
+  // Which rows the user has collapsed. Kept here (not per row) because the
+  // virtualized list unmounts rows that scroll out of view — per-row state
+  // would be lost on the way back. Messages default expanded, tool rows
+  // default collapsed, so a row's open state is "in set" xor "is a tool row".
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const toggleCollapsed = useCallback((uuid: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(uuid)) next.delete(uuid)
+      else next.add(uuid)
+      return next
+    })
+  }, [])
+  const isOpen = useCallback(
+    (uuid: string, role: string) =>
+      role === "tool" ? collapsed.has(uuid) : !collapsed.has(uuid),
+    [collapsed],
+  )
 
   return (
-    <Sheet open={true} onOpenChange={(o) => !o && onClose()}>
-      <SheetContent
-        showClose={false}
-        // Width tracks the window: `100vw - 32rem` leaves the sidebar + the
-        // full title column of the list visible in the background (~70% of
-        // the window), so the user can still tell which session is open.
-        // `min-w` keeps narrow windows from squeezing the transcript below a
-        // readable size; `sm:max-w-none` overrides the sheet primitive's
-        // default 24rem cap.
-        className="flex w-[calc(100vw-32rem)] min-w-[32rem] flex-col gap-0 overflow-hidden p-0 sm:max-w-none"
-      >
-        {/* Header: title + meta + actions */}
-        <SheetHeader className="border-border gap-2 border-b p-4 pr-10">
-          {/* Rename trigger: only the title text + pencil icon are clickable
-            (w-fit), not the rest of the row. The pencil makes the affordance
-            visible; the whole button is a native <button> so it stays
-            keyboard-accessible. */}
-          {editTitle ? (
-            <div className="flex items-center gap-1">
-              <Input
-                value={titleDraft}
-                onChange={(e) => onTitleDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") onCommitTitle()
-                  if (e.key === "Escape") onCancelTitle()
-                }}
-                className="h-7"
-                autoFocus
-              />
-              <Button variant="ghost" size="sm" onClick={onCommitTitle}>
-                {t("common.save")}
-              </Button>
-              <Button variant="ghost" size="icon-sm" onClick={onCancelTitle}>
-                {t("common.cancel")}
-              </Button>
-            </div>
-          ) : (
-            <SheetTitle className="text-base">
-              <button
-                type="button"
-                onClick={onStartTitle}
-                title={t("sessions.detail.renameHint")}
-                className="hover:text-accent-brand-strong group flex w-fit max-w-full cursor-pointer items-center gap-1.5 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
-              >
-                <span className="max-w-[24rem] truncate">
-                  {s.title || t("sessions.untitled")}
-                </span>
-                <Pencil className="text-muted-foreground size-3.5 shrink-0 opacity-60 transition-opacity group-hover:opacity-100" />
-              </button>
-            </SheetTitle>
-          )}
-          <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-            <Badge variant="secondary">{sessionSourceLabel(s.source)}</Badge>
-            <span className="truncate" title={s.project_dir}>
-              {s.project_dir || "—"}
-            </span>
-            <span>{deviceLabel(s.device_id)}</span>
-            <span title={dayjs(s.last_active_at).format("YYYY-MM-DD HH:mm")}>
-              {s.last_active_at ? dayjs(s.last_active_at).fromNow() : "—"}
-            </span>
-          </div>
-          <div className="text-muted-foreground flex items-center gap-3 text-xs tabular-nums">
-            <span>
-              {formatInt(s.request_count)} {t("sessions.col.requests")}
-            </span>
-            <span>{formatTokens(s.total_tokens)} tok</span>
-            <span>{formatCost(s.total_cost_usd)}</span>
-          </div>
-          <div className="flex items-center gap-2 pt-1">
-            <Button
-              variant={favorited ? "default" : "outline"}
-              size="sm"
-              className="h-7"
-              onClick={onToggleFavorite}
-            >
-              <Star className={cn("size-4", favorited && "fill-current")} />
-              {favorited
-                ? t("sessions.row.unfavorite")
-                : t("sessions.row.favorite")}
-            </Button>
-            <Select
-              value={currentGroupId || NO_GROUP}
-              onValueChange={(v) =>
-                onSetGroup(v === NO_GROUP ? null : (v ?? null))
-              }
-            >
-              <SelectTrigger className="h-8 w-48" size="sm">
-                <SelectValue>
-                  {(val: string) => {
-                    if (val === NO_GROUP) return t("sessions.detail.noGroup")
-                    return (
-                      trackGroups.find((g) => g.id === val)?.name ??
-                      t("sessions.detail.noGroup")
-                    )
+    <>
+      <Sheet open={true} onOpenChange={(o) => !o && onClose()}>
+        <SheetContent
+          showClose={false}
+          // Width = 60% of the window: the transcript gets the larger share
+          // while the list stays readable beside the open sheet, so the user can
+          // still tell which session is open. The inline `right` parks the sheet
+          // clear of the turn-nav panel plus its margins (see NAV_PANEL_*).
+          // `min-w` keeps narrow windows from squeezing the transcript below a
+          // readable size; `sm:max-w-none` overrides the primitive's 24rem cap.
+          style={{
+            right: `calc(${NAV_PANEL_RIGHT} + ${NAV_PANEL_WIDTH} + ${NAV_PANEL_GAP})`,
+          }}
+          className="flex w-[60vw] min-w-[32rem] flex-col gap-0 overflow-hidden p-0 sm:max-w-none"
+        >
+          {/* Header: title + meta + actions */}
+          <SheetHeader className="border-border gap-2 border-b p-4 pr-10">
+            {/* Rename trigger: only the title text + pencil icon are clickable
+              (w-fit), not the rest of the row. The pencil makes the affordance
+              visible; the whole button is a native <button> so it stays
+              keyboard-accessible. */}
+            {editTitle ? (
+              <div className="flex items-center gap-1">
+                <Input
+                  value={titleDraft}
+                  onChange={(e) => onTitleDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") onCommitTitle()
+                    if (e.key === "Escape") onCancelTitle()
                   }}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={NO_GROUP}>
-                  {t("sessions.detail.noGroup")}
-                </SelectItem>
-                {trackGroups.map((g) => (
-                  <SelectItem key={g.id} value={g.id}>
-                    {g.name}
+                  className="h-7"
+                  autoFocus
+                />
+                <Button variant="ghost" size="sm" onClick={onCommitTitle}>
+                  {t("common.save")}
+                </Button>
+                <Button variant="ghost" size="icon-sm" onClick={onCancelTitle}>
+                  {t("common.cancel")}
+                </Button>
+              </div>
+            ) : (
+              <SheetTitle className="text-base">
+                <button
+                  type="button"
+                  onClick={onStartTitle}
+                  title={t("sessions.detail.renameHint")}
+                  className="hover:text-accent-brand-strong group flex w-fit max-w-full cursor-pointer items-center gap-1.5 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                >
+                  <span className="max-w-[24rem] truncate">
+                    {s.title || t("sessions.untitled")}
+                  </span>
+                  <Pencil className="text-muted-foreground size-3.5 shrink-0 opacity-60 transition-opacity group-hover:opacity-100" />
+                </button>
+              </SheetTitle>
+            )}
+            <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+              <Badge variant="secondary">{sessionSourceLabel(s.source)}</Badge>
+              <span className="truncate" title={s.project_dir}>
+                {s.project_dir || "—"}
+              </span>
+              <span>{deviceLabel(s.device_id)}</span>
+              <span title={dayjs(s.last_active_at).format("YYYY-MM-DD HH:mm")}>
+                {s.last_active_at ? dayjs(s.last_active_at).fromNow() : "—"}
+              </span>
+            </div>
+            <div className="text-muted-foreground flex items-center gap-3 text-xs tabular-nums">
+              <span>
+                {formatInt(s.request_count)} {t("sessions.col.requests")}
+              </span>
+              <span>{formatTokens(s.total_tokens)} tok</span>
+              <span>{formatCost(s.total_cost_usd)}</span>
+            </div>
+            <div className="flex items-center gap-2 pt-1">
+              <Button
+                variant={favorited ? "default" : "outline"}
+                size="sm"
+                className="h-7"
+                onClick={onToggleFavorite}
+              >
+                <Star className={cn("size-4", favorited && "fill-current")} />
+                {favorited
+                  ? t("sessions.row.unfavorite")
+                  : t("sessions.row.favorite")}
+              </Button>
+              <Select
+                value={currentGroupId || NO_GROUP}
+                onValueChange={(v) =>
+                  onSetGroup(v === NO_GROUP ? null : (v ?? null))
+                }
+              >
+                <SelectTrigger className="h-8 w-48" size="sm">
+                  <SelectValue>
+                    {(val: string) => {
+                      if (val === NO_GROUP) return t("sessions.detail.noGroup")
+                      return (
+                        trackGroups.find((g) => g.id === val)?.name ??
+                        t("sessions.detail.noGroup")
+                      )
+                    }}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_GROUP}>
+                    {t("sessions.detail.noGroup")}
                   </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </SheetHeader>
+                  {trackGroups.map((g) => (
+                    <SelectItem key={g.id} value={g.id}>
+                      {g.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </SheetHeader>
 
-        {/* Body: transcript timeline */}
-        <TranscriptBody
-          messages={transcript}
-          loading={transcriptLoading}
-          error={transcriptError}
-          onRefresh={onRefreshTranscript}
-        />
-      </SheetContent>
-    </Sheet>
+          {/* Body: transcript timeline */}
+          <TranscriptBody
+            messages={transcript}
+            loading={transcriptLoading}
+            error={transcriptError}
+            onRefresh={onRefreshTranscript}
+            virtuosoRef={turnNav.virtuosoRef}
+            onRangeChanged={turnNav.onRangeChanged}
+            isOpen={isOpen}
+            onToggle={toggleCollapsed}
+          />
+        </SheetContent>
+      </Sheet>
+      <TurnNavPanel
+        turns={turnNav.turns}
+        activeUuid={turnNav.activeUuid}
+        jumpTo={turnNav.jumpTo}
+      />
+    </>
   )
 }
 
@@ -240,11 +306,19 @@ function TranscriptBody({
   loading,
   error,
   onRefresh,
+  virtuosoRef,
+  onRangeChanged,
+  isOpen,
+  onToggle,
 }: {
   messages: SessionMessage[]
   loading: boolean
   error: unknown
   onRefresh: () => void
+  virtuosoRef: RefObject<VirtuosoHandle | null>
+  onRangeChanged: (range: { startIndex: number }) => void
+  isOpen: (uuid: string, role: string) => boolean
+  onToggle: (uuid: string) => void
 }) {
   const { t } = useTranslation()
 
@@ -282,21 +356,181 @@ function TranscriptBody({
     )
   }
   return (
-    <ScrollArea className="min-h-0 flex-1">
-      <div className="flex flex-col gap-2 p-4">
-        {messages.map((m) => (
-          <MessageRow key={m.uuid} message={m} />
-        ))}
-      </div>
-    </ScrollArea>
+    <Virtuoso
+      ref={virtuosoRef}
+      className="min-h-0 flex-1"
+      data={messages}
+      computeItemKey={(_, m) => m.uuid}
+      rangeChanged={onRangeChanged}
+      itemContent={(index, m) => (
+        // Padding lives on the row wrapper (not the list) so Virtuoso can size
+        // each row independently; the first row carries the top padding.
+        <div className={cn("px-4 pb-2", index === 0 ? "pt-4" : "pt-2")}>
+          <MessageRow
+            message={m}
+            open={isOpen(m.uuid, m.role)}
+            onToggle={() => onToggle(m.uuid)}
+          />
+        </div>
+      )}
+    />
   )
 }
 
-function MessageRow({ message: m }: { message: SessionMessage }) {
-  // Per-message collapse state, expanded by default. Clicking a bubble
-  // collapses it to a one-line summary.
-  const [open, setOpen] = useState(true)
-  const toggle = () => setOpen((o) => !o)
+/**
+ * Drive the turn-nav panel from the virtualized transcript. Where the row for
+ * a user turn sits is whatever Virtuoso reports through rangeChanged (the
+ * first message index in view), and jumping hands the index straight to
+ * scrollToIndex — no DOM measurement, so it stays correct no matter how many
+ * rows are virtualized away. Transient interaction, deliberately local to the
+ * detail view (not in useSessionsBrowser).
+ */
+function useTurnNav(messages: SessionMessage[]) {
+  const virtuosoRef = useRef<VirtuosoHandle>(null)
+  // Each user turn plus its index in the full message array. rangeChanged and
+  // scrollToIndex speak in message indices, so the mapping must be kept.
+  const turns = useMemo(
+    () =>
+      messages.flatMap((m, index) =>
+        m.role === "user" ? [{ index, message: m }] : [],
+      ),
+    [messages],
+  )
+  const [activeUuid, setActiveUuid] = useState<string | null>(null)
+
+  // Virtuoso reports the first visible message index; the active turn is the
+  // last user turn at or above it — i.e. the message the user is reading near
+  // the top. setState returns the same value when nothing changed, so Virtuoso
+  // reporting on every scroll frame does not re-render.
+  const onRangeChanged = useCallback(
+    ({ startIndex }: { startIndex: number }) => {
+      let active: string | null = null
+      for (const t of turns) {
+        if (t.index <= startIndex) active = t.message.uuid
+        else break
+      }
+      setActiveUuid((prev) => (prev === active ? prev : active))
+    },
+    [turns],
+  )
+
+  const jumpTo = useCallback(
+    (uuid: string) => {
+      const turn = turns.find((t) => t.message.uuid === uuid)
+      if (!turn) return
+      // Virtuoso adds `offset` onto the target scrollTop, so a positive value
+      // shoves the row above the viewport top; a negative one parks it
+      // TURN_OFFSET below it (the same landing spot as the pre-virtualization
+      // measurement).
+      virtuosoRef.current?.scrollToIndex({
+        index: turn.index,
+        align: "start",
+        offset: -TURN_OFFSET,
+        behavior: "smooth",
+      })
+    },
+    [turns],
+  )
+
+  return {
+    turns: turns.map((t) => t.message),
+    activeUuid,
+    jumpTo,
+    virtuosoRef,
+    onRangeChanged,
+  }
+}
+
+/**
+ * The small nav panel beside the detail sheet: one row per user turn, the row
+ * label is the turn's first line (truncated to the panel's ~16-char width),
+ * clicking jumps the transcript to it, the row for the turn currently being
+ * read stays highlighted, and hovering reads the full message. Height follows
+ * the message count (capped at the window, then it scrolls). Mounts with the
+ * sheet and slides in from the same side, so the two move as one unit.
+ */
+function TurnNavPanel({
+  turns,
+  activeUuid,
+  jumpTo,
+}: {
+  turns: SessionMessage[]
+  activeUuid: string | null
+  jumpTo: (uuid: string) => void
+}) {
+  const { t } = useTranslation()
+  // Keep the highlighted row visible when the panel scrolls internally — on a
+  // long session the turn being read could otherwise sit off-screen. `nearest`
+  // only scrolls when the row is actually out of view, so it never fights the
+  // user's own scrolling.
+  const activeRef = useRef<HTMLButtonElement>(null)
+  useLayoutEffect(() => {
+    if (!activeUuid) return
+    activeRef.current?.scrollIntoView({ block: "nearest" })
+  }, [activeUuid])
+  if (turns.length === 0) return null
+  return (
+    <nav
+      aria-label={t("sessions.detail.turnNav")}
+      className="animate-in fixed top-1/2 z-[60] -translate-y-1/2 slide-in-from-right duration-200"
+      style={{ right: NAV_PANEL_RIGHT, width: NAV_PANEL_WIDTH }}
+    >
+      <div className="max-h-[calc(100vh-4rem)] overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-lg">
+        {turns.map((turn) => {
+          const active = turn.uuid === activeUuid
+          return (
+            <Tooltip key={turn.uuid}>
+              <TooltipTrigger
+                render={
+                  <button
+                    type="button"
+                    ref={active ? activeRef : undefined}
+                    onClick={() => jumpTo(turn.uuid)}
+                    className={cn(
+                      "flex w-full min-w-0 items-center rounded px-1.5 py-1 text-left text-xs focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none",
+                      active
+                        ? "bg-accent-tint text-foreground"
+                        : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                    )}
+                  />
+                }
+              >
+                <span className="truncate">
+                  {firstLine(turn.content) || "—"}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent
+                side="left"
+                align="start"
+                sideOffset={8}
+                // Override the shared tooltip's inverted colors — a full-text
+                // read needs the theme's surface, not a high-contrast chip.
+                className="max-h-72 max-w-md overflow-y-auto border border-border bg-popover! text-[13px] text-popover-foreground!"
+              >
+                <div className="text-muted-foreground mb-1 text-[10px] tabular-nums">
+                  {turn.ts ? dayjs(turn.ts).format("MM/DD HH:mm") : "—"}
+                </div>
+                <div className="break-words whitespace-pre-wrap">
+                  {turn.content}
+                </div>
+              </TooltipContent>
+            </Tooltip>
+          )
+        })}
+      </div>
+    </nav>
+  )
+}
+
+function MessageRow({
+  message: m,
+  open,
+  onToggle,
+}: {
+  message: SessionMessage
+  open: boolean
+  onToggle: () => void
+}) {
   switch (m.role) {
     case "assistant":
       return (
@@ -306,7 +540,7 @@ function MessageRow({ message: m }: { message: SessionMessage }) {
           time={m.ts}
           model={m.model}
           open={open}
-          onToggle={toggle}
+          onToggle={onToggle}
           copyText={m.content}
         >
           <Content text={m.content} className={cn(!open && "line-clamp-1")} />
@@ -319,14 +553,14 @@ function MessageRow({ message: m }: { message: SessionMessage }) {
           tone="user"
           time={m.ts}
           open={open}
-          onToggle={toggle}
+          onToggle={onToggle}
           copyText={m.content}
         >
           <Content text={m.content} className={cn(!open && "line-clamp-1")} />
         </BaseRow>
       )
     case "tool":
-      return <ToolRow message={m} />
+      return <ToolRow message={m} open={open} onToggle={onToggle} />
     case "system":
       return (
         <BaseRow
@@ -334,7 +568,7 @@ function MessageRow({ message: m }: { message: SessionMessage }) {
           tone="system"
           time={m.ts}
           open={open}
-          onToggle={toggle}
+          onToggle={onToggle}
           copyText={m.content}
         >
           <Content text={m.content} className={cn(!open && "line-clamp-1")} />
@@ -345,12 +579,18 @@ function MessageRow({ message: m }: { message: SessionMessage }) {
   }
 }
 
-function ToolRow({ message: m }: { message: SessionMessage }) {
+function ToolRow({
+  message: m,
+  open,
+  onToggle,
+}: {
+  message: SessionMessage
+  open: boolean
+  onToggle: () => void
+}) {
   // Collapsed by default — tool output is the noisy part of a transcript, so
   // it hides behind the tool name until clicked (messages stay expanded).
-  const [open, setOpen] = useState(false)
-  const toggle = () => setOpen((o) => !o)
-  const name = m.name || m.content?.split("\n")[0] || "tool"
+  const name = m.name || firstLine(m.content) || "tool"
   return (
     <div className="bg-muted/40 group rounded-md border border-dashed px-3 py-2 text-xs">
       {/* biome-ignore lint/a11y/useSemanticElements: collapse trigger must not
@@ -359,11 +599,11 @@ function ToolRow({ message: m }: { message: SessionMessage }) {
       <div
         role="button"
         tabIndex={0}
-        onClick={toggle}
+        onClick={onToggle}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault()
-            toggle()
+            onToggle()
           }
         }}
         aria-expanded={open}

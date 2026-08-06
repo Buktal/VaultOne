@@ -4339,6 +4339,16 @@ __metadata:
   languageName: node
   linkType: hard
 
+"react-virtuoso@npm:^4.18.11":
+  version: 4.18.11
+  resolution: "react-virtuoso@npm:4.18.11"
+  peerDependencies:
+    react: ">=16 || >=17 || >= 18 || >= 19"
+    react-dom: ">=16 || >=17 || >= 18 || >=19"
+  checksum: 10c0/56795b3734feab17844fcceab2c41240b6241c7652c20efddec3207474596f2f305766ae46b5c114fd14a385a0b50ea1e9c2a2d8b77e9e53fa4dc98945360130
+  languageName: node
+  linkType: hard
+
 "react@npm:^19.1.0":
   version: 19.2.8
   resolution: "react@npm:19.2.8"
@@ -5181,6 +5191,7 @@ __metadata:
     react-i18next: "npm:^17.0.11"
     react-is: "npm:^19.2.7"
     react-redux: "npm:^9.3.0"
+    react-virtuoso: "npm:^4.18.11"
     recharts: "npm:^3.9.2"
     shadcn: "npm:^4.13.1"
     sonner: "npm:^2.0.7"

@@ -124,6 +124,7 @@
   "sessions.detail.renameHint": "Click to rename",
   "sessions.detail.transcriptCollecting": "Collecting transcript",
   "sessions.detail.transcriptCollectingHint": "The original conversation is collected on the next run (about 30s). Refresh once it lands.",
+  "sessions.detail.turnNav": "Your messages — click to jump",
   "sessions.empty.desc": "Sessions are collected from local CLI logs. Run a supported CLI (Claude Code) and come back after a collect.",
   "sessions.empty.title": "No sessions yet",
   "sessions.filter.all": "All",

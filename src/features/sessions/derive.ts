@@ -310,3 +310,11 @@ export function applyGroupOrder(
     (a, b) => (rank.get(a.id) ?? 1_000_000) - (rank.get(b.id) ?? 1_000_000),
   )
 }
+
+// ------------------------------------------------------------- transcript --
+
+/** First line of a message — the one-line label for a tool row header and the
+ *  turn-nav panel row. Empty text yields "". */
+export function firstLine(text: string): string {
+  return text.split("\n")[0]
+}

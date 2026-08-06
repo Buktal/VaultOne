@@ -12,6 +12,7 @@ import {
   effectiveFavorite,
   favKey,
   filterSessionsByQuery,
+  firstLine,
   groupSessionsByGroup,
   nextFavValue,
   reorderGroupIds,
@@ -468,5 +469,21 @@ describe("applyGroupOrder", () => {
     // "c" was deleted mid-flight — it still renders, at the end.
     const out = applyGroupOrder(groups(["a", "b", "c"]), ["b", "a"])
     expect(out.map((g) => g.id)).toEqual(["b", "a", "c"])
+  })
+})
+
+// ------------------------------------------------------------- transcript --
+
+describe("firstLine", () => {
+  it("returns the first line of multiline text", () => {
+    expect(firstLine("hello\nworld\n")).toBe("hello")
+  })
+
+  it("single-line text returns itself", () => {
+    expect(firstLine("solo")).toBe("solo")
+  })
+
+  it("empty text yields an empty string", () => {
+    expect(firstLine("")).toBe("")
   })
 })
