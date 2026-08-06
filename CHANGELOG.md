@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-08-06
+
+### Added
+
+- **Copy buttons on every message** — hover (or keyboard-focus) a message row in a session's transcript and a copy button appears; clicking it puts the raw text on your clipboard with a momentary checkmark.
+- **Window-tracking detail sheet** — the session detail panel now spans ~70% of the window (`100vw - 32rem`), leaving the sidebar and the title column of the list visible behind it, so you always know which session is open.
+
+### Changed
+
+- **Three-voice transcript layout** — assistant messages float left, user messages float right as a mirrored bubble (corner cut toward the edge), tool and system rows span the full width in the middle as the workbench. Position alone tells you who spoke.
+- **Tighter message headers** — icon, time, and model badge share one line; on user messages the group mirrors to the bubble's right edge so the time sits flush against it, aligned with the edge of the sheet.
+- **Collapsible messages, quiet tool rows** — every message collapses on click (expanded by default); tool rows collapse to their tool name by default, and tool output is styled as a monospace code panel.
+- **Aligned group counts** — the group sidebar's counts always sit flush right, matching the plain All / Ungrouped rows; the edit menu slides the count aside on hover instead of occupying space at rest.
+
+### Fixed
+
+- **Tool rows cleaned up** — the duplicated icon pair is gone, and a tool without a name truncates its content's first line instead of stretching the row.
+
 ## [1.6.0] - 2026-08-06
 
 ### Added
