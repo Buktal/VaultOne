@@ -418,6 +418,11 @@ export const vaultApi = createApi({
       queryFn: async () => run(commands.listProvidersCmd()),
       providesTags: ["Providers"],
     }),
+    /** 当前激活的完整 provider（「当前使用」光卡）；未激活/已删除 → null。 */
+    getActiveProvider: b.query<Provider | null, void>({
+      queryFn: async () => run(commands.getActiveProviderCmd()),
+      providesTags: ["Providers"],
+    }),
     saveProvider: b.mutation<Provider, Provider>({
       queryFn: async (provider) => run(commands.saveProviderCmd(provider)),
       invalidatesTags: ["Providers"],
@@ -429,6 +434,11 @@ export const vaultApi = createApi({
     reorderProviders: b.mutation<null, string[]>({
       queryFn: async (orderedIds) =>
         run(commands.reorderProvidersCmd(orderedIds)),
+      invalidatesTags: ["Providers"],
+    }),
+    /** 切换供应商：写盘 + 备份 + 记激活（ADR-0005 受控合并）。 */
+    switchProvider: b.mutation<Provider, string>({
+      queryFn: async (id) => run(commands.switchProviderCmd(id)),
       invalidatesTags: ["Providers"],
     }),
 
@@ -524,9 +534,11 @@ export const {
   useReorderLocalGroupsMutation,
   useReorderSyncedGroupsMutation,
   useListProvidersQuery,
+  useGetActiveProviderQuery,
   useSaveProviderMutation,
   useDeleteProviderMutation,
   useReorderProvidersMutation,
+  useSwitchProviderMutation,
 } = vaultApi
 
 export type VaultApi = typeof vaultApi

@@ -189,6 +189,33 @@ export const commands = {
 	deleteProviderCmd: (id: string) => typedError<null, AppError>(__TAURI_INVOKE("delete_provider_cmd", { id })),
 	reorderProvidersCmd: (orderedIds: string[]) => typedError<null, AppError>(__TAURI_INVOKE("reorder_providers_cmd", { orderedIds })),
 	/**
+	 *  切换供应商（核心动作）：查 provider → 读 live → 受控合并 → 备份 .bak →
+	 *  原子写 → 记激活状态。写盘语义见 ADR-0005——只替换受控字段（env + 少数顶层
+	 *  开关），非受控字段（hooks / MCP / permissions / model 等）从 live 原地保留，
+	 *  不整文件覆盖、不做 Backfill。「保存」只写 DB（save_provider_cmd），本命令
+	 *  才真正写盘。
+	 */
+	switchProviderCmd: (id: string) => typedError<Provider, AppError>(__TAURI_INVOKE("switch_provider_cmd", { id })),
+	/**
+	 *  当前激活的完整 provider（前端「当前使用」光卡用）。未激活、或激活的
+	 *  provider 已被删除 → `None`。
+	 */
+	getActiveProviderCmd: () => typedError<{
+	id: string,
+	name: string,
+	websiteUrl: string,
+	category: ProviderCategory,
+	icon: string,
+	iconColor: string,
+	sortIndex: number,
+	notes: string,
+	/**  Claude Code `settings.json` snapshot, raw JSON text. */
+	settingsConfig: string,
+	/**  App-side extras, raw JSON text. Never written to the live file. */
+	meta: string,
+	updatedAt: string,
+} | null, AppError>(__TAURI_INVOKE("get_active_provider_cmd")),
+	/**
 	 *  Dock the given window against the right edge of its current monitor.
 	 * 
 	 *  `client_logical_w/h` is the desired CLIENT (visible content) size in logical

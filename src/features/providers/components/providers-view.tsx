@@ -14,7 +14,11 @@ import { useSortable } from "@dnd-kit/react/sortable"
 import { Pencil, Plus, Trash2 } from "lucide-react"
 import { useState } from "react"
 import { useTranslation } from "react-i18next"
-import { useDeleteProviderMutation } from "@/app/store/api"
+import {
+  useDeleteProviderMutation,
+  useGetActiveProviderQuery,
+  useSwitchProviderMutation,
+} from "@/app/store/api"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -34,7 +38,10 @@ import { ProviderFormSheet } from "./provider-form-sheet"
 export function ProvidersView() {
   const { t } = useTranslation()
   const { providers, isLoading, onReorder } = useProvidersBrowser()
+  const { data: activeProvider, isLoading: activeLoading } =
+    useGetActiveProviderQuery()
   const [remove] = useDeleteProviderMutation()
+  const [switchProvider] = useSwitchProviderMutation()
   const runWithToast = useMutateWithToast()
 
   const [sheetOpen, setSheetOpen] = useState(false)
@@ -75,6 +82,16 @@ export function ProvidersView() {
     })
   }
 
+  async function onSwitch(p: Provider) {
+    await runWithToast(switchProvider, p.id, {
+      success: { key: "providers.toast.switched", vars: { name: p.name } },
+      failed: { key: "providers.toast.switchFailed" },
+    })
+  }
+
+  const activeEndpoint = activeProvider ? providerEndpoint(activeProvider) : ""
+  const activeModel = activeProvider ? providerModel(activeProvider) : ""
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
       <div className="flex items-center justify-end">
@@ -83,6 +100,37 @@ export function ProvidersView() {
           {t("providers.add")}
         </Button>
       </div>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">
+            {t("providers.active.title")}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="py-3">
+          {activeLoading ? (
+            <div className="text-muted-foreground text-sm">
+              {t("common.loading")}
+            </div>
+          ) : activeProvider ? (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+              <span className="font-medium">{activeProvider.name}</span>
+              <span
+                className="text-muted-foreground font-mono text-xs truncate"
+                title={activeEndpoint}
+              >
+                {activeEndpoint || "—"}
+              </span>
+              <span className="text-muted-foreground text-xs truncate">
+                {activeModel || "—"}
+              </span>
+            </div>
+          ) : (
+            <div className="text-muted-foreground text-sm">
+              {t("providers.active.none")}
+            </div>
+          )}
+        </CardContent>
+      </Card>
       <Card className="min-h-0 flex-1">
         <CardHeader>
           <CardTitle>{t("providers.title")}</CardTitle>
@@ -103,7 +151,7 @@ export function ProvidersView() {
                 <span>{t("providers.col.category")}</span>
                 <span>{t("providers.col.endpoint")}</span>
                 <span>{t("providers.col.model")}</span>
-                <span className="w-16" />
+                <span className="w-40" />
               </div>
               <DragDropProvider sensors={sensors} onDragEnd={handleDragEnd}>
                 {providers.map((p, i) => (
@@ -111,8 +159,10 @@ export function ProvidersView() {
                     key={p.id}
                     provider={p}
                     index={i}
+                    isActive={activeProvider?.id === p.id}
                     onEdit={() => openEdit(p)}
                     onDelete={() => void onDelete(p)}
+                    onSwitch={() => void onSwitch(p)}
                   />
                 ))}
               </DragDropProvider>
@@ -134,13 +184,17 @@ export function ProvidersView() {
 function ProviderRow({
   provider: p,
   index,
+  isActive,
   onEdit,
   onDelete,
+  onSwitch,
 }: {
   provider: Provider
   index: number
+  isActive: boolean
   onEdit: () => void
   onDelete: () => void
+  onSwitch: () => void
 }) {
   const { t } = useTranslation()
   const { ref, isDragging } = useSortable({ id: p.id, index })
@@ -166,6 +220,20 @@ function ProviderRow({
         {model || "—"}
       </span>
       <div className="flex justify-end gap-1">
+        {isActive ? (
+          <Badge variant="outline" className="h-7 shrink-0 px-2 font-normal">
+            {t("providers.active.inUse")}
+          </Badge>
+        ) : (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onSwitch}
+            className="shrink-0"
+          >
+            {t("providers.switch")}
+          </Button>
+        )}
         <Tooltip>
           <TooltipTrigger
             render={

@@ -101,6 +101,18 @@ impl super::Store {
         Ok(())
     }
 
+    /// 按 id 取一个 provider；不存在 → `None`。供「切换」与「当前使用」光卡
+    /// 用——避免拉全表再过滤。
+    pub fn get_provider(&self, id: &str) -> AppResult<Option<Provider>> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, name, website_url, category, icon, icon_color, sort_index, \
+             notes, settings_config, meta, updated_at FROM provider WHERE id = ?1",
+        )?;
+        let row = stmt.query_row(params![id], row_to_provider).optional()?;
+        Ok(row)
+    }
+
     /// Apply a full new display order: each id's `sort_index` becomes its
     /// index in `ordered_ids`. Unknown ids are ignored and absent ids keep
     /// their old position — same tolerant semantics as
@@ -189,7 +201,8 @@ mod tests {
             .save_provider(provider("First", ProviderCategory::Custom))
             .unwrap();
         // Reorder so First is last, then edit it.
-        s.reorder_providers(&[created.id.clone()]).unwrap();
+        s.reorder_providers(std::slice::from_ref(&created.id))
+            .unwrap();
         let mut edited = created.clone();
         edited.name = "Renamed".into();
         edited.sort_index = 99; // caller must not be able to move via save
@@ -243,6 +256,19 @@ mod tests {
             .unwrap();
         s.delete_provider(&p.id).unwrap();
         assert!(s.list_providers().unwrap().is_empty());
+    }
+
+    #[test]
+    fn get_provider_finds_by_id_and_returns_none_for_missing() {
+        let s = mem();
+        let p = s
+            .save_provider(provider("Alpha", ProviderCategory::Custom))
+            .unwrap();
+        let found = s.get_provider(&p.id).unwrap().expect("row must exist");
+        assert_eq!(found.id, p.id);
+        assert_eq!(found.name, "Alpha");
+        assert_eq!(found.settings_config, r#"{"env":{}}"#);
+        assert!(s.get_provider("no-such-id").unwrap().is_none());
     }
 
     #[test]

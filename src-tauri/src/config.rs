@@ -224,6 +224,10 @@ pub struct ConfigData {
     /// on it, but it rides ConfigData so every Settings preference is unified.
     #[serde(default)]
     pub skin: Skin,
+    /// 当前激活的供应商 id（「切换供应商」时记录）。存本机 config.json，
+    /// 重启后保持、不进 git。未激活时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_provider_id: Option<String>,
 }
 
 impl Default for ConfigData {
@@ -243,6 +247,7 @@ impl Default for ConfigData {
             language: Language::En,
             lightweight_expand: LightweightExpand::Click,
             skin: Skin::Neutral,
+            active_provider_id: None,
         }
     }
 }
