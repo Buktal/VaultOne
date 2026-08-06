@@ -970,4 +970,119 @@ mod tests {
             .collect();
         assert_eq!(ids, [g3.id, g1.id, g2.id], "B sees A's drag order");
     }
+
+    /// Provider sync carries STRUCTURE across devices and never a key: A
+    /// creates a provider with a key and pushes; B pulls and sees the
+    /// structure (name / endpoint) with an empty key, fills its own key and
+    /// pushes; A pulls and keeps ITS key (an import never overwrites a local
+    /// key); A renames the provider and pushes; B pulls and gets the new name
+    /// with B's key still filled. Neither device's providers.json ever
+    /// contains a key value or key name.
+    #[test]
+    fn provider_structure_syncs_across_devices_but_keys_stay_local() {
+        use crate::model::{Provider, ProviderCategory};
+
+        fn dev_cfg(url: &str, dev: &str) -> ConfigData {
+            let mut cfg = synced_cfg(url, "tok");
+            cfg.device_id = dev.to_string();
+            cfg
+        }
+        fn provider(token: &str, endpoint: &str) -> Provider {
+            Provider {
+                id: "abcdef01".into(),
+                name: "Kimi".into(),
+                website_url: "https://platform.kimi.com".into(),
+                category: ProviderCategory::Custom,
+                icon: String::new(),
+                icon_color: String::new(),
+                sort_index: 0,
+                notes: String::new(),
+                settings_config: format!(
+                    r#"{{"env":{{"ANTHROPIC_BASE_URL":"{endpoint}","ANTHROPIC_AUTH_TOKEN":"{token}"}}}}"#
+                ),
+                meta: r#"{}"#.into(),
+                updated_at: String::new(),
+            }
+        }
+        fn env_of(p: &Provider) -> serde_json::Value {
+            let v: serde_json::Value = serde_json::from_str(&p.settings_config).unwrap();
+            v["env"].clone()
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = tmp.path().join("remote.git");
+        seed_remote(&remote);
+        let url = remote.to_string_lossy().to_string();
+        let dev_a = "aabbccddeeff";
+        let dev_b = "bbccddee0011";
+
+        // Device A: create a provider with a key, then push.
+        let paths_a = crate::config::Paths::resolve(&tmp.path().join("a"));
+        let cfg_a = dev_cfg(&url, dev_a);
+        let _repo_a = open_or_clone(&url, &paths_a.repo, "").unwrap();
+        let store_a = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
+        store_a
+            .save_provider(provider("sk-a-secret", "https://api.kimi.com"))
+            .unwrap();
+        assert!(push_usage(&store_a, &paths_a, &cfg_a).unwrap());
+        let a_file = std::fs::read_to_string(paths_a.providers_json_path(dev_a)).unwrap();
+        assert!(a_file.contains("Kimi"));
+        assert!(!a_file.contains("sk-a-secret"), "key never enters the file");
+
+        // Device B: pull → the provider arrives with structure but NO key.
+        let paths_b = crate::config::Paths::resolve(&tmp.path().join("b"));
+        let cfg_b = dev_cfg(&url, dev_b);
+        let store_b = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
+        pull_and_import(&store_b, &paths_b, &cfg_b).unwrap();
+        let b_p = store_b
+            .get_provider("abcdef01")
+            .unwrap()
+            .expect("B sees A's provider");
+        assert_eq!(b_p.name, "Kimi");
+        let env_b = env_of(&b_p);
+        assert_eq!(env_b["ANTHROPIC_BASE_URL"], "https://api.kimi.com");
+        assert!(
+            env_b.get("ANTHROPIC_AUTH_TOKEN").is_none(),
+            "key left empty on import"
+        );
+
+        // B fills its own key (structure unchanged) and pushes.
+        let mut b_edit = b_p;
+        b_edit.settings_config = r#"{"env":{"ANTHROPIC_BASE_URL":"https://api.kimi.com","ANTHROPIC_AUTH_TOKEN":"sk-b-secret"}}"#.into();
+        store_b.save_provider(b_edit).unwrap();
+        assert!(push_usage(&store_b, &paths_b, &cfg_b).unwrap());
+        let b_file = std::fs::read_to_string(paths_b.providers_json_path(dev_b)).unwrap();
+        assert!(!b_file.contains("sk-b-secret"));
+
+        // A pulls again: A's own key survived (never overwritten by B's
+        // keyless copy — B's copy is not even newer, same author timestamp).
+        pull_and_import(&store_a, &paths_a, &cfg_a).unwrap();
+        let a_p = store_a
+            .get_provider("abcdef01")
+            .unwrap()
+            .expect("A still has its provider");
+        assert!(
+            a_p.settings_config.contains("sk-a-secret"),
+            "A's key kept after pulling B's keyless copy"
+        );
+
+        // A edits the structure (name); B pulls and gets the new name WITH
+        // its own key still filled.
+        let mut a_edit = a_p;
+        a_edit.name = "Kimi Pro".into();
+        store_a.save_provider(a_edit).unwrap();
+        assert!(push_usage(&store_a, &paths_a, &cfg_a).unwrap());
+        pull_and_import(&store_b, &paths_b, &cfg_b).unwrap();
+        let b_p2 = store_b
+            .get_provider("abcdef01")
+            .unwrap()
+            .expect("B still has its provider");
+        assert_eq!(b_p2.name, "Kimi Pro", "A's structural edit reached B");
+        let env_b2 = env_of(&b_p2);
+        assert_eq!(env_b2["ANTHROPIC_BASE_URL"], "https://api.kimi.com");
+        assert_eq!(
+            env_b2["ANTHROPIC_AUTH_TOKEN"], "sk-b-secret",
+            "B's key survived A's edit"
+        );
+    }
 }

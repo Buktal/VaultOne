@@ -1,0 +1,617 @@
+//! Provider structure sync — the per-device `providers.json`, following the
+//! Synced Group / device-registry pattern: each device writes ONLY its own
+//! `repo/data/<deviceId>/providers.json` (a JSON object with one `providers`
+//! array); reading merges every device's file by id, latest `updated_at` wins
+//! (ties → first seen). This is the structure half of provider sync.
+//!
+//! **API keys never enter the file.** Every provider is
+//! [`Provider::redacted`] on write (the four `SECRET_ENV_KEYS` are stripped
+//! from `settingsConfig`'s `env`; `AWS_REGION` — a region code or `${VAR}`
+//! template placeholder — is not a credential and stays). Each device's keys
+//! live only in its local DB; the active provider is local-only too
+//! (config.json) and never touches this file. `meta` rides along as-is — the
+//! model keeps secrets exclusively in `settingsConfig`'s `env`, which is
+//! exactly the surface this module redacts.
+//!
+//! Sync orchestration lives in `sync::flow` (this module holds no git
+//! knowledge): **push** (`push_usage`) calls [`write_own_providers`] to
+//! materialize this device's file from the store — byte-stable, so an
+//! unchanged store rewrites identical bytes and `commit_and_push` no-ops;
+//! **pull** (`pull_and_import`) calls [`import_peer_providers`] to read
+//! peers' files back into the store. Self's own directory is skipped on read —
+//! self is local-authoritative, so a possibly-stale git copy of this device
+//! must never overwrite fresher local rows.
+//!
+//! Import is latest-wins on `updated_at` and NEVER drops a local key
+//! ([`merge_local_keys`]): the peer's key-stripped structure wins, but the
+//! local row's secret env keys are merged back in. Since `save_provider`
+//! advances `updated_at` only on structural change, the comparison is a true
+//! structural freshness check — a key fill on one device can never mask a
+//! peer's later edit. `sort_index` (display order) stays a local preference:
+//! `import_provider` keeps the local row's value, so pulls never shuffle the
+//! user's order.
+
+use crate::config::Paths;
+use crate::db::Store;
+use crate::error::{AppError, AppResult};
+use crate::model::{Provider, SECRET_ENV_KEYS};
+
+/// One device's provider-file wrapper: a stable JSON object with one array
+/// (extensible without a wire break later — same shape as the synced-groups
+/// doc). Missing file ⇒ empty doc.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct SyncedProvidersDoc {
+    #[serde(default)]
+    providers: Vec<Provider>,
+}
+
+/// Push-side writer: recompute THIS device's `providers.json` from the store,
+/// key-stripped. Called by `sync::flow::push_usage` on every push — there is
+/// no dirty flag; the write is byte-stable, so an unchanged store rewrites
+/// identical bytes and `commit_and_push` stays a no-op. A provider whose
+/// config cannot be parsed is skipped with a log — a provider whose secrets
+/// can't be proven absent must not be published. A device that never had
+/// providers gets no file at all (absent reads as empty); a leftover file is
+/// cleared once the last provider is deleted.
+pub fn write_own_providers(store: &Store, paths: &Paths, device_id: &str) -> AppResult<()> {
+    let path = paths.providers_json_path(device_id);
+    let mut providers = Vec::new();
+    for p in store.list_providers()? {
+        match p.redacted() {
+            Ok(r) => providers.push(r),
+            Err(e) => eprintln!(
+                "[vaultone] provider {} skipped from sync file: {e}",
+                p.id
+            ),
+        }
+    }
+    if providers.is_empty() && !path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let doc = SyncedProvidersDoc { providers };
+    let json = serde_json::to_string_pretty(&doc)?;
+    std::fs::write(&path, format!("{json}\n"))?;
+    Ok(())
+}
+
+/// Read one device's provider file. Missing/unreadable/unparseable ⇒ empty —
+/// a corrupt peer file must never abort a pull.
+fn read_device_providers(paths: &Paths, device_id: &str) -> Vec<Provider> {
+    let path = paths.providers_json_path(device_id);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    serde_json::from_str::<SyncedProvidersDoc>(&text)
+        .unwrap_or_default()
+        .providers
+}
+
+/// Merge every device's providers by id: the newest `updated_at` wins, ties →
+/// first seen (the sessions rule). Pure — no IO — so the dedup rule is
+/// directly unit-testable. Output sorted by `(sort_index, name, id)` for a
+/// deterministic, list-friendly order.
+pub fn merge_providers_latest_wins(
+    providers: impl IntoIterator<Item = Provider>,
+) -> Vec<Provider> {
+    let mut by_id: std::collections::BTreeMap<String, Provider> =
+        std::collections::BTreeMap::new();
+    for p in providers {
+        let take = by_id
+            .get(&p.id)
+            .map(|e| e.updated_at < p.updated_at)
+            .unwrap_or(true);
+        if take {
+            by_id.insert(p.id.clone(), p);
+        }
+    }
+    let mut out: Vec<Provider> = by_id.into_values().collect();
+    out.sort_by(|a, b| {
+        a.sort_index
+            .cmp(&b.sort_index)
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    out
+}
+
+/// Read every PEER's provider file, merged by id (latest wins). Self's own
+/// directory is skipped — self is local-authoritative (see the module doc).
+/// Only valid device dirs are walked, so a stray folder never shows up as a
+/// providers source.
+pub fn read_all_peer_providers(paths: &Paths, self_device_id: &str) -> AppResult<Vec<Provider>> {
+    let mut all = Vec::new();
+    for dev in crate::devices::iter_data_device_ids(paths)? {
+        if dev == self_device_id {
+            continue;
+        }
+        all.extend(read_device_providers(paths, &dev));
+    }
+    Ok(merge_providers_latest_wins(all))
+}
+
+/// Re-apply a local row's secret env keys onto a peer's key-stripped version:
+/// the pull-side key guard. The peer's structure wins, but this device's
+/// locally-filled keys are merged back in — an import can update structure
+/// but never leave the local key empty by overwriting it with the peer's
+/// keyless copy.
+///
+/// Both configs must parse (a blank/unparseable side ⇒ `Err`, and the caller
+/// skips that import): a peer version we can't merge into is not imported
+/// over a local row, and a local row whose key location we can't see is never
+/// replaced. A local row without an `env` block simply contributes no keys.
+fn merge_local_keys(local: &Provider, peer: &Provider) -> AppResult<Provider> {
+    let parse = |raw: &str, what: &str| -> AppResult<serde_json::Value> {
+        serde_json::from_str(raw.trim()).map_err(|e| {
+            AppError::Config(format!("{what} settingsConfig is not valid JSON: {e}"))
+        })
+    };
+    let mut config = parse(&peer.settings_config, "peer provider")?;
+    let config_obj = config.as_object_mut().ok_or_else(|| {
+        AppError::Config("peer provider settingsConfig is not a JSON object".into())
+    })?;
+    if let Some(env) = config_obj.get_mut("env").and_then(|e| e.as_object_mut()) {
+        let local_config = parse(&local.settings_config, "local provider")?;
+        let local_env = local_config
+            .get("env")
+            .and_then(|e| e.as_object())
+            .ok_or_else(|| {
+                AppError::Config("local provider settingsConfig has no env object".into())
+            })?;
+        for key in SECRET_ENV_KEYS {
+            if let Some(v) = local_env.get(*key) {
+                env.insert((*key).to_string(), v.clone());
+            }
+        }
+    }
+    let mut merged = peer.clone();
+    merged.settings_config = serde_json::to_string_pretty(&config)?;
+    Ok(merged)
+}
+
+/// Pull-side import of peers' provider structure into the local store,
+/// latest-wins by `updated_at` and always keeping this device's keys:
+/// - no local row ⇒ insert the peer version as-is (keys absent — the user
+///   fills them locally);
+/// - local row at least as fresh as the peer (tie counts) ⇒ skip — a pull
+///   never overwrites a newer local row;
+/// - peer strictly newer ⇒ import its structure with the local row's secret
+///   keys merged back in ([`merge_local_keys`]).
+/// A single bad provider logs and is skipped — it must not abort the whole
+/// pull.
+pub fn import_peer_providers(store: &Store, paths: &Paths, self_device_id: &str) -> AppResult<()> {
+    for peer in read_all_peer_providers(paths, self_device_id)? {
+        let local = store.get_provider(&peer.id)?;
+        let import = match &local {
+            None => Ok(Some(peer)),
+            Some(l) if l.updated_at >= peer.updated_at => Ok(None),
+            Some(l) => merge_local_keys(l, &peer).map(Some),
+        };
+        match import {
+            Ok(Some(p)) => store.import_provider(&p)?,
+            Ok(None) => {}
+            Err(e) => eprintln!(
+                "[vaultone] provider {} skipped from import: {e}",
+                peer.id
+            ),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Paths;
+    use crate::db::testutil::mem;
+    use crate::model::ProviderCategory;
+    use std::path::PathBuf;
+
+    fn provider(id: &str, name: &str, settings_config: &str, updated_at: &str) -> Provider {
+        Provider {
+            id: id.into(),
+            name: name.into(),
+            website_url: "https://example.com".into(),
+            category: ProviderCategory::Custom,
+            icon: String::new(),
+            icon_color: String::new(),
+            sort_index: 0,
+            notes: String::new(),
+            settings_config: settings_config.into(),
+            meta: r#"{}"#.into(),
+            updated_at: updated_at.into(),
+        }
+    }
+
+    /// Hand-write one device's providers.json (the read side's input).
+    fn write_file(paths: &Paths, device_id: &str, providers: &[Provider]) {
+        let path = paths.providers_json_path(device_id);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let doc = SyncedProvidersDoc {
+            providers: providers.to_vec(),
+        };
+        std::fs::write(&path, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+    }
+
+    fn keyed_provider(
+        id: &str,
+        name: &str,
+        token: &str,
+        endpoint: &str,
+        updated_at: &str,
+    ) -> Provider {
+        provider(
+            id,
+            name,
+            &format!(
+                r#"{{"env":{{"ANTHROPIC_BASE_URL":"{endpoint}","ANTHROPIC_AUTH_TOKEN":"{token}"}}}}"#
+            ),
+            updated_at,
+        )
+    }
+
+    #[test]
+    fn write_own_providers_writes_redacted_file() {
+        let s = mem();
+        let p = s
+            .save_provider(keyed_provider(
+                "aaaaaaaa",
+                "Kimi",
+                "sk-secret-token",
+                "https://api.kimi.com",
+                "2026-08-01T00:00:00.000Z",
+            ))
+            .unwrap();
+        s.save_provider(provider(
+            "bbbbbbbb",
+            "Plain",
+            r#"{"env":{"ANTHROPIC_BASE_URL":"https://plain.dev"}}"#,
+            "2026-08-02T00:00:00.000Z",
+        ))
+        .unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        write_own_providers(&s, &paths, "aabbccddeeff").unwrap();
+
+        let text = std::fs::read_to_string(paths.providers_json_path("aabbccddeeff")).unwrap();
+        // The key value and every secret key name are absent from the file.
+        assert!(!text.contains("sk-secret-token"));
+        for key in SECRET_ENV_KEYS {
+            assert!(!text.contains(key), "{key} must not appear in the file");
+        }
+        // Structure (name, endpoint) survived.
+        let doc: SyncedProvidersDoc = serde_json::from_str(&text).unwrap();
+        assert_eq!(doc.providers.len(), 2);
+        let kimi = doc.providers.iter().find(|x| x.id == p.id).unwrap();
+        let cfg: serde_json::Value = serde_json::from_str(&kimi.settings_config).unwrap();
+        assert_eq!(cfg["env"]["ANTHROPIC_BASE_URL"], "https://api.kimi.com");
+        assert!(cfg["env"].get("ANTHROPIC_AUTH_TOKEN").is_none());
+    }
+
+    #[test]
+    fn write_own_providers_skips_provider_with_unparseable_config() {
+        let s = mem();
+        s.save_provider(provider(
+            "cccccccc",
+            "Broken",
+            "{oops",
+            "2026-08-01T00:00:00.000Z",
+        ))
+        .unwrap();
+        s.save_provider(provider(
+            "dddddddd",
+            "Fine",
+            r#"{"env":{}}"#,
+            "2026-08-01T00:00:00.000Z",
+        ))
+        .unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        // Must not error — the broken provider is skipped, the good one lands.
+        write_own_providers(&s, &paths, "aabbccddeeff").unwrap();
+        let doc: SyncedProvidersDoc = serde_json::from_str(
+            &std::fs::read_to_string(paths.providers_json_path("aabbccddeeff")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(doc.providers.len(), 1);
+        assert_eq!(doc.providers[0].id, "dddddddd");
+    }
+
+    #[test]
+    fn write_own_providers_writes_nothing_without_providers_and_clears_leftovers() {
+        let s = mem();
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        // Never had providers ⇒ no file at all.
+        write_own_providers(&s, &paths, "aabbccddeeff").unwrap();
+        assert!(!paths.providers_json_path("aabbccddeeff").exists());
+
+        // Had a provider, then deleted it ⇒ the leftover file is cleared.
+        let p = s
+            .save_provider(provider(
+                "eeeeeeee",
+                "Gone",
+                r#"{"env":{}}"#,
+                "2026-08-01T00:00:00.000Z",
+            ))
+            .unwrap();
+        write_own_providers(&s, &paths, "aabbccddeeff").unwrap();
+        assert!(paths.providers_json_path("aabbccddeeff").exists());
+        s.delete_provider(&p.id).unwrap();
+        write_own_providers(&s, &paths, "aabbccddeeff").unwrap();
+        let doc: SyncedProvidersDoc = serde_json::from_str(
+            &std::fs::read_to_string(paths.providers_json_path("aabbccddeeff")).unwrap(),
+        )
+        .unwrap();
+        assert!(doc.providers.is_empty(), "leftover file cleared");
+    }
+
+    #[test]
+    fn write_own_providers_is_byte_stable() {
+        let s = mem();
+        s.save_provider(keyed_provider(
+            "aaaaaaaa",
+            "Kimi",
+            "sk-secret",
+            "https://api.kimi.com",
+            "2026-08-01T00:00:00.000Z",
+        ))
+        .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        write_own_providers(&s, &paths, "aabbccddeeff").unwrap();
+        let first = std::fs::read_to_string(paths.providers_json_path("aabbccddeeff")).unwrap();
+        write_own_providers(&s, &paths, "aabbccddeeff").unwrap();
+        let second = std::fs::read_to_string(paths.providers_json_path("aabbccddeeff")).unwrap();
+        assert_eq!(first, second, "unchanged store ⇒ identical bytes (no git churn)");
+    }
+
+    #[test]
+    fn merge_providers_latest_wins_dedupes_by_id_newest_wins_ties_first_seen() {
+        let old = provider("p1", "Old", r#"{"env":{}}"#, "2026-08-01T00:00:00.000Z");
+        let new = provider("p1", "New", r#"{"env":{}}"#, "2026-08-02T00:00:00.000Z");
+        let other = provider("p2", "Other", r#"{"env":{}}"#, "2026-08-01T00:00:00.000Z");
+        let merged = merge_providers_latest_wins([old.clone(), new.clone(), other.clone()]);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].id, "p1");
+        assert_eq!(merged[0].name, "New", "newest updated_at wins");
+        // Ties → first seen keeps the first copy.
+        let tie = merge_providers_latest_wins([old.clone(), old.clone()]);
+        assert_eq!(tie.len(), 1);
+        assert_eq!(tie[0].name, "Old");
+        assert!(merge_providers_latest_wins(std::iter::empty::<Provider>()).is_empty());
+    }
+
+    #[test]
+    fn read_all_peer_providers_merges_by_id_latest_wins_and_skips_self() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        // Self's dir carries a provider that would win — it must be skipped.
+        write_file(
+            &paths,
+            "aabbccddeeff",
+            &[provider("p-self", "Self", r#"{"env":{}}"#, "2026-08-09T00:00:00.000Z")],
+        );
+        // Peer B: p1 old + p2.
+        write_file(
+            &paths,
+            "bbccddee0011",
+            &[
+                provider("p1", "Old", r#"{"env":{}}"#, "2026-08-01T00:00:00.000Z"),
+                provider("p2", "Other", r#"{"env":{}}"#, "2026-08-01T00:00:00.000Z"),
+            ],
+        );
+        // Peer C: p1 newer.
+        write_file(
+            &paths,
+            "001122334455",
+            &[provider("p1", "New", r#"{"env":{}}"#, "2026-08-02T00:00:00.000Z")],
+        );
+
+        let all = read_all_peer_providers(&paths, "aabbccddeeff").unwrap();
+        let by_id: std::collections::HashMap<String, String> =
+            all.iter().map(|p| (p.id.clone(), p.name.clone())).collect();
+        assert_eq!(by_id.get("p1").map(String::as_str), Some("New"), "latest wins");
+        assert!(by_id.contains_key("p2"));
+        assert!(
+            !by_id.contains_key("p-self"),
+            "self's own file is skipped on read"
+        );
+    }
+
+    #[test]
+    fn read_all_peer_providers_ignores_non_device_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        write_file(
+            &paths,
+            "not-a-device",
+            &[provider(
+                "p1",
+                "Stray",
+                r#"{"env":{}}"#,
+                "2026-08-01T00:00:00.000Z",
+            )],
+        );
+        let all = read_all_peer_providers(&paths, "aabbccddeeff").unwrap();
+        assert!(all.is_empty(), "stray folder is not a providers source");
+    }
+
+    #[test]
+    fn read_all_peer_providers_tolerates_broken_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        let broken = paths.providers_json_path("bbccddee0011");
+        std::fs::create_dir_all(broken.parent().unwrap()).unwrap();
+        std::fs::write(&broken, "{not json").unwrap();
+        write_file(
+            &paths,
+            "001122334455",
+            &[provider("p1", "Fine", r#"{"env":{}}"#, "2026-08-01T00:00:00.000Z")],
+        );
+        let all = read_all_peer_providers(&paths, "aabbccddeeff").unwrap();
+        assert_eq!(all.len(), 1, "broken file skipped, healthy one read");
+        assert_eq!(all[0].id, "p1");
+    }
+
+    #[test]
+    fn import_peer_providers_merges_local_keys_and_never_overwrites_them() {
+        let s = mem();
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        // Local row: old endpoint + a filled key, author timestamp t1.
+        // Seeded via import_provider so the timestamp is the explicit t1
+        // (save_provider would stamp "now", which is newer than the peer).
+        let local = keyed_provider(
+            "aaaaaaaa",
+            "Kimi",
+            "sk-local-key",
+            "https://old.dev",
+            "2026-08-01T00:00:00.000Z",
+        );
+        s.import_provider(&local).unwrap();
+        // Peer file: NEWER structure (new endpoint), key-stripped.
+        write_file(
+            &paths,
+            "bbccddee0011",
+            &[
+                provider(
+                    "aaaaaaaa",
+                    "Kimi",
+                    r#"{"env":{"ANTHROPIC_BASE_URL":"https://api.kimi.com"}}"#,
+                    "2026-08-02T00:00:00.000Z",
+                ),
+                provider(
+                    "bbbbbbbb",
+                    "Brand New",
+                    r#"{"env":{"ANTHROPIC_BASE_URL":"https://new.dev"}}"#,
+                    "2026-08-02T00:00:00.000Z",
+                ),
+            ],
+        );
+
+        import_peer_providers(&s, &paths, "aabbccddeeff").unwrap();
+
+        let kimi = s.get_provider("aaaaaaaa").unwrap().unwrap();
+        assert_eq!(kimi.updated_at, "2026-08-02T00:00:00.000Z", "peer freshness");
+        let cfg: serde_json::Value = serde_json::from_str(&kimi.settings_config).unwrap();
+        assert_eq!(
+            cfg["env"]["ANTHROPIC_BASE_URL"], "https://api.kimi.com",
+            "peer structure imported"
+        );
+        assert_eq!(
+            cfg["env"]["ANTHROPIC_AUTH_TOKEN"], "sk-local-key",
+            "local key merged back, never overwritten"
+        );
+        // A provider the peer has and we don't is inserted as-is (keys absent).
+        let fresh = s.get_provider("bbbbbbbb").unwrap().unwrap();
+        assert_eq!(fresh.name, "Brand New");
+        assert_eq!(fresh.updated_at, "2026-08-02T00:00:00.000Z");
+        assert!(!fresh.settings_config.contains("ANTHROPIC_AUTH_TOKEN"));
+        // The key-filled row's sort_index stayed local (import preserves it).
+        assert_eq!(kimi.sort_index, local.sort_index);
+    }
+
+    #[test]
+    fn import_peer_providers_skips_stale_peer_versions() {
+        let s = mem();
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        // Local row is NEWER (t2) — the peer's older structure must not land.
+        s.import_provider(&keyed_provider(
+            "aaaaaaaa",
+            "Kimi",
+            "sk-local-key",
+            "https://new.dev",
+            "2026-08-02T00:00:00.000Z",
+        ))
+        .unwrap();
+        write_file(
+            &paths,
+            "bbccddee0011",
+            &[provider(
+                "aaaaaaaa",
+                "Kimi",
+                r#"{"env":{"ANTHROPIC_BASE_URL":"https://old.dev"}}"#,
+                "2026-08-01T00:00:00.000Z",
+            )],
+        );
+
+        import_peer_providers(&s, &paths, "aabbccddeeff").unwrap();
+
+        let row = s.get_provider("aaaaaaaa").unwrap().unwrap();
+        assert_eq!(
+            row.updated_at, "2026-08-02T00:00:00.000Z",
+            "local freshness kept"
+        );
+        assert!(
+            row.settings_config.contains("https://new.dev"),
+            "stale peer structure not imported"
+        );
+        assert!(row.settings_config.contains("sk-local-key"));
+    }
+
+    #[test]
+    fn import_peer_providers_keeps_local_row_when_peer_config_unparseable() {
+        let s = mem();
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        s.import_provider(&keyed_provider(
+            "aaaaaaaa",
+            "Kimi",
+            "sk-local-key",
+            "https://new.dev",
+            "2026-08-01T00:00:00.000Z",
+        ))
+        .unwrap();
+        // Peer claims a NEWER structure but its config can't be merged into —
+        // importing it would risk dropping the local key, so it is skipped.
+        write_file(
+            &paths,
+            "bbccddee0011",
+            &[provider("aaaaaaaa", "Kimi", "{oops", "2026-08-03T00:00:00.000Z")],
+        );
+
+        import_peer_providers(&s, &paths, "aabbccddeeff").unwrap();
+
+        let row = s.get_provider("aaaaaaaa").unwrap().unwrap();
+        assert_eq!(row.updated_at, "2026-08-01T00:00:00.000Z");
+        assert!(row.settings_config.contains("sk-local-key"), "local row untouched");
+    }
+
+    #[test]
+    fn import_peer_providers_skips_own_file_and_missing_dirs() {
+        let s = mem();
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        // Only SELF has a providers.json — nothing must be imported.
+        write_file(
+            &paths,
+            "aabbccddeeff",
+            &[provider("p1", "Self", r#"{"env":{}}"#, "2026-08-01T00:00:00.000Z")],
+        );
+        import_peer_providers(&s, &paths, "aabbccddeeff").unwrap();
+        assert!(s.get_provider("p1").unwrap().is_none());
+        // No device dirs at all ⇒ no-op.
+        let empty_tmp = tempfile::tempdir().unwrap();
+        import_peer_providers(
+            &s,
+            &Paths::resolve(empty_tmp.path()),
+            "aabbccddeeff",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn providers_json_path_is_under_device_data_dir() {
+        let paths = Paths::resolve(std::path::Path::new("/root"));
+        assert_eq!(
+            paths.providers_json_path("aabbccddeeff"),
+            PathBuf::from("/root/repo/data/aabbccddeeff/providers.json")
+        );
+    }
+}

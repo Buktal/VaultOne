@@ -53,6 +53,9 @@ pub fn pull_and_import(store: &Store, paths: &Paths, cfg: &ConfigData) -> AppRes
     // Sessions: import peers' snapshots (self is local-authoritative, skipped
     // on read) and propagate cross-device un-favorites.
     import_peer_sessions(store, paths, &cfg.device_id)?;
+    // Providers: import peers' key-stripped structure (self skipped on read;
+    // local keys are merged back — an import never overwrites a local key).
+    crate::provider::sync::import_peer_providers(store, paths, &cfg.device_id)?;
     // Device-name registry: pull may have added/updated config/devices/*.json.
     crate::devices::reload_devices_into_store(store, paths, cfg)?;
     Ok(inserted.len() as u32)
@@ -135,9 +138,10 @@ pub fn commit_and_push_best_effort(paths: &Paths, cfg: &ConfigData, message: &st
     }
 }
 
-/// Sync push: materialize this device's un-pushed days AND session snapshots
-/// from the store, then commit + push, clearing the dirty flags only once the
-/// push lands. This is the push-side counterpart to collect's store-only
+/// Sync push: materialize this device's un-pushed days, session snapshots AND
+/// provider structure (key-stripped `providers.json`) from the store, then
+/// commit + push, clearing the dirty flags only once the push lands. This is
+/// the push-side counterpart to collect's store-only
 /// writes: collect flags days/sessions dirty; this recomputes each dirty day's
 /// per-day Artifact (`recompute_usage_day` / `recompute_turns_day`) and each
 /// dirty session's jsonl snapshot (`recompute_session_snapshot`), commits the
@@ -206,6 +210,12 @@ pub fn push_usage(store: &Store, paths: &Paths, cfg: &ConfigData) -> AppResult<b
             }
         }
     }
+
+    // Providers: materialize this device's providers.json from the store,
+    // key-stripped (API keys stay in the local DB — the file carries only
+    // structure). No dirty flag: the write is byte-stable, so an unchanged
+    // store rewrites identical bytes and `commit_and_push` below no-ops.
+    crate::provider::sync::write_own_providers(store, paths, &cfg.device_id)?;
 
     let pushed = commit_and_push(paths, cfg, "vaultone: sync")?;
     if pushed {

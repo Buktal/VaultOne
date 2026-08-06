@@ -66,6 +66,16 @@ impl Paths {
             .join(format!("{session_id}.jsonl"))
     }
 
+    /// This device's synced provider-structure list:
+    /// `repo/data/<deviceId>/providers.json`. One file per device (the shared
+    /// per-device-write pattern — groups.json, session snapshots): each device
+    /// writes only its own file; reading merges every device's file by id,
+    /// latest wins. Written key-stripped — API keys stay in the local DB and
+    /// never enter this file.
+    pub fn providers_json_path(&self, device_id: &str) -> PathBuf {
+        self.device_data_dir(device_id).join("providers.json")
+    }
+
     /// Local pricing config: `<root>/pricing.json`. Sits next to `config.json`,
     /// never enters the repo — pricing is a per-device local concern (each device
     /// freezes cost with its own prices at collect time). `save_pricing_to_file`
