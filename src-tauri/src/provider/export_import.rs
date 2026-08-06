@@ -25,8 +25,8 @@ use crate::model::Provider;
 pub const EXPORT_VERSION: u32 = 1;
 
 /// 导出（`include_keys=false`）时从 settingsConfig 的 `env` 块剔除的密钥键。
-/// 与同步文件路径的剔除清单一致（「密钥不出本机」的不变量两边都要守），但本
-/// 模块自己实现一份——export/import 不依赖同步模块的代码。
+/// 本模块是「密钥不出本机」的唯一事实来源——未来若有其他写盘路径（如
+/// providers.json 同步）要剥密钥，必须复用这份清单，不得另抄一份。
 pub const SECRET_ENV_KEYS: &[&str] = &[
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_API_KEY",
@@ -127,8 +127,7 @@ pub fn plan_import(
 ) -> ImportPlan {
     match mode {
         ProviderImportMode::Merge => {
-            let existing_ids: HashSet<&str> =
-                existing.iter().map(|p| p.id.as_str()).collect();
+            let existing_ids: HashSet<&str> = existing.iter().map(|p| p.id.as_str()).collect();
             let mut to_save = Vec::new();
             let mut imported = 0;
             let mut skipped = 0;
@@ -201,9 +200,16 @@ pub fn apply_import(
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
-    use crate::db::testutil::mem;
     use crate::model::ProviderCategory;
+
+    /// 空内存库（`db::testutil` 是 db 子模块私有，这里走公共的
+    /// `Store::open(":memory:")`，与 sync 模块测试一致）。
+    fn mem() -> Store {
+        Store::open(Path::new(":memory:")).unwrap()
+    }
 
     /// 构造一份带 env 密钥的 settingsConfig 文本（含非密钥 env 键和顶层字段，
     /// 模拟真实快照）。
@@ -243,9 +249,14 @@ mod tests {
     }
 
     fn env_of(doc: &ProviderExportDocument, name: &str) -> serde_json::Value {
-        let cfg: serde_json::Value =
-            serde_json::from_str(&doc.providers.iter().find(|p| p.name == name).unwrap().settings_config)
-                .unwrap();
+        let cfg: serde_json::Value = serde_json::from_str(
+            &doc.providers
+                .iter()
+                .find(|p| p.name == name)
+                .unwrap()
+                .settings_config,
+        )
+        .unwrap();
         cfg["env"].clone()
     }
 
@@ -259,11 +270,17 @@ mod tests {
         assert_eq!(doc.version, 1);
         assert_eq!(doc.exported_at, "2026-08-07T00:00:00Z");
         let env = env_of(&doc, "Alpha");
-        assert!(env.get("ANTHROPIC_AUTH_TOKEN").is_none(), "AUTH_TOKEN 必须被剥");
+        assert!(
+            env.get("ANTHROPIC_AUTH_TOKEN").is_none(),
+            "AUTH_TOKEN 必须被剥"
+        );
         assert!(env.get("ANTHROPIC_API_KEY").is_none(), "API_KEY 必须被剥");
         assert!(env.get("AWS_ACCESS_KEY_ID").is_none());
         assert!(env.get("AWS_SECRET_ACCESS_KEY").is_none());
-        assert_eq!(env["ANTHROPIC_BASE_URL"], serde_json::json!("https://api.example.com"));
+        assert_eq!(
+            env["ANTHROPIC_BASE_URL"],
+            serde_json::json!("https://api.example.com")
+        );
         assert_eq!(env["KEEP_ME"], serde_json::json!("1"));
         assert_eq!(
             env_of(&doc, "Beta"),
@@ -286,7 +303,8 @@ mod tests {
         let ps = [provider("a", "Alpha", &config_with_secrets())];
         let doc = parsed(&export_document(&ps, true, "ts").unwrap());
         assert_eq!(
-            doc.providers[0].settings_config, config_with_secrets(),
+            doc.providers[0].settings_config,
+            config_with_secrets(),
             "含 key 导出必须逐字节保留 settingsConfig"
         );
     }
@@ -407,7 +425,10 @@ mod tests {
             assert_eq!(a.category, b.category);
             assert_eq!(a.sort_index, b.sort_index);
             assert_eq!(a.notes, b.notes);
-            assert_eq!(a.settings_config, b.settings_config, "含 key 往返逐字节一致");
+            assert_eq!(
+                a.settings_config, b.settings_config,
+                "含 key 往返逐字节一致"
+            );
             assert_eq!(a.meta, b.meta);
         }
     }

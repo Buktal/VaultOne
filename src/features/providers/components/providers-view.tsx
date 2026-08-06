@@ -44,8 +44,14 @@ import {
 
 export function ProvidersView() {
   const { t } = useTranslation()
-  const { providers, isLoading, onReorder, exportProviders, importProviders, transferring } =
-    useProvidersBrowser()
+  const {
+    providers,
+    isLoading,
+    onReorder,
+    exportProviders,
+    importProviders,
+    transferring,
+  } = useProvidersBrowser()
   const { data: activeProvider, isLoading: activeLoading } =
     useGetActiveProviderQuery()
   const [remove] = useDeleteProviderMutation()
