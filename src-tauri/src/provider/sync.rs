@@ -59,10 +59,7 @@ pub fn write_own_providers(store: &Store, paths: &Paths, device_id: &str) -> App
     for p in store.list_providers()? {
         match p.redacted() {
             Ok(r) => providers.push(r),
-            Err(e) => eprintln!(
-                "[vaultone] provider {} skipped from sync file: {e}",
-                p.id
-            ),
+            Err(e) => eprintln!("[vaultone] provider {} skipped from sync file: {e}", p.id),
         }
     }
     if providers.is_empty() && !path.exists() {
@@ -93,11 +90,8 @@ fn read_device_providers(paths: &Paths, device_id: &str) -> Vec<Provider> {
 /// first seen (the sessions rule). Pure — no IO — so the dedup rule is
 /// directly unit-testable. Output sorted by `(sort_index, name, id)` for a
 /// deterministic, list-friendly order.
-pub fn merge_providers_latest_wins(
-    providers: impl IntoIterator<Item = Provider>,
-) -> Vec<Provider> {
-    let mut by_id: std::collections::BTreeMap<String, Provider> =
-        std::collections::BTreeMap::new();
+pub fn merge_providers_latest_wins(providers: impl IntoIterator<Item = Provider>) -> Vec<Provider> {
+    let mut by_id: std::collections::BTreeMap<String, Provider> = std::collections::BTreeMap::new();
     for p in providers {
         let take = by_id
             .get(&p.id)
@@ -144,9 +138,8 @@ pub fn read_all_peer_providers(paths: &Paths, self_device_id: &str) -> AppResult
 /// replaced. A local row without an `env` block simply contributes no keys.
 fn merge_local_keys(local: &Provider, peer: &Provider) -> AppResult<Provider> {
     let parse = |raw: &str, what: &str| -> AppResult<serde_json::Value> {
-        serde_json::from_str(raw.trim()).map_err(|e| {
-            AppError::Config(format!("{what} settingsConfig is not valid JSON: {e}"))
-        })
+        serde_json::from_str(raw.trim())
+            .map_err(|e| AppError::Config(format!("{what} settingsConfig is not valid JSON: {e}")))
     };
     let mut config = parse(&peer.settings_config, "peer provider")?;
     let config_obj = config.as_object_mut().ok_or_else(|| {
@@ -179,11 +172,13 @@ fn merge_local_keys(local: &Provider, peer: &Provider) -> AppResult<Provider> {
 ///   never overwrites a newer local row;
 /// - peer strictly newer ⇒ import its structure with the local row's secret
 ///   keys merged back in ([`merge_local_keys`]).
+///
 /// A single bad provider logs and is skipped — it must not abort the whole
 /// pull.
 pub fn import_peer_providers(store: &Store, paths: &Paths, self_device_id: &str) -> AppResult<()> {
     for peer in read_all_peer_providers(paths, self_device_id)? {
-        let local = store.get_provider(&peer.id)?;
+        let peer_id = peer.id.clone();
+        let local = store.get_provider(&peer_id)?;
         let import = match &local {
             None => Ok(Some(peer)),
             Some(l) if l.updated_at >= peer.updated_at => Ok(None),
@@ -192,10 +187,7 @@ pub fn import_peer_providers(store: &Store, paths: &Paths, self_device_id: &str)
         match import {
             Ok(Some(p)) => store.import_provider(&p)?,
             Ok(None) => {}
-            Err(e) => eprintln!(
-                "[vaultone] provider {} skipped from import: {e}",
-                peer.id
-            ),
+            Err(e) => eprintln!("[vaultone] provider {peer_id} skipped from import: {e}"),
         }
     }
     Ok(())
@@ -367,7 +359,10 @@ mod tests {
         let first = std::fs::read_to_string(paths.providers_json_path("aabbccddeeff")).unwrap();
         write_own_providers(&s, &paths, "aabbccddeeff").unwrap();
         let second = std::fs::read_to_string(paths.providers_json_path("aabbccddeeff")).unwrap();
-        assert_eq!(first, second, "unchanged store ⇒ identical bytes (no git churn)");
+        assert_eq!(
+            first, second,
+            "unchanged store ⇒ identical bytes (no git churn)"
+        );
     }
 
     #[test]
@@ -394,7 +389,12 @@ mod tests {
         write_file(
             &paths,
             "aabbccddeeff",
-            &[provider("p-self", "Self", r#"{"env":{}}"#, "2026-08-09T00:00:00.000Z")],
+            &[provider(
+                "p-self",
+                "Self",
+                r#"{"env":{}}"#,
+                "2026-08-09T00:00:00.000Z",
+            )],
         );
         // Peer B: p1 old + p2.
         write_file(
@@ -409,13 +409,22 @@ mod tests {
         write_file(
             &paths,
             "001122334455",
-            &[provider("p1", "New", r#"{"env":{}}"#, "2026-08-02T00:00:00.000Z")],
+            &[provider(
+                "p1",
+                "New",
+                r#"{"env":{}}"#,
+                "2026-08-02T00:00:00.000Z",
+            )],
         );
 
         let all = read_all_peer_providers(&paths, "aabbccddeeff").unwrap();
         let by_id: std::collections::HashMap<String, String> =
             all.iter().map(|p| (p.id.clone(), p.name.clone())).collect();
-        assert_eq!(by_id.get("p1").map(String::as_str), Some("New"), "latest wins");
+        assert_eq!(
+            by_id.get("p1").map(String::as_str),
+            Some("New"),
+            "latest wins"
+        );
         assert!(by_id.contains_key("p2"));
         assert!(
             !by_id.contains_key("p-self"),
@@ -451,7 +460,12 @@ mod tests {
         write_file(
             &paths,
             "001122334455",
-            &[provider("p1", "Fine", r#"{"env":{}}"#, "2026-08-01T00:00:00.000Z")],
+            &[provider(
+                "p1",
+                "Fine",
+                r#"{"env":{}}"#,
+                "2026-08-01T00:00:00.000Z",
+            )],
         );
         let all = read_all_peer_providers(&paths, "aabbccddeeff").unwrap();
         assert_eq!(all.len(), 1, "broken file skipped, healthy one read");
@@ -497,7 +511,10 @@ mod tests {
         import_peer_providers(&s, &paths, "aabbccddeeff").unwrap();
 
         let kimi = s.get_provider("aaaaaaaa").unwrap().unwrap();
-        assert_eq!(kimi.updated_at, "2026-08-02T00:00:00.000Z", "peer freshness");
+        assert_eq!(
+            kimi.updated_at, "2026-08-02T00:00:00.000Z",
+            "peer freshness"
+        );
         let cfg: serde_json::Value = serde_json::from_str(&kimi.settings_config).unwrap();
         assert_eq!(
             cfg["env"]["ANTHROPIC_BASE_URL"], "https://api.kimi.com",
@@ -573,14 +590,22 @@ mod tests {
         write_file(
             &paths,
             "bbccddee0011",
-            &[provider("aaaaaaaa", "Kimi", "{oops", "2026-08-03T00:00:00.000Z")],
+            &[provider(
+                "aaaaaaaa",
+                "Kimi",
+                "{oops",
+                "2026-08-03T00:00:00.000Z",
+            )],
         );
 
         import_peer_providers(&s, &paths, "aabbccddeeff").unwrap();
 
         let row = s.get_provider("aaaaaaaa").unwrap().unwrap();
         assert_eq!(row.updated_at, "2026-08-01T00:00:00.000Z");
-        assert!(row.settings_config.contains("sk-local-key"), "local row untouched");
+        assert!(
+            row.settings_config.contains("sk-local-key"),
+            "local row untouched"
+        );
     }
 
     #[test]
@@ -592,18 +617,18 @@ mod tests {
         write_file(
             &paths,
             "aabbccddeeff",
-            &[provider("p1", "Self", r#"{"env":{}}"#, "2026-08-01T00:00:00.000Z")],
+            &[provider(
+                "p1",
+                "Self",
+                r#"{"env":{}}"#,
+                "2026-08-01T00:00:00.000Z",
+            )],
         );
         import_peer_providers(&s, &paths, "aabbccddeeff").unwrap();
         assert!(s.get_provider("p1").unwrap().is_none());
         // No device dirs at all ⇒ no-op.
         let empty_tmp = tempfile::tempdir().unwrap();
-        import_peer_providers(
-            &s,
-            &Paths::resolve(empty_tmp.path()),
-            "aabbccddeeff",
-        )
-        .unwrap();
+        import_peer_providers(&s, &Paths::resolve(empty_tmp.path()), "aabbccddeeff").unwrap();
     }
 
     #[test]

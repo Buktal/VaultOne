@@ -253,7 +253,10 @@ mod tests {
         // Non-secret env entries survive; AWS_REGION is a region/template
         // placeholder, not a credential.
         assert_eq!(env["AWS_REGION"], serde_json::json!("us-east-1"));
-        assert_eq!(env["ANTHROPIC_BASE_URL"], serde_json::json!("https://api.bedrock"));
+        assert_eq!(
+            env["ANTHROPIC_BASE_URL"],
+            serde_json::json!("https://api.bedrock")
+        );
         assert_eq!(env["ANTHROPIC_MODEL"], serde_json::json!("claude-sonnet"));
         assert_eq!(v["includeCoAuthoredBy"], serde_json::json!(false));
         // The rest of the row is untouched.
@@ -281,7 +284,8 @@ mod tests {
         assert_eq!(blank.redacted().unwrap().settings_config, "  ");
 
         let mut plain = keyed_provider();
-        plain.settings_config = r#"{"env":{"ANTHROPIC_BASE_URL":"https://x.dev"},"includeCoAuthoredBy":false}"#.into();
+        plain.settings_config =
+            r#"{"env":{"ANTHROPIC_BASE_URL":"https://x.dev"},"includeCoAuthoredBy":false}"#.into();
         let r = plain.redacted().unwrap();
         // Nothing was stripped ⇒ the authored text is kept verbatim.
         assert_eq!(r.settings_config, plain.settings_config);
@@ -289,7 +293,10 @@ mod tests {
         // No env block at all ⇒ nothing to strip.
         let mut no_env = keyed_provider();
         no_env.settings_config = r#"{"includeCoAuthoredBy":false}"#.into();
-        assert_eq!(no_env.redacted().unwrap().settings_config, no_env.settings_config);
+        assert_eq!(
+            no_env.redacted().unwrap().settings_config,
+            no_env.settings_config
+        );
     }
 
     #[test]

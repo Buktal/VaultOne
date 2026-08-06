@@ -450,9 +450,7 @@ mod tests {
     #[test]
     fn import_provider_preserves_author_timestamp_and_local_sort_index() {
         let s = mem();
-        let created = s
-            .save_provider(provider_with_config("Kimi", "{}"))
-            .unwrap();
+        let created = s.save_provider(provider_with_config("Kimi", "{}")).unwrap();
         s.save_provider(provider_with_config("Beta", "{}")).unwrap();
         s.reorder_providers(std::slice::from_ref(&created.id))
             .unwrap();
@@ -488,7 +486,8 @@ mod tests {
     #[test]
     fn import_provider_appends_new_rows_at_end() {
         let s = mem();
-        s.save_provider(provider_with_config("Alpha", "{}")).unwrap();
+        s.save_provider(provider_with_config("Alpha", "{}"))
+            .unwrap();
         s.save_provider(provider_with_config("Beta", "{}")).unwrap();
 
         let peer = Provider {
