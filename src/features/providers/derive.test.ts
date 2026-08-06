@@ -1,14 +1,22 @@
 import { describe, expect, it } from "vitest"
 import {
+  authFieldKey,
   configApiKey,
+  configAuthField,
   configEndpoint,
   emptyProvider,
+  extractTemplateVars,
+  metaTemplateValues,
   providerApiKey,
   providerEndpoint,
   providerFromPreset,
   providerModel,
+  replaceTemplateVarsInText,
+  restoreTemplatePlaceholders,
+  switchAuthField,
   withBasicFields,
   withBasicFieldsInText,
+  withMetaTemplateValues,
 } from "@/features/providers/derive"
 import { PROVIDER_PRESETS } from "@/features/providers/presets"
 import type { Provider } from "@/types/generated/bindings"
@@ -278,5 +286,299 @@ describe("providerFromPreset", () => {
     const draft = providerFromPreset(PROVIDER_PRESETS[0]!)
     expect(draft.settingsConfig).toBe(PROVIDER_PRESETS[0]!.settingsConfig)
     expect(JSON.stringify(PROVIDER_PRESETS)).toBe(before)
+  })
+})
+
+describe("configAuthField / switchAuthField", () => {
+  it("maps the field names to the env keys", () => {
+    expect(authFieldKey("auth_token")).toBe("ANTHROPIC_AUTH_TOKEN")
+    expect(authFieldKey("api_key")).toBe("ANTHROPIC_API_KEY")
+  })
+
+  it("defaults to AUTH_TOKEN when no key, or only AUTH_TOKEN, is present", () => {
+    expect(configAuthField("{}")).toBe("auth_token")
+    expect(configAuthField(JSON.stringify({ env: {} }))).toBe("auth_token")
+    expect(
+      configAuthField(JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "" } })),
+    ).toBe("auth_token")
+  })
+
+  it("reports API_KEY when that is the only spelling present", () => {
+    expect(
+      configAuthField(JSON.stringify({ env: { ANTHROPIC_API_KEY: "sk" } })),
+    ).toBe("api_key")
+  })
+
+  it("prefers AUTH_TOKEN when both spellings are present", () => {
+    expect(
+      configAuthField(
+        JSON.stringify({
+          env: { ANTHROPIC_AUTH_TOKEN: "a", ANTHROPIC_API_KEY: "b" },
+        }),
+      ),
+    ).toBe("auth_token")
+  })
+
+  it("moves the key value to the target field and deletes the old key", () => {
+    const next = switchAuthField(
+      JSON.stringify({
+        includeCoAuthoredBy: false,
+        env: { ANTHROPIC_AUTH_TOKEN: "sk-x", ANTHROPIC_MODEL: "keep-me" },
+      }),
+      "auth_token",
+      "api_key",
+    )
+    expect(JSON.parse(next)).toEqual({
+      includeCoAuthoredBy: false,
+      env: { ANTHROPIC_API_KEY: "sk-x", ANTHROPIC_MODEL: "keep-me" },
+    })
+  })
+
+  it("moves the legacy API_KEY spelling back to AUTH_TOKEN", () => {
+    const next = switchAuthField(
+      JSON.stringify({ env: { ANTHROPIC_API_KEY: "sk-legacy" } }),
+      "api_key",
+      "auth_token",
+    )
+    expect(JSON.parse(next)).toEqual({
+      env: { ANTHROPIC_AUTH_TOKEN: "sk-legacy" },
+    })
+  })
+
+  it("moves an empty value so the selected field survives a toggled preset", () => {
+    const next = switchAuthField(
+      JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "" } }),
+      "auth_token",
+      "api_key",
+    )
+    expect(JSON.parse(next)).toEqual({ env: { ANTHROPIC_API_KEY: "" } })
+    expect(configAuthField(next)).toBe("api_key")
+  })
+
+  it("removes the old key without creating a new one when there is no value", () => {
+    const next = switchAuthField('{"env":{}}', "auth_token", "api_key")
+    expect(JSON.parse(next)).toEqual({ env: {} })
+  })
+
+  it("is a no-op when from === to", () => {
+    const text = JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "sk" } })
+    expect(switchAuthField(text, "auth_token", "auth_token")).toBe(text)
+  })
+})
+
+describe("withBasicFields with a selected auth field", () => {
+  it("writes the key under the selected field and drops the other spelling", () => {
+    const p = provider(
+      JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "sk-old" } }),
+    )
+    const next = withBasicFields(p, {
+      endpoint: "",
+      apiKey: "sk-new",
+      authField: "api_key",
+    })
+    expect(providerApiKey(next)).toBe("sk-new")
+    const env = (
+      JSON.parse(next.settingsConfig) as {
+        env: Record<string, string>
+      }
+    ).env
+    expect(env).toEqual({ ANTHROPIC_API_KEY: "sk-new" })
+  })
+
+  it("is the text-level twin: an API_KEY selection survives a field merge", () => {
+    const next = withBasicFieldsInText(
+      '{"env":{"ANTHROPIC_AUTH_TOKEN":"old"}}',
+      { endpoint: "https://x.dev", apiKey: "k", authField: "api_key" },
+    )
+    expect(JSON.parse(next)).toEqual({
+      env: { ANTHROPIC_BASE_URL: "https://x.dev", ANTHROPIC_API_KEY: "k" },
+    })
+    expect(configAuthField(next)).toBe("api_key")
+  })
+})
+
+describe("extractTemplateVars / replaceTemplateVarsInText", () => {
+  it("collects the Bedrock preset's placeholder names, deduped, in order", () => {
+    const bedrock = PROVIDER_PRESETS.find(
+      (p) => p.name === "AWS Bedrock (AKSK)",
+    )
+    expect(bedrock).toBeDefined()
+    expect(extractTemplateVars(bedrock!.settingsConfig)).toEqual([
+      "AWS_REGION",
+      "AWS_ACCESS_KEY_ID",
+      "AWS_SECRET_ACCESS_KEY",
+    ])
+  })
+
+  it("finds and replaces placeholders in nested non-env settings too", () => {
+    const text = JSON.stringify({
+      env: { ANTHROPIC_BASE_URL: "https://x.dev" },
+      hooks: {
+        PreToolUse: [
+          {
+            // biome-ignore lint/suspicious/noTemplateCurlyInString: 断言字面量占位符文本
+            matcher: "http://${HOST}/cb",
+          },
+        ],
+      },
+    })
+    expect(extractTemplateVars(text)).toEqual(["HOST"])
+    const next = replaceTemplateVarsInText(text, { HOST: "127.0.0.1" })
+    expect(JSON.parse(next)).toEqual({
+      env: { ANTHROPIC_BASE_URL: "https://x.dev" },
+      hooks: { PreToolUse: [{ matcher: "http://127.0.0.1/cb" }] },
+    })
+  })
+
+  it("returns an empty list for a clean or garbage snapshot", () => {
+    expect(extractTemplateVars("{}")).toEqual([])
+    expect(extractTemplateVars("not-json")).toEqual([])
+  })
+
+  it("replaces filled variables and keeps the unfilled placeholders verbatim", () => {
+    const bedrock = PROVIDER_PRESETS.find(
+      (p) => p.name === "AWS Bedrock (AKSK)",
+    )
+    expect(bedrock).toBeDefined()
+    const next = replaceTemplateVarsInText(bedrock!.settingsConfig, {
+      AWS_REGION: "ap-northeast-1",
+    })
+    const env = (
+      JSON.parse(next) as {
+        env: Record<string, string>
+      }
+    ).env
+    expect(env.ANTHROPIC_BASE_URL).toBe(
+      "https://bedrock-runtime.ap-northeast-1.amazonaws.com",
+    )
+    expect(env.AWS_REGION).toBe("ap-northeast-1")
+    expect(env.AWS_ACCESS_KEY_ID).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: 断言字面量占位符文本
+      "${AWS_ACCESS_KEY_ID}",
+    )
+    expect(extractTemplateVars(next)).toEqual([
+      "AWS_ACCESS_KEY_ID",
+      "AWS_SECRET_ACCESS_KEY",
+    ])
+  })
+
+  it("keeps the placeholder verbatim when a variable is missing or empty", () => {
+    const text = JSON.stringify({
+      env: {
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: 断言字面量占位符文本
+        ANTHROPIC_BASE_URL: "https://bedrock-runtime.${AWS_REGION}.amazonaws.com",
+      },
+    })
+    expect(JSON.parse(replaceTemplateVarsInText(text, { AWS_REGION: "" }))).toEqual(
+      JSON.parse(text),
+    )
+    expect(JSON.parse(replaceTemplateVarsInText(text, {}))).toEqual(
+      JSON.parse(text),
+    )
+  })
+})
+
+describe("restoreTemplatePlaceholders", () => {
+  it("reverts every occurrence of a recorded value to its placeholder", () => {
+    const text = JSON.stringify({
+      env: {
+        ANTHROPIC_BASE_URL:
+          "https://bedrock-runtime.us-east-1.amazonaws.com",
+        AWS_REGION: "us-east-1",
+      },
+    })
+    const restored = restoreTemplatePlaceholders(text, {
+      AWS_REGION: "us-east-1",
+    })
+    expect(JSON.parse(restored)).toEqual({
+      env: {
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: 断言字面量占位符文本
+        ANTHROPIC_BASE_URL: "https://bedrock-runtime.${AWS_REGION}.amazonaws.com",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: 断言字面量占位符文本
+        AWS_REGION: "${AWS_REGION}",
+      },
+    })
+  })
+
+  it("leaves values without a recorded template untouched", () => {
+    const text = JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://x.dev" } })
+    expect(
+      JSON.parse(restoreTemplatePlaceholders(text, { AWS_REGION: "us-east-1" })),
+    ).toEqual(JSON.parse(text))
+  })
+})
+
+describe("metaTemplateValues / withMetaTemplateValues", () => {
+  it("reads the recorded values; garbage or empty meta → {}", () => {
+    const meta = withMetaTemplateValues("{}", {
+      AWS_REGION: "ap-1",
+      AWS_ACCESS_KEY_ID: "AKIA1",
+    })
+    expect(metaTemplateValues(meta)).toEqual({
+      AWS_REGION: "ap-1",
+      AWS_ACCESS_KEY_ID: "AKIA1",
+    })
+    expect(metaTemplateValues("not-json")).toEqual({})
+    expect(metaTemplateValues("")).toEqual({})
+  })
+
+  it("keeps unknown meta keys and drops non-string entries", () => {
+    const meta = withMetaTemplateValues('{"favorite": true}', {
+      AWS_REGION: "ap-1",
+    })
+    expect(JSON.parse(meta)).toEqual({
+      favorite: true,
+      templateValues: { AWS_REGION: "ap-1" },
+    })
+    expect(
+      metaTemplateValues('{"templateValues": {"A": "x", "B": 3}}'),
+    ).toEqual({ A: "x" })
+  })
+
+  it("removes the templateValues key when nothing is filled", () => {
+    expect(withMetaTemplateValues("{}", {})).toBe("{}")
+    expect(
+      withMetaTemplateValues(
+        '{"templateValues": {"A": "old"}}',
+        { A: "" },
+      ),
+    ).toBe("{}")
+  })
+})
+
+describe("Bedrock preset end to end", () => {
+  const bedrock = PROVIDER_PRESETS.find((p) => p.name === "AWS Bedrock (AKSK)")!
+  const values = {
+    AWS_REGION: "ap-northeast-1",
+    AWS_ACCESS_KEY_ID: "AKIAEXAMPLEKEY",
+    AWS_SECRET_ACCESS_KEY: "SKEXAMPLE",
+  }
+
+  it("materializes the preset placeholders into the snapshot", () => {
+    const next = replaceTemplateVarsInText(bedrock.settingsConfig, values)
+    expect(extractTemplateVars(next)).toEqual([])
+    const env = (
+      JSON.parse(next) as {
+        env: Record<string, string>
+      }
+    ).env
+    expect(env.ANTHROPIC_BASE_URL).toBe(
+      "https://bedrock-runtime.ap-northeast-1.amazonaws.com",
+    )
+    expect(env.AWS_REGION).toBe("ap-northeast-1")
+    expect(env.AWS_ACCESS_KEY_ID).toBe("AKIAEXAMPLEKEY")
+    expect(env.AWS_SECRET_ACCESS_KEY).toBe("SKEXAMPLE")
+    // 非模板字段原样保留。
+    expect(env.CLAUDE_CODE_USE_BEDROCK).toBe("1")
+  })
+
+  it("restores the placeholders verbatim for re-editing from meta values", () => {
+    const materialized = replaceTemplateVarsInText(
+      bedrock.settingsConfig,
+      values,
+    )
+    expect(restoreTemplatePlaceholders(materialized, values)).toBe(
+      bedrock.settingsConfig,
+    )
   })
 })
