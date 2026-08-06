@@ -24,6 +24,8 @@ import {
   useListSessionsQuery,
   useRenameLocalGroupMutation,
   useRenameSyncedGroupMutation,
+  useReorderLocalGroupsMutation,
+  useReorderSyncedGroupsMutation,
   useSessionTranscriptQuery,
   useSetSessionCustomTitleMutation,
   useSetSessionFavoritedMutation,
@@ -38,6 +40,7 @@ import { usePersistedState } from "@/lib/persistence"
 import type { SessionGroup, SessionRow } from "@/types/generated/bindings"
 import {
   ALL_GROUPS,
+  applyGroupOrder,
   canCreateSyncedGroup,
   effectiveFavorite,
   favKey,
@@ -167,7 +170,8 @@ export function useSessionsBrowser() {
     },
   )
   const sessions = sessionsQuery.data ?? []
-  const { data: groups = [] } = useListGroupsQuery()
+  const groupsQuery = useListGroupsQuery()
+  const groups = groupsQuery.data ?? []
   const { data: devices = [] } = useDevicesQuery()
   const transcriptQuery = useSessionTranscriptQuery(
     previewKey
@@ -184,6 +188,16 @@ export function useSessionsBrowser() {
     setFavOverrides({})
   }, [sessionsData])
 
+  // Same pattern for the group-drag override: cleared when the reorder's
+  // invalidation delivers the real order.
+  const [groupOrderOverride, setGroupOrderOverride] = useState<string[] | null>(
+    null,
+  )
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional — clear overrides when fresh query data arrives; the body needs no groupsData value
+  useEffect(() => {
+    setGroupOrderOverride(null)
+  }, [groupsQuery.data])
+
   const [favoritedMut] = useSetSessionFavoritedMutation()
   const [customTitleMut] = useSetSessionCustomTitleMutation()
   const [setLocalGroupMut] = useSetSessionLocalGroupMutation()
@@ -194,12 +208,20 @@ export function useSessionsBrowser() {
   const [createSyncedMut] = useCreateSyncedGroupMutation()
   const [renameSyncedMut] = useRenameSyncedGroupMutation()
   const [deleteSyncedMut] = useDeleteSyncedGroupMutation()
+  const [reorderLocalMut] = useReorderLocalGroupsMutation()
+  const [reorderSyncedMut] = useReorderSyncedGroupsMutation()
   const runWithToast = useMutateWithToast()
 
   // ---- derived read model (pure functions from ./derive) ----
+  // Natural order comes sorted from the backend; the override re-sorts it
+  // optimistically while a drag's write is in flight.
   const trackGroups = useMemo(
-    () => groups.filter((g) => g.kind === effectiveTrack),
-    [groups, effectiveTrack],
+    () =>
+      applyGroupOrder(
+        groups.filter((g) => g.kind === effectiveTrack),
+        groupOrderOverride,
+      ),
+    [groups, effectiveTrack, groupOrderOverride],
   )
   const sorted = useMemo(() => sortSessions(sessions), [sessions])
   const filtered = useMemo(
@@ -440,6 +462,19 @@ export function useSessionsBrowser() {
     }
   }
 
+  // Group drag-reorder: optimistic stamp → mutate → snap back on failure. A
+  // drag must not visibly snap while the write is in flight (synced reorders
+  // round-trip through git), and the outcome is already visible to the user —
+  // no success toast.
+  async function reorderGroups(orderedIds: string[]): Promise<void> {
+    setGroupOrderOverride(orderedIds)
+    const mut = effectiveTrack === "local" ? reorderLocalMut : reorderSyncedMut
+    const ok = await runWithToast(mut, orderedIds, {
+      failed: { key: "sessions.toast.failed" },
+    })
+    if (!ok) setGroupOrderOverride(null)
+  }
+
   return {
     // tab / search / source / model / selection
     tab,
@@ -498,6 +533,7 @@ export function useSessionsBrowser() {
     createGroup,
     renameGroup,
     deleteGroup,
+    reorderGroups,
     pendingGroup,
     busyGroupId,
   }

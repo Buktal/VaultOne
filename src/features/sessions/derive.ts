@@ -273,3 +273,40 @@ export function canCreateSyncedGroup(
 ): boolean {
   return track !== "synced" || synced
 }
+
+/**
+ * The new track order after a drag: move `activeId` to `overId`'s slot —
+ * everything between shifts by one (dnd-kit's arrayMove semantics, so the
+ * result matches the live visual). Returns null when the drag landed where
+ * it started, so callers can skip the backend round trip.
+ */
+export function reorderGroupIds(
+  ids: readonly string[],
+  activeId: string,
+  overId: string,
+): string[] | null {
+  const from = ids.indexOf(activeId)
+  const to = ids.indexOf(overId)
+  if (from < 0 || to < 0 || from === to) return null
+  const next = ids.slice()
+  const [moved] = next.splice(from, 1)
+  next.splice(to, 0, moved)
+  return next
+}
+
+/**
+ * Apply an optimistic drag-override to the track groups: `orderedIds` is the
+ * new order the user just dragged to. Groups the override no longer knows
+ * (deleted mid-flight) sort to the end in their original relative order —
+ * never dropped. null override = natural order.
+ */
+export function applyGroupOrder(
+  groups: SessionGroup[],
+  orderedIds: string[] | null,
+): SessionGroup[] {
+  if (!orderedIds) return groups
+  const rank = new Map(orderedIds.map((id, i) => [id, i]))
+  return [...groups].sort(
+    (a, b) => (rank.get(a.id) ?? 1_000_000) - (rank.get(b.id) ?? 1_000_000),
+  )
+}

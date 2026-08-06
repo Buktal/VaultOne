@@ -123,6 +123,7 @@ export function SessionsView() {
           onCreate={b.openCreateGroup}
           onRename={b.renameGroup}
           onDelete={b.deleteGroup}
+          onReorder={b.reorderGroups}
           pendingGroup={b.pendingGroup}
           busyGroupId={b.busyGroupId}
           track={b.effectiveTrack}

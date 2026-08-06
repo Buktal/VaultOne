@@ -393,6 +393,19 @@ export const vaultApi = createApi({
       queryFn: async (id) => run(commands.deleteSyncedGroupCmd(id)),
       invalidatesTags: ["Sessions"],
     }),
+    // Drag-reorder: the full track order after a drop. Both tracks invalidate
+    // `Sessions` like every other group write, so the sidebar refetches the
+    // new order in place.
+    reorderLocalGroups: b.mutation<null, string[]>({
+      queryFn: async (orderedIds) =>
+        run(commands.reorderLocalGroupsCmd(orderedIds)),
+      invalidatesTags: ["Sessions"],
+    }),
+    reorderSyncedGroups: b.mutation<null, string[]>({
+      queryFn: async (orderedIds) =>
+        run(commands.reorderSyncedGroupsCmd(orderedIds)),
+      invalidatesTags: ["Sessions"],
+    }),
 
     // ---- preferences ----
     // Go through the generated `commands.*` so tauri-specta's `typedError`
@@ -483,6 +496,8 @@ export const {
   useCreateSyncedGroupMutation,
   useRenameSyncedGroupMutation,
   useDeleteSyncedGroupMutation,
+  useReorderLocalGroupsMutation,
+  useReorderSyncedGroupsMutation,
 } = vaultApi
 
 export type VaultApi = typeof vaultApi

@@ -7,12 +7,14 @@ import { describe, expect, it } from "vitest"
 import type { SessionGroup, SessionRow } from "@/types/generated/bindings"
 import {
   ALL_GROUPS,
+  applyGroupOrder,
   canCreateSyncedGroup,
   effectiveFavorite,
   favKey,
   filterSessionsByQuery,
   groupSessionsByGroup,
   nextFavValue,
+  reorderGroupIds,
   selectSessions,
   sessionTabFilter,
   sortSessions,
@@ -418,5 +420,53 @@ describe("canCreateSyncedGroup", () => {
   it("synced track needs a bound repo", () => {
     expect(canCreateSyncedGroup("synced", false)).toBe(false)
     expect(canCreateSyncedGroup("synced", true)).toBe(true)
+  })
+})
+
+describe("reorderGroupIds", () => {
+  it("moves a group down (drag to a later slot)", () => {
+    expect(reorderGroupIds(["a", "b", "c"], "a", "c")).toEqual(["b", "c", "a"])
+  })
+
+  it("moves a group up (drag to an earlier slot)", () => {
+    expect(reorderGroupIds(["a", "b", "c"], "c", "a")).toEqual(["c", "a", "b"])
+  })
+
+  it("returns null when the drag lands where it started", () => {
+    expect(reorderGroupIds(["a", "b", "c"], "a", "a")).toBeNull()
+  })
+
+  it("returns null on unknown ids (defensive)", () => {
+    expect(reorderGroupIds(["a", "b"], "zz", "b")).toBeNull()
+    expect(reorderGroupIds(["a", "b"], "a", "zz")).toBeNull()
+  })
+})
+
+describe("applyGroupOrder", () => {
+  const groups = (ids: string[]): SessionGroup[] =>
+    ids.map((id) => ({
+      id,
+      name: id,
+      kind: "local",
+      device_id: "",
+    }))
+
+  it("null override keeps the natural order", () => {
+    const g = groups(["a", "b", "c"])
+    expect(applyGroupOrder(g, null)).toEqual(g)
+  })
+
+  it("applies the dragged order", () => {
+    expect(
+      applyGroupOrder(groups(["a", "b", "c"]), ["c", "a", "b"]).map(
+        (g) => g.id,
+      ),
+    ).toEqual(["c", "a", "b"])
+  })
+
+  it("groups missing from the override sort last, never dropped", () => {
+    // "c" was deleted mid-flight — it still renders, at the end.
+    const out = applyGroupOrder(groups(["a", "b", "c"]), ["b", "a"])
+    expect(out.map((g) => g.id)).toEqual(["b", "a", "c"])
   })
 })

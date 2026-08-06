@@ -9,6 +9,19 @@
 // transient local state (the hook only learns the new name on submit).
 
 import {
+  DndContext,
+  type DragEndEvent,
+  PointerSensor,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core"
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable"
+import { CSS } from "@dnd-kit/utilities"
+import {
   Check,
   FolderTree,
   Loader2,
@@ -34,6 +47,7 @@ import {
   ALL_GROUPS,
   type GroupedSessions,
   type GroupTrack,
+  reorderGroupIds,
   UNGROUPED,
 } from "../derive"
 
@@ -46,6 +60,7 @@ export function GroupSidebar({
   onCreate,
   onRename,
   onDelete,
+  onReorder,
   pendingGroup,
   busyGroupId,
   track,
@@ -58,6 +73,7 @@ export function GroupSidebar({
   onCreate: () => void
   onRename: (g: SessionGroup, name: string) => Promise<void>
   onDelete: (g: SessionGroup) => Promise<void>
+  onReorder: (orderedIds: string[]) => void
   pendingGroup: string | null
   busyGroupId: string | null
   track: GroupTrack
@@ -67,6 +83,24 @@ export function GroupSidebar({
     grouped.groups.map((x) => [x.group.id, x.sessions.length]),
   )
   const ungroupedCount = grouped.ungrouped.length
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      // 6px of movement before a press becomes a drag — clicks keep selecting
+      // the row / opening its popover; moves reorder.
+      activationConstraint: { distance: 6 },
+    }),
+  )
+
+  function handleDragEnd(event: DragEndEvent): void {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+    const next = reorderGroupIds(
+      trackGroups.map((g) => g.id),
+      String(active.id),
+      String(over.id),
+    )
+    if (next) onReorder(next)
+  }
 
   return (
     <div className="border-border bg-card flex min-h-0 w-52 shrink-0 flex-col gap-1 rounded-lg border p-2">
@@ -87,18 +121,27 @@ export function GroupSidebar({
             active={selectedGroupId === ALL_GROUPS}
             onClick={() => onSelect(ALL_GROUPS)}
           />
-          {trackGroups.map((g) => (
-            <GroupRow
-              key={g.id}
-              group={g}
-              count={countById.get(g.id) ?? 0}
-              active={selectedGroupId === g.id}
-              onSelect={() => onSelect(g.id)}
-              onRename={onRename}
-              onDelete={onDelete}
-              busy={busyGroupId === g.id}
-            />
-          ))}
+          {/* Only the custom group rows are sortable — the ALL / UNGROUPED
+            sentinels stay outside DndContext so they can never move. */}
+          <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+            <SortableContext
+              items={trackGroups.map((g) => g.id)}
+              strategy={verticalListSortingStrategy}
+            >
+              {trackGroups.map((g) => (
+                <GroupRow
+                  key={g.id}
+                  group={g}
+                  count={countById.get(g.id) ?? 0}
+                  active={selectedGroupId === g.id}
+                  onSelect={() => onSelect(g.id)}
+                  onRename={onRename}
+                  onDelete={onDelete}
+                  busy={busyGroupId === g.id}
+                />
+              ))}
+            </SortableContext>
+          </DndContext>
           {pendingGroup ? (
             <div className="text-muted-foreground flex items-center gap-2 rounded-md px-2 py-1.5 text-sm">
               <Loader2 className="size-3.5 animate-spin" />
@@ -178,6 +221,11 @@ function GroupRow({
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState(g.name)
   const [popoverOpen, setPopoverOpen] = useState(false)
+  // The whole row is the drag handle (no separate grip icon — the sidebar is
+  // 208px wide). Busy rows are disabled: a rename/delete in flight can't be
+  // reordered out from under.
+  const { setNodeRef, transform, transition, isDragging, listeners } =
+    useSortable({ id: g.id, disabled: busy })
 
   function startRename() {
     setDraft(g.name)
@@ -200,10 +248,16 @@ function GroupRow({
 
   return (
     <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      {...listeners}
       className={cn(
         "group/grow hover:bg-muted flex items-center gap-1 rounded-md px-2 py-1.5 text-sm transition-colors",
         active ? "bg-muted text-foreground" : "text-muted-foreground",
         busy && "opacity-60",
+        // The dragged row floats above its siblings while the others make
+        // room via the sortable transform.
+        isDragging && "relative z-10 opacity-60 shadow-sm",
       )}
     >
       <button
