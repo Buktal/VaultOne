@@ -662,15 +662,11 @@ pub fn create_local_group_cmd(
 ) -> AppResult<LocalGroup> {
     let id = sessions::generate_local_group_id();
     let created_at = crate::time::now_iso();
-    state
+    let group = state
         .store
         .create_local_group(&id, name.trim(), &created_at)?;
     emit_sessions_changed(&app_handle);
-    Ok(LocalGroup {
-        id,
-        name: name.trim().to_string(),
-        created_at,
-    })
+    Ok(group)
 }
 
 #[tauri::command]
@@ -694,6 +690,18 @@ pub fn delete_local_group_cmd(
     id: String,
 ) -> AppResult<()> {
     state.store.delete_local_group(&id)?;
+    emit_sessions_changed(&app_handle);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn reorder_local_groups_cmd(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    ordered_ids: Vec<String>,
+) -> AppResult<()> {
+    state.store.reorder_local_groups(&ordered_ids)?;
     emit_sessions_changed(&app_handle);
     Ok(())
 }
@@ -760,6 +768,25 @@ pub async fn delete_synced_group_cmd(
     })
     .await
     .map_err(|e| AppError::Internal(format!("delete_synced_group task failed: {e}")))??;
+    emit_sessions_changed(&app_handle);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn reorder_synced_groups_cmd(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    ordered_ids: Vec<String>,
+) -> AppResult<()> {
+    let config = state.config.clone();
+    tauri::async_runtime::spawn_blocking(move || -> AppResult<()> {
+        let cfg = config.get();
+        let paths = config.paths();
+        sessions::reorder_synced_groups_owned(&paths, &cfg, &ordered_ids)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("reorder_synced_group task failed: {e}")))??;
     emit_sessions_changed(&app_handle);
     Ok(())
 }

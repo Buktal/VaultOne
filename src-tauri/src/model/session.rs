@@ -198,7 +198,9 @@ pub struct SessionFilter {
     pub model: Option<String>,
 }
 
-/// One group entry for the frontend, unified across the two tracks.
+/// One group entry for the frontend, unified across the two tracks. Order is
+/// carried by the ARRAY order `list_groups_dto` returns (already sorted by
+/// position per track) — no redundant per-row sort key.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct SessionGroup {
     pub id: String,
@@ -217,6 +219,15 @@ pub struct LocalGroup {
     pub id: String,
     pub name: String,
     pub created_at: String,
+    /// Sort key within the track. `list_local_groups` orders by it (ties fall
+    /// back to name, keeping the pre-sort-order output deterministic).
+    pub position: u32,
+}
+
+/// Missing-position fallback for old synced-groups files (no `position` field):
+/// MAX sorts them AFTER user-ordered groups instead of jumping to the front.
+pub fn default_group_position() -> u32 {
+    u32::MAX
 }
 
 /// A synced-group row (`data/<deviceId>/groups.json`; cross-device via git).
@@ -230,4 +241,9 @@ pub struct SyncedGroup {
     /// too, but kept here for read-without-parse convenience.
     pub device_id: String,
     pub updated_at: String,
+    /// User-ordered position WITHIN this device's own groups (array index order
+    /// can't survive the per-device merge, so the rank is explicit data). Old
+    /// files lack the field — `default_group_position` (MAX) sorts them last.
+    #[serde(default = "default_group_position")]
+    pub position: u32,
 }

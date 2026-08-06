@@ -54,6 +54,35 @@ pub(super) fn migrate_schema(conn: &Connection) -> AppResult<()> {
         }
     }
 
+    // `local_groups.position` (added after the initial schema) — the sort key
+    // for the user-ordered group list. Same probe-ALTER pattern as above; old
+    // rows get the DEFAULT 0, i.e. sorted first — the legacy alphabetical
+    // order this migration replaces. The table itself may not exist on stores
+    // older than the groups feature, so gate on sqlite_master (PRAGMA
+    // table_info errors on a missing table).
+    {
+        let has_table: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='local_groups'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_table > 0 {
+            let mut have_local: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            let mut stmt = conn.prepare("PRAGMA table_info(local_groups)")?;
+            let names = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            for n in names {
+                have_local.insert(n?);
+            }
+            if !have_local.contains("position") {
+                conn.execute(
+                    "ALTER TABLE local_groups ADD COLUMN position INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )?;
+            }
+        }
+    }
+
     // uuid 单列 PRIMARY KEY → (uuid, device_id) 复合主键。旧库的 usage_records /
     // turn_durations 以 uuid 为单列主键,把"同 uuid、不同设备"的记录折叠成一条
     // (后导入者被丢)——同一份 ~/.claude/projects 被两个 device_id 扫描,或
@@ -285,6 +314,47 @@ mod tests {
             )
             .unwrap();
         assert_eq!(idx, 1, "idx_usage_session created after the column landed");
+    }
+
+    /// Regression: a legacy `local_groups` table without the `position` column
+    /// (added with drag-to-reorder) is upgraded in place by probe-ALTER, and
+    /// pre-existing rows fall back to position 0.
+    #[test]
+    fn migrate_adds_local_groups_position() {
+        let conn = Connection::open_in_memory().unwrap();
+        // usage_records must exist (migrate_schema probes it first) — built
+        // with the full current column set so only local_groups is legacy.
+        conn.execute_batch(
+            "CREATE TABLE usage_records (
+                uuid TEXT PRIMARY KEY, timestamp TEXT NOT NULL, day TEXT NOT NULL,
+                model TEXT NOT NULL, pricing_model TEXT NOT NULL, source TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+                cache_creation_tokens INTEGER NOT NULL, cache_read_tokens INTEGER NOT NULL,
+                server_tool_use TEXT NOT NULL DEFAULT '{}', stop_reason TEXT NOT NULL DEFAULT '',
+                service_tier TEXT NOT NULL DEFAULT '', iterations INTEGER NOT NULL DEFAULT 0,
+                session_id TEXT NOT NULL DEFAULT '',
+                input_cost_usd TEXT NOT NULL, output_cost_usd TEXT NOT NULL,
+                cache_read_cost_usd TEXT NOT NULL, cache_creation_cost_usd TEXT NOT NULL,
+                total_cost_usd TEXT NOT NULL
+            );
+            CREATE TABLE local_groups (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL
+            );
+            INSERT INTO local_groups (id, name, created_at)
+                VALUES ('g1', 'Legacy', '2026-08-01T00:00:00Z');",
+        )
+        .unwrap();
+        assert!(conn.prepare("SELECT position FROM local_groups").is_err());
+
+        migrate_schema(&conn).unwrap();
+
+        let pos: i64 = conn
+            .query_row("SELECT position FROM local_groups WHERE id='g1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(pos, 0, "legacy rows default to position 0");
     }
 
     /// Regression companion: a legacy DB ALREADY on the composite (uuid,

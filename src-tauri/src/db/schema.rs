@@ -172,11 +172,13 @@ pub(super) const SESSIONS_INDEXES: &str = "\
     CREATE INDEX IF NOT EXISTS idx_sessions_favorited ON sessions(favorited);";
 
 /// `local_groups` — device-private group names (local track). Never enters
-/// git; CRUD is immediate (no network).
+/// git; CRUD is immediate (no network). `position` is the user-ordered sort
+/// key within the track (see `store_groups`).
 pub(super) const LOCAL_GROUPS_COLS_DDL: &str = "\
     id TEXT PRIMARY KEY, \
     name TEXT NOT NULL, \
-    created_at TEXT NOT NULL";
+    created_at TEXT NOT NULL, \
+    position INTEGER NOT NULL DEFAULT 0";
 
 /// `session_messages` — one row per transcript line, for ALL sessions (not just
 /// favorited). `(device_id, uuid)` = dedup key: a source event replayed lands

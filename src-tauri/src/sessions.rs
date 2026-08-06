@@ -63,7 +63,14 @@ pub fn read_all_synced_groups(paths: &Paths) -> Vec<SyncedGroup> {
         }
     }
     let mut out: Vec<SyncedGroup> = by_id.into_values().collect();
-    out.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
+    // User-ordered by position (old files without the field default to MAX →
+    // sort last); name breaks ties for determinism on missing positions.
+    out.sort_by(|a, b| {
+        a.position
+            .cmp(&b.position)
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.id.cmp(&b.id))
+    });
     out
 }
 
@@ -120,13 +127,23 @@ pub fn create_synced_group_owned(
         return Err(AppError::Config("group name must not be empty".into()));
     }
     let id = generate_synced_group_id(&cfg.device_id);
+    let mut groups = own_synced_groups(paths, &cfg.device_id);
+    // New groups append at the END of the current merged display order.
+    // Legacy groups (position u32::MAX — files that predate drag-reorder) are
+    // excluded so they keep sorting last until the user reorders once.
+    let position = read_all_synced_groups(paths)
+        .iter()
+        .map(|g| g.position)
+        .filter(|p| *p != u32::MAX)
+        .max()
+        .map_or(0, |m| m + 1);
     let group = SyncedGroup {
         id,
         name: name.to_string(),
         device_id: cfg.device_id.clone(),
         updated_at: crate::time::now_iso(),
+        position,
     };
-    let mut groups = own_synced_groups(paths, &cfg.device_id);
     groups.push(group.clone());
     write_own_synced_groups(paths, &cfg.device_id, &groups)?;
     crate::sync::commit_and_push_best_effort(paths, cfg, "vaultone: groups sync");
@@ -151,6 +168,42 @@ pub fn rename_synced_group_owned(
     })?;
     g.name = name.to_string();
     g.updated_at = crate::time::now_iso();
+    write_own_synced_groups(paths, &cfg.device_id, &groups)?;
+    crate::sync::commit_and_push_best_effort(paths, cfg, "vaultone: groups sync");
+    Ok(())
+}
+
+/// Reorder the synced groups OWNED by this device. `ordered_ids` is the
+/// track's FULL displayed order (every synced group, including peers') as
+/// submitted by the frontend after a drag; each owned group's `position`
+/// becomes its index in that list, so the merged (position, name, id) sort
+/// places the drag exactly where it landed — including between peer groups.
+/// Peer groups are never written (their positions live in their owners'
+/// files) and stale ids are ignored, so a peer group deleted or reordered
+/// between fetch and drop cannot fail this write. A drag that changed
+/// nothing writes nothing (no empty git commit).
+pub fn reorder_synced_groups_owned(
+    paths: &Paths,
+    cfg: &ConfigData,
+    ordered_ids: &[String],
+) -> AppResult<()> {
+    let mut groups = own_synced_groups(paths, &cfg.device_id);
+    if groups.is_empty() {
+        return Ok(());
+    }
+    let mut changed = false;
+    for g in &mut groups {
+        if let Some(pos) = ordered_ids.iter().position(|id| id == &g.id) {
+            if g.position != pos as u32 {
+                g.position = pos as u32;
+                g.updated_at = crate::time::now_iso();
+                changed = true;
+            }
+        }
+    }
+    if !changed {
+        return Ok(());
+    }
     write_own_synced_groups(paths, &cfg.device_id, &groups)?;
     crate::sync::commit_and_push_best_effort(paths, cfg, "vaultone: groups sync");
     Ok(())
@@ -233,6 +286,7 @@ mod tests {
             name: "A-group".into(),
             device_id: "aabbccddeeff".into(),
             updated_at: "2026-08-01T10:00:00.000Z".into(),
+            position: 0,
         };
         write_own_synced_groups(&paths, "aabbccddeeff", std::slice::from_ref(&a)).unwrap();
         // Device B owns another.
@@ -241,6 +295,7 @@ mod tests {
             name: "B-group".into(),
             device_id: "112233445566".into(),
             updated_at: "2026-08-02T10:00:00.000Z".into(),
+            position: 0,
         };
         write_own_synced_groups(&paths, "112233445566", std::slice::from_ref(&b)).unwrap();
 
@@ -280,6 +335,7 @@ mod tests {
                 name: "Peer".into(),
                 device_id: "112233445566".into(),
                 updated_at: "2026-08-01T00:00:00.000Z".into(),
+                position: 0,
             }],
         )
         .unwrap();
@@ -300,5 +356,130 @@ mod tests {
         )
         .unwrap();
         assert!(read_all_synced_groups(&paths).is_empty());
+    }
+
+    #[test]
+    fn reorder_synced_groups_applies_full_own_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        let cfg = cfg("aabbccddeeff");
+        let a = create_synced_group_owned(&paths, &cfg, "Alpha").unwrap();
+        let b = create_synced_group_owned(&paths, &cfg, "Beta").unwrap();
+        let c = create_synced_group_owned(&paths, &cfg, "Gamma").unwrap();
+
+        // Reverse the creation order.
+        reorder_synced_groups_owned(&paths, &cfg, &[c.id.clone(), b.id.clone(), a.id.clone()])
+            .unwrap();
+
+        let ids: Vec<String> = read_all_synced_groups(&paths)
+            .into_iter()
+            .map(|g| g.id)
+            .collect();
+        assert_eq!(ids, [c.id, b.id, a.id]);
+    }
+
+    /// Reordering takes the track's FULL displayed order: owned groups get
+    /// their position from their index in the list (so a drag can land a
+    /// group between peer groups), peer groups are never written.
+    #[test]
+    fn reorder_renumbers_owned_groups_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        let cfg = cfg("aabbccddeeff");
+        let a1 = create_synced_group_owned(&paths, &cfg, "A1").unwrap();
+        let a2 = create_synced_group_owned(&paths, &cfg, "A2").unwrap();
+        // Peer device B owns b1.
+        let peer = SyncedGroup {
+            id: "112233445566-99999999".into(),
+            name: "B1".into(),
+            device_id: "112233445566".into(),
+            updated_at: "2026-08-01T00:00:00.000Z".into(),
+            position: 0,
+        };
+        write_own_synced_groups(&paths, "112233445566", std::slice::from_ref(&peer)).unwrap();
+
+        // Drag A2 between the peer group and A1 → full displayed order.
+        reorder_synced_groups_owned(&paths, &cfg, &[a1.id.clone(), peer.id, a2.id.clone()])
+            .unwrap();
+
+        let own = read_device_synced_groups(&paths, "aabbccddeeff");
+        let pos = |id: &str| own.iter().find(|g| g.id == id).unwrap().position;
+        assert_eq!(pos(&a1.id), 0);
+        assert_eq!(pos(&a2.id), 2, "index in the FULL list, not renumbered");
+
+        // The peer's file is untouched (positions live in the owner's file).
+        let peer_after = read_device_synced_groups(&paths, "112233445566");
+        assert_eq!(peer_after.len(), 1);
+        assert_eq!(peer_after[0].position, 0);
+    }
+
+    /// New groups append at the END of the merged display order, even after
+    /// a reorder (the user's custom order is not reset by a create).
+    #[test]
+    fn create_appends_after_reordered_merged_max() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        let cfg = cfg("aabbccddeeff");
+        let a = create_synced_group_owned(&paths, &cfg, "Alpha").unwrap();
+        let b = create_synced_group_owned(&paths, &cfg, "Beta").unwrap();
+        reorder_synced_groups_owned(&paths, &cfg, &[b.id.clone(), a.id.clone()]).unwrap();
+
+        let c = create_synced_group_owned(&paths, &cfg, "Gamma").unwrap();
+        let ids: Vec<String> = read_all_synced_groups(&paths)
+            .into_iter()
+            .map(|g| g.id)
+            .collect();
+        assert_eq!(ids, [b.id, a.id, c.id]);
+    }
+
+    /// A reorder that changes nothing must not rewrite the file (no empty
+    /// git commit on every drag that lands back where it started).
+    #[test]
+    fn noop_reorder_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        let cfg = cfg("aabbccddeeff");
+        let a = create_synced_group_owned(&paths, &cfg, "Alpha").unwrap();
+        let b = create_synced_group_owned(&paths, &cfg, "Beta").unwrap();
+
+        let path = groups_json_path(&paths, "aabbccddeeff");
+        let before = std::fs::read_to_string(&path).unwrap();
+        // Same order as stored → no change.
+        reorder_synced_groups_owned(&paths, &cfg, &[a.id, b.id]).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(before, after, "noop reorder must not touch the file");
+    }
+
+    /// A groups.json written before the `position` field shipped must still
+    /// parse; the missing field falls back to MAX so legacy groups sort AFTER
+    /// user-ordered ones (never jump to the front).
+    #[test]
+    fn legacy_groups_json_without_position_sorts_last() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        // Hand-write a legacy file: no position field on either group.
+        std::fs::create_dir_all(paths.device_data_dir("aabbccddeeff")).unwrap();
+        std::fs::write(
+            paths
+                .device_data_dir("aabbccddeeff")
+                .join("groups.json"),
+            r#"{"groups":[
+                {"id":"aabbccddeeff-11111111","name":"Old","device_id":"aabbccddeeff","updated_at":"2026-08-01T00:00:00.000Z"}
+            ]}"#,
+        )
+        .unwrap();
+
+        let all = read_all_synced_groups(&paths);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].position, u32::MAX, "missing field defaults to MAX");
+
+        // A newer user-ordered group sorts before the legacy one.
+        let cfg = cfg("112233445566");
+        let fresh = create_synced_group_owned(&paths, &cfg, "Fresh").unwrap();
+        let ids: Vec<String> = read_all_synced_groups(&paths)
+            .into_iter()
+            .map(|g| g.id)
+            .collect();
+        assert_eq!(ids, [fresh.id, "aabbccddeeff-11111111".to_string()]);
     }
 }

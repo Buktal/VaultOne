@@ -927,4 +927,46 @@ mod tests {
             .unwrap();
         assert_eq!(stats.request_count, 1);
     }
+
+    /// A device's drag-reordered group order rides the groups.json artifact:
+    /// device A creates three groups, reorders them, and device B sees the new
+    /// order after a pull — the core promise of the synced track.
+    #[test]
+    fn synced_groups_reorder_propagates_across_devices() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = tmp.path().join("remote.git");
+        seed_remote(&remote);
+        let url = remote.to_string_lossy().to_string();
+        let dev_a = "aabbccddeeff";
+        let dev_b = "bbccddee0011";
+
+        // Device A: bind, create three groups, then reorder them.
+        let paths_a = crate::config::Paths::resolve(&tmp.path().join("a"));
+        let mut cfg_a = synced_cfg(&url, "tok");
+        cfg_a.device_id = dev_a.to_string();
+        let _repo_a = open_or_clone(&url, &paths_a.repo, "").unwrap();
+        let g1 = crate::sessions::create_synced_group_owned(&paths_a, &cfg_a, "One").unwrap();
+        let g2 = crate::sessions::create_synced_group_owned(&paths_a, &cfg_a, "Two").unwrap();
+        let g3 = crate::sessions::create_synced_group_owned(&paths_a, &cfg_a, "Three").unwrap();
+        // Order: g3, g1, g2.
+        crate::sessions::reorder_synced_groups_owned(
+            &paths_a,
+            &cfg_a,
+            &[g3.id.clone(), g1.id.clone(), g2.id.clone()],
+        )
+        .unwrap();
+
+        // Device B: pull → the reordered groups.json lands in the worktree.
+        let paths_b = crate::config::Paths::resolve(&tmp.path().join("b"));
+        let mut cfg_b = synced_cfg(&url, "tok");
+        cfg_b.device_id = dev_b.to_string();
+        let store_b = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
+        pull_and_import(&store_b, &paths_b, &cfg_b).unwrap();
+
+        let ids: Vec<String> = crate::sessions::read_all_synced_groups(&paths_b)
+            .into_iter()
+            .map(|g| g.id)
+            .collect();
+        assert_eq!(ids, [g3.id, g1.id, g2.id], "B sees A's drag order");
+    }
 }

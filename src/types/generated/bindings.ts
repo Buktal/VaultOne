@@ -171,10 +171,12 @@ export const commands = {
 	createLocalGroupCmd: (name: string) => typedError<LocalGroup, AppError>(__TAURI_INVOKE("create_local_group_cmd", { name })),
 	renameLocalGroupCmd: (id: string, name: string) => typedError<null, AppError>(__TAURI_INVOKE("rename_local_group_cmd", { id, name })),
 	deleteLocalGroupCmd: (id: string) => typedError<null, AppError>(__TAURI_INVOKE("delete_local_group_cmd", { id })),
+	reorderLocalGroupsCmd: (orderedIds: string[]) => typedError<null, AppError>(__TAURI_INVOKE("reorder_local_groups_cmd", { orderedIds })),
 	listSyncedGroupsCmd: () => typedError<SyncedGroup[], AppError>(__TAURI_INVOKE("list_synced_groups_cmd")),
 	createSyncedGroupCmd: (name: string) => typedError<SyncedGroup, AppError>(__TAURI_INVOKE("create_synced_group_cmd", { name })),
 	renameSyncedGroupCmd: (id: string, name: string) => typedError<null, AppError>(__TAURI_INVOKE("rename_synced_group_cmd", { id, name })),
 	deleteSyncedGroupCmd: (id: string) => typedError<null, AppError>(__TAURI_INVOKE("delete_synced_group_cmd", { id })),
+	reorderSyncedGroupsCmd: (orderedIds: string[]) => typedError<null, AppError>(__TAURI_INVOKE("reorder_synced_groups_cmd", { orderedIds })),
 	/**  Unified groups list (local + synced) for one-shot UI fetch. */
 	listGroupsCmd: () => typedError<SessionGroup[], AppError>(__TAURI_INVOKE("list_groups_cmd")),
 	/**
@@ -365,6 +367,11 @@ export type LocalGroup = {
 	id: string,
 	name: string,
 	created_at: string,
+	/**
+	 *  Sort key within the track. `list_local_groups` orders by it (ties fall
+	 *  back to name, keeping the pre-sort-order output deterministic).
+	 */
+	position: number,
 };
 
 /**  Query params for the request-log endpoint (adds paging to `UsageFilter`). */
@@ -453,7 +460,11 @@ export type SessionFilter = {
 	model: string | null,
 };
 
-/**  One group entry for the frontend, unified across the two tracks. */
+/**
+ *  One group entry for the frontend, unified across the two tracks. Order is
+ *  carried by the ARRAY order `list_groups_dto` returns (already sorted by
+ *  position per track) — no redundant per-row sort key.
+ */
 export type SessionGroup = {
 	id: string,
 	name: string,
@@ -616,6 +627,12 @@ export type SyncedGroup = {
 	 */
 	device_id: string,
 	updated_at: string,
+	/**
+	 *  User-ordered position WITHIN this device's own groups (array index order
+	 *  can't survive the per-device merge, so the rank is explicit data). Old
+	 *  files lack the field — `default_group_position` (MAX) sorts them last.
+	 */
+	position?: number,
 };
 
 /**  Token four-pack (per-call). `u32` across the boundary. */
