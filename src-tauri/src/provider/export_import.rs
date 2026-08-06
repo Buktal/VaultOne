@@ -18,21 +18,11 @@ use specta::Type;
 
 use crate::db::Store;
 use crate::error::{AppError, AppResult};
-use crate::model::Provider;
+use crate::model::{Provider, SECRET_ENV_KEYS};
 
 /// 当前导出文档版本。导入只认这个版本——未来格式演进时，旧版 app 读到新文档
 /// 会明确报错而不是静默错解。
 pub const EXPORT_VERSION: u32 = 1;
-
-/// 导出（`include_keys=false`）时从 settingsConfig 的 `env` 块剔除的密钥键。
-/// 本模块是「密钥不出本机」的唯一事实来源——未来若有其他写盘路径（如
-/// providers.json 同步）要剥密钥，必须复用这份清单，不得另抄一份。
-pub const SECRET_ENV_KEYS: &[&str] = &[
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_API_KEY",
-    "AWS_SECRET_ACCESS_KEY",
-    "AWS_ACCESS_KEY_ID",
-];
 
 /// 导入冲突模式：merge = 已有 id 跳过（保留双方，按 id 去重）；overwrite =
 /// 同 id 以导入为准（后者胜），本地独有 id 保留（不做删除——保守迁移）。

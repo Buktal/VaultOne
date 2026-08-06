@@ -1,5 +1,7 @@
-//! Provider (供应商) local-store CRUD. Local-only for now — sync and live
-//! write are later tickets.
+//! Provider (供应商) local-store CRUD. `save_provider` / `delete_provider` /
+//! `get_provider` / `reorder_providers` are the command-layer surface;
+//! `import_provider` is the pull-side sync import (author timestamp +
+//! local sort_index preserved — see its doc).
 
 use super::*;
 use crate::model::{Provider, ProviderCategory};
@@ -25,18 +27,23 @@ impl super::Store {
     /// (max `sort_index` + 1). A non-empty `id` edits the existing row and
     /// keeps its `sort_index` (saving must never move the user's order).
     /// Returns the persisted row — the caller gets the assigned id / position
-    /// without a second read. `updated_at` is always refreshed on save so the
-    /// row carries its latest write time.
+    /// without a second read. `updated_at` is refreshed on save only when the
+    /// syncable structure changed: a key-only edit (the one local-only field)
+    /// must not advance the freshness timestamp, or a key fill on device B
+    /// would make B's row look structurally newer than a peer's real edit and
+    /// the next pull would silently reverse the peer's change. The structural
+    /// comparison is `Provider::structure_equals` (key-stripped, pure) — the
+    /// invariant lives in code, not prose.
     pub fn save_provider(&self, provider: Provider) -> AppResult<Provider> {
         let conn = self.conn.lock().expect("db mutex poisoned");
-        let (id, sort_index) = if provider.id.is_empty() {
+        let (id, sort_index, updated_at) = if provider.id.is_empty() {
             let id = crate::model::generate_provider_id();
             let sort_index: i64 = conn.query_row(
                 "SELECT COALESCE(MAX(sort_index), -1) + 1 FROM provider",
                 [],
                 |r| r.get(0),
             )?;
-            (id, sort_index)
+            (id, sort_index, crate::time::now_iso())
         } else {
             // Editing: keep the row's CURRENT sort_index — the value on disk,
             // never the caller's (saving must not move the user's order, and an
@@ -44,24 +51,29 @@ impl super::Store {
             // the caller read it) falls back to appending at the end, so the
             // upsert "revives" it into a sane position instead of whatever the
             // caller carried.
-            let existing: Option<i64> = conn
+            let existing: Option<Provider> = conn
                 .query_row(
-                    "SELECT sort_index FROM provider WHERE id = ?1",
+                    "SELECT id, name, website_url, category, icon, icon_color, \
+                     sort_index, notes, settings_config, meta, updated_at \
+                     FROM provider WHERE id = ?1",
                     params![provider.id],
-                    |r| r.get(0),
+                    row_to_provider,
                 )
                 .optional()?;
-            let sort_index = match existing {
-                Some(i) => i,
+            let sort_index = match &existing {
+                Some(e) => e.sort_index as i64,
                 None => conn.query_row(
                     "SELECT COALESCE(MAX(sort_index), -1) + 1 FROM provider",
                     [],
                     |r| r.get(0),
                 )?,
             };
-            (provider.id.clone(), sort_index)
+            let updated_at = match &existing {
+                Some(e) if e.structure_equals(&provider) => e.updated_at.clone(),
+                _ => crate::time::now_iso(),
+            };
+            (provider.id.clone(), sort_index, updated_at)
         };
-        let updated_at = crate::time::now_iso();
         conn.execute(
             "INSERT INTO provider \
              (id, name, website_url, category, icon, icon_color, sort_index, notes, \
@@ -93,6 +105,59 @@ impl super::Store {
             updated_at,
             ..provider
         })
+    }
+
+    /// Pull-side import of a peer's provider (synced): upsert preserving the
+    /// AUTHOR's `updated_at` — sync freshness is the author's, not this
+    /// device's import time — and the LOCAL row's `sort_index` (display order
+    /// stays a local preference; a peer's file never shuffles it). A missing
+    /// row appends at the end like `save_provider`. Never refreshes
+    /// `updated_at` (unlike `save_provider`): an import is not an edit. The
+    /// caller (`provider::sync`) owns the latest-wins decision and the
+    /// key-merge — this method only lands the row.
+    pub fn import_provider(&self, provider: &Provider) -> AppResult<()> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let sort_index: i64 = match conn
+            .query_row(
+                "SELECT sort_index FROM provider WHERE id = ?1",
+                params![provider.id],
+                |r| r.get(0),
+            )
+            .optional()?
+        {
+            Some(i) => i,
+            None => conn.query_row(
+                "SELECT COALESCE(MAX(sort_index), -1) + 1 FROM provider",
+                [],
+                |r| r.get(0),
+            )?,
+        };
+        conn.execute(
+            "INSERT INTO provider \
+             (id, name, website_url, category, icon, icon_color, sort_index, notes, \
+              settings_config, meta, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
+             ON CONFLICT(id) DO UPDATE SET \
+               name = excluded.name, website_url = excluded.website_url, \
+               category = excluded.category, icon = excluded.icon, \
+               icon_color = excluded.icon_color, notes = excluded.notes, \
+               settings_config = excluded.settings_config, meta = excluded.meta, \
+               updated_at = excluded.updated_at",
+            params![
+                provider.id,
+                provider.name,
+                provider.website_url,
+                provider.category.as_str(),
+                provider.icon,
+                provider.icon_color,
+                sort_index,
+                provider.notes,
+                provider.settings_config,
+                provider.meta,
+                provider.updated_at
+            ],
+        )?;
+        Ok(())
     }
 
     pub fn delete_provider(&self, id: &str) -> AppResult<()> {
@@ -327,5 +392,121 @@ mod tests {
         assert_eq!(rows[0].category, ProviderCategory::CnOfficial);
         assert_eq!(rows[0].category.as_str(), "cn_official");
         assert_eq!(saved.category, ProviderCategory::CnOfficial);
+    }
+
+    /// Like [`provider`] but with an explicit settings_config.
+    fn provider_with_config(name: &str, settings_config: &str) -> Provider {
+        Provider {
+            settings_config: settings_config.into(),
+            ..provider(name, ProviderCategory::Custom)
+        }
+    }
+
+    /// The sync-freshness invariant: `updated_at` advances on structural
+    /// change only. A key-only edit must not make the row look newer than a
+    /// peer's real edit — otherwise a key fill would let a stale local copy
+    /// win the latest-wins merge and silently reverse the peer's change.
+    #[test]
+    fn key_only_edit_keeps_updated_at_structure_edit_refreshes() {
+        let s = mem();
+        let created = s
+            .save_provider(provider_with_config(
+                "Kimi",
+                r#"{"env":{"ANTHROPIC_BASE_URL":"https://api.kimi.com","ANTHROPIC_AUTH_TOKEN":"sk-old"}}"#,
+            ))
+            .unwrap();
+        let first_updated_at = created.updated_at.clone();
+
+        // A key-only edit must NOT advance the freshness timestamp.
+        let mut keyed = created.clone();
+        keyed.settings_config =
+            r#"{"env":{"ANTHROPIC_BASE_URL":"https://api.kimi.com","ANTHROPIC_AUTH_TOKEN":"sk-new"}}"#
+                .into();
+        let saved = s.save_provider(keyed).unwrap();
+        assert_eq!(
+            saved.updated_at, first_updated_at,
+            "key-only edit keeps updated_at"
+        );
+        // The key itself IS persisted — keys live in the local DB, only the
+        // freshness timestamp is untouched.
+        let row = s.get_provider(&created.id).unwrap().unwrap();
+        assert!(row.settings_config.contains("sk-new"));
+
+        // A structural edit (endpoint) refreshes it.
+        let mut moved = created.clone();
+        moved.settings_config =
+            r#"{"env":{"ANTHROPIC_BASE_URL":"https://other.dev","ANTHROPIC_AUTH_TOKEN":"sk-new"}}"#
+                .into();
+        let saved2 = s.save_provider(moved).unwrap();
+        assert_ne!(
+            saved2.updated_at, first_updated_at,
+            "structural edit bumps updated_at"
+        );
+    }
+
+    /// `import_provider` preserves the AUTHOR's updated_at (sync freshness is
+    /// the author's, not the import time) and the LOCAL sort_index (a peer's
+    /// file must not shuffle this device's display order).
+    #[test]
+    fn import_provider_preserves_author_timestamp_and_local_sort_index() {
+        let s = mem();
+        let created = s.save_provider(provider_with_config("Kimi", "{}")).unwrap();
+        s.save_provider(provider_with_config("Beta", "{}")).unwrap();
+        s.reorder_providers(std::slice::from_ref(&created.id))
+            .unwrap();
+        let before = s.get_provider(&created.id).unwrap().unwrap();
+        assert_eq!(before.sort_index, 0, "local order put Kimi first");
+        let before_updated = before.updated_at.clone();
+
+        let peer = Provider {
+            id: created.id.clone(),
+            name: "Kimi Pro".into(),
+            website_url: "https://x.dev".into(),
+            category: ProviderCategory::Custom,
+            icon: String::new(),
+            icon_color: String::new(),
+            sort_index: 99, // the peer's order — must not land here
+            notes: String::new(),
+            settings_config: r#"{"env":{"ANTHROPIC_BASE_URL":"https://api.kimi.com"}}"#.into(),
+            meta: r#"{}"#.into(),
+            updated_at: "2026-08-01T00:00:00.000Z".into(),
+        };
+        s.import_provider(&peer).unwrap();
+
+        let row = s.get_provider(&created.id).unwrap().unwrap();
+        assert_eq!(row.name, "Kimi Pro");
+        assert_eq!(
+            row.updated_at, "2026-08-01T00:00:00.000Z",
+            "author timestamp preserved"
+        );
+        assert_eq!(row.sort_index, 0, "local sort_index kept");
+        assert_ne!(row.updated_at, before_updated);
+    }
+
+    #[test]
+    fn import_provider_appends_new_rows_at_end() {
+        let s = mem();
+        s.save_provider(provider_with_config("Alpha", "{}"))
+            .unwrap();
+        s.save_provider(provider_with_config("Beta", "{}")).unwrap();
+
+        let peer = Provider {
+            id: "newpeer01".into(),
+            name: "New Peer".into(),
+            website_url: "https://x.dev".into(),
+            category: ProviderCategory::Custom,
+            icon: String::new(),
+            icon_color: String::new(),
+            sort_index: 0,
+            notes: String::new(),
+            settings_config: r#"{"env":{}}"#.into(),
+            meta: r#"{}"#.into(),
+            updated_at: "2026-08-01T00:00:00.000Z".into(),
+        };
+        s.import_provider(&peer).unwrap();
+
+        let row = s.get_provider("newpeer01").unwrap().unwrap();
+        assert_eq!(row.sort_index, 2, "new import appends after existing rows");
+        assert_eq!(row.updated_at, "2026-08-01T00:00:00.000Z");
     }
 }

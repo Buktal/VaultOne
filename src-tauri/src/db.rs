@@ -29,7 +29,7 @@ mod store_sessions;
 mod store_transcript;
 
 #[cfg(test)]
-mod testutil;
+pub(crate) mod testutil;
 
 pub use store_dirty_days::DaySnapshot;
 pub use store_transcript::SessionCounts;
