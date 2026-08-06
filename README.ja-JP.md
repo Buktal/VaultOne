@@ -29,8 +29,6 @@ AI CLI——**Claude Code、Codex、Gemini CLI、Grok CLI、OpenCode**——を�
 | | ライト | ダーク |
 | --- | --- | --- |
 | **ダッシュボード** | <img src="./docs/images/light-usage.png" alt="ダッシュボード（ライト）" width="320"> | <img src="./docs/images/dark-usage.png" alt="ダッシュボード（ダーク）" width="320"> |
-| **セッション** | <img src="./docs/images/light-sessions.png" alt="セッションブラウザ（ライト）" width="320"> | <img src="./docs/images/dark-sessions.png" alt="セッションブラウザ（ダーク）" width="320"> |
-| **セッション詳細** | <img src="./docs/images/light-session-detail.png" alt="セッションのトランスクリプト（ライト）" width="320"> | <img src="./docs/images/dark-session-detail.png" alt="セッションのトランスクリプト（ダーク）" width="320"> |
 | **消費量** | <img src="./docs/images/light-consumption.png" alt="消費量（ライト）" width="320"> | <img src="./docs/images/dark-consumption.png" alt="消費量（ダーク）" width="320"> |
 | **グランスモード** | <img src="./docs/images/light-floating-card.png" alt="グランスモード（ライト）" width="320"> | <img src="./docs/images/dark-floating-card.png" alt="グランスモード（ダーク）" width="320"> |
 

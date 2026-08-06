@@ -29,8 +29,6 @@ Multi-device sync is a purely **opt-in** layer on top — never a precondition.
 | | Light | Dark |
 | --- | --- | --- |
 | **Dashboard** | <img src="./docs/images/light-usage.png" alt="Dashboard (light)" width="320"> | <img src="./docs/images/dark-usage.png" alt="Dashboard (dark)" width="320"> |
-| **Sessions** | <img src="./docs/images/light-sessions.png" alt="Sessions browser (light)" width="320"> | <img src="./docs/images/dark-sessions.png" alt="Sessions browser (dark)" width="320"> |
-| **Session detail** | <img src="./docs/images/light-session-detail.png" alt="Session transcript (light)" width="320"> | <img src="./docs/images/dark-session-detail.png" alt="Session transcript (dark)" width="320"> |
 | **Consumption** | <img src="./docs/images/light-consumption.png" alt="Consumption (light)" width="320"> | <img src="./docs/images/dark-consumption.png" alt="Consumption (dark)" width="320"> |
 | **Glance mode** | <img src="./docs/images/light-floating-card.png" alt="Glance mode (light)" width="320"> | <img src="./docs/images/dark-floating-card.png" alt="Glance mode (dark)" width="320"> |
 

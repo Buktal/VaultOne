@@ -29,8 +29,6 @@
 | | 浅色 | 深色 |
 | --- | --- | --- |
 | **看板** | <img src="./docs/images/light-usage.png" alt="看板（浅色）" width="320"> | <img src="./docs/images/dark-usage.png" alt="看板（深色）" width="320"> |
-| **会话** | <img src="./docs/images/light-sessions.png" alt="会话浏览器（浅色）" width="320"> | <img src="./docs/images/dark-sessions.png" alt="会话浏览器（深色）" width="320"> |
-| **会话详情** | <img src="./docs/images/light-session-detail.png" alt="会话原文（浅色）" width="320"> | <img src="./docs/images/dark-session-detail.png" alt="会话原文（深色）" width="320"> |
 | **消耗** | <img src="./docs/images/light-consumption.png" alt="消耗（浅色）" width="320"> | <img src="./docs/images/dark-consumption.png" alt="消耗（深色）" width="320"> |
 | **速览模式** | <img src="./docs/images/light-floating-card.png" alt="速览模式（浅色）" width="320"> | <img src="./docs/images/dark-floating-card.png" alt="速览模式（深色）" width="320"> |
 
