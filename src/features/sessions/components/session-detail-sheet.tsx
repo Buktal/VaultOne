@@ -5,7 +5,8 @@
 // bubbles right (mirrored, corner-cut toward the edge), tool / system rows
 // span full width in the middle as the "workbench". Position encodes who spoke
 // — assistant with a model badge, user in its own tone, tool rows collapsible,
-// system muted. Every message collapses on click (expanded by default).
+// system muted. Messages collapse on click, expanded by default; tool rows
+// collapse to their name, collapsed by default.
 //
 // Pure rendering — all state + queries live in useSessionsBrowser. The
 // per-message expand state for tool rows is the only local state here; it is
@@ -15,12 +16,13 @@ import dayjs from "dayjs"
 import relativeTime from "dayjs/plugin/relativeTime"
 import {
   Bot,
+  Check,
   ChevronDown,
   ChevronRight,
+  Copy,
   Info,
   Loader2,
   Star,
-  Terminal,
   User as UserIcon,
   Wrench,
 } from "lucide-react"
@@ -280,8 +282,7 @@ function TranscriptBody({
 
 function MessageRow({ message: m }: { message: SessionMessage }) {
   // Per-message collapse state, expanded by default. Clicking a bubble
-  // collapses it to a one-line summary (the model badge hides too, keeping
-  // the collapsed strip readable).
+  // collapses it to a one-line summary.
   const [open, setOpen] = useState(true)
   const toggle = () => setOpen((o) => !o)
   switch (m.role) {
@@ -291,14 +292,11 @@ function MessageRow({ message: m }: { message: SessionMessage }) {
           icon={Bot}
           tone="assistant"
           time={m.ts}
+          model={m.model}
           open={open}
           onToggle={toggle}
+          copyText={m.content}
         >
-          {open && m.model ? (
-            <Badge variant="secondary" className="mb-1 font-mono text-[10px]">
-              {m.model}
-            </Badge>
-          ) : null}
           <Content text={m.content} className={cn(!open && "line-clamp-1")} />
         </BaseRow>
       )
@@ -310,6 +308,7 @@ function MessageRow({ message: m }: { message: SessionMessage }) {
           time={m.ts}
           open={open}
           onToggle={toggle}
+          copyText={m.content}
         >
           <Content text={m.content} className={cn(!open && "line-clamp-1")} />
         </BaseRow>
@@ -324,6 +323,7 @@ function MessageRow({ message: m }: { message: SessionMessage }) {
           time={m.ts}
           open={open}
           onToggle={toggle}
+          copyText={m.content}
         >
           <Content text={m.content} className={cn(!open && "line-clamp-1")} />
         </BaseRow>
@@ -334,34 +334,74 @@ function MessageRow({ message: m }: { message: SessionMessage }) {
 }
 
 function ToolRow({ message: m }: { message: SessionMessage }) {
-  // Expanded by default, like every other message; clicking the header
-  // collapses the output back to the tool name alone.
-  const [open, setOpen] = useState(true)
+  // Collapsed by default — tool output is the noisy part of a transcript, so
+  // it hides behind the tool name until clicked (messages stay expanded).
+  const [open, setOpen] = useState(false)
+  const toggle = () => setOpen((o) => !o)
   const name = m.name || m.content?.split("\n")[0] || "tool"
   return (
-    <div className="bg-muted/40 rounded-md border border-dashed px-3 py-2 text-xs">
-      <button
-        type="button"
-        className="hover:text-foreground text-muted-foreground flex w-full items-center gap-1.5 text-left"
-        onClick={() => setOpen((o) => !o)}
+    <div className="bg-muted/40 group rounded-md border border-dashed px-3 py-2 text-xs">
+      {/* biome-ignore lint/a11y/useSemanticElements: collapse trigger must not
+        be a <button> — the header embeds the copy <button>, and nested buttons
+        are invalid HTML; div keeps the same keyboard contract. */}
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={toggle}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault()
+            toggle()
+          }
+        }}
+        aria-expanded={open}
+        className="hover:text-foreground text-muted-foreground flex w-full cursor-pointer items-center gap-1.5 text-left"
       >
         <Wrench className="size-3 shrink-0" />
-        <Terminal className="size-3 shrink-0" />
-        <span className="font-mono">{name}</span>
+        <span className="min-w-0 flex-1 truncate font-mono">{name}</span>
         <ChevronRight
           className={cn(
-            "ml-auto size-3 shrink-0 transition-transform",
+            "size-3 shrink-0 transition-transform",
             open && "rotate-90",
           )}
         />
-      </button>
+        <CopyButton text={m.content} />
+      </div>
       {open ? (
         <Content
           text={m.content}
-          className="text-muted-foreground mt-1 font-mono"
+          className="bg-background/60 text-muted-foreground mt-1.5 rounded p-2 font-mono"
         />
       ) : null}
     </div>
+  )
+}
+
+/** Copy-to-clipboard for one message. Hidden until the row is hovered (or
+ *  focused); shows a check for a moment after copying. Lives inside the
+ *  row's collapse trigger, hence stopPropagation on click. */
+function CopyButton({ text }: { text: string }) {
+  const { t } = useTranslation()
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      type="button"
+      aria-label={t("sessions.detail.copyMessage")}
+      title={t("sessions.detail.copyMessage")}
+      onClick={(e) => {
+        e.stopPropagation()
+        void navigator.clipboard
+          ?.writeText(text)
+          .then(() => {
+            setCopied(true)
+            window.setTimeout(() => setCopied(false), 1500)
+          })
+          .catch(() => {})
+      }}
+      className="hover:text-foreground rounded p-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+    >
+      {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+    </button>
   )
 }
 
@@ -369,60 +409,101 @@ function BaseRow({
   icon: Icon,
   tone,
   time,
+  model,
   open,
   onToggle,
+  copyText,
   children,
 }: {
   icon: typeof Bot
   tone: "assistant" | "user" | "system"
   time: string
+  model?: string | null
   open: boolean
   onToggle: () => void
+  copyText: string
   children: ReactNode
 }) {
   // Voice layout: assistant floats left, user floats right (mirrored so its
   // icon faces the edge), system stays full-width in the middle. The corner
   // cut toward each edge is the chat-bubble gesture; max-w caps line length
-  // once the sheet fills the window. The whole bubble is the collapse toggle
-  // — the timestamp row carries the chevron (down = expanded, rotated right
-  // = collapsed).
+  // once the sheet fills the window. The whole bubble is the collapse toggle;
+  // the header row lines up icon + time + model on the voice side (the user
+  // voice mirrors it to the bubble's right edge) with the collapse chevron
+  // and copy button on the far side.
   const voiceClass =
     tone === "assistant"
       ? "mr-auto max-w-[72ch] rounded-lg rounded-bl-sm bg-muted/60"
       : tone === "user"
-        ? "ml-auto max-w-[72ch] flex-row-reverse rounded-lg rounded-br-sm bg-accent-tint"
+        ? "ml-auto max-w-[72ch] rounded-lg rounded-br-sm bg-accent-tint"
         : "bg-transparent"
   return (
-    <button
-      type="button"
-      onClick={onToggle}
-      aria-expanded={open}
-      className={cn(
-        "focus-visible:ring-ring/40 flex cursor-pointer gap-2 px-3 py-2 text-left text-sm focus-visible:ring-2 focus-visible:outline-none",
-        voiceClass,
-      )}
-    >
-      <Icon
+    <>
+      {/* biome-ignore lint/a11y/useSemanticElements: collapse trigger must
+        not be a <button> — the header row embeds the copy <button>, and
+        nested buttons are invalid HTML; div keeps the same keyboard
+        contract. */}
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={onToggle}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault()
+            onToggle()
+          }
+        }}
+        aria-expanded={open}
         className={cn(
-          "mt-0.5 size-3.5 shrink-0",
-          tone === "system" && "text-muted-foreground/60",
+          "group focus-visible:ring-ring/40 flex cursor-pointer px-3 py-2 text-left text-sm focus-visible:ring-2 focus-visible:outline-none",
+          voiceClass,
         )}
-      />
-      <div className="min-w-0 flex-1">
-        <div className="text-muted-foreground mb-0.5 flex items-center gap-1 text-[10px]">
-          {/* ts can be an empty string (codex/claude pass through whatever the
-            source file has), so guard it like last_active_at elsewhere. */}
-          <span>{time ? dayjs(time).format("MM/DD HH:mm") : "—"}</span>
-          <ChevronDown
-            className={cn(
-              "ml-auto size-3 transition-transform",
-              !open && "rotate-90",
-            )}
-          />
+      >
+        <div className="min-w-0 flex-1">
+          <div className="text-muted-foreground mb-1 flex items-center gap-1.5 text-[10px]">
+            <div
+              className={cn(
+                "flex items-center gap-1.5",
+                tone === "user" && "ml-auto flex-row-reverse",
+              )}
+            >
+              <Icon
+                className={cn(
+                  "size-3.5 shrink-0",
+                  tone === "system" && "text-muted-foreground/60",
+                )}
+              />
+              {/* ts can be an empty string (codex/claude pass through whatever
+              the source file has), so guard it like last_active_at. */}
+              <span>{time ? dayjs(time).format("MM/DD HH:mm") : "—"}</span>
+              {model ? (
+                <Badge
+                  variant="secondary"
+                  className="h-4 px-1.5 font-mono text-[10px] leading-none"
+                >
+                  {model}
+                </Badge>
+              ) : null}
+            </div>
+            <div
+              className={cn(
+                "flex items-center gap-0.5",
+                tone !== "user" && "ml-auto",
+              )}
+            >
+              <ChevronDown
+                className={cn(
+                  "size-3 transition-transform",
+                  !open && "rotate-90",
+                )}
+              />
+              <CopyButton text={copyText} />
+            </div>
+          </div>
+          {children}
         </div>
-        {children}
       </div>
-    </button>
+    </>
   )
 }
 
