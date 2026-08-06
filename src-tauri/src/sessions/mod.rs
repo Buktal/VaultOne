@@ -10,9 +10,12 @@
 //!   (`<deviceId>-<8hex>`) so they are globally unique without coordination.
 //!
 //! Session CRUD (favorited / custom_title / group membership / list / transcript
-//! read) is layered over `db::Store` (sessions table) + `ingest` (transcript
+//! read) is layered over `db::Store` (sessions table) + `collect::ingest` (transcript
 //! I/O). The `commands` module's write commands call the `*_owned` operations
 //! here and emit `"sessions_changed"` so the frontend refreshes its queries.
+
+pub mod session_snapshot;
+pub mod snapshot_policy;
 
 use std::path::PathBuf;
 

@@ -11,12 +11,12 @@
 
 use std::path::Path;
 
+#[cfg(test)]
+use super::jsonl::write_jsonl_file;
+use super::jsonl::{read_jsonl_file_of, rewrite_jsonl_file};
 use crate::config::Paths;
 use crate::db::Store;
 use crate::error::AppResult;
-#[cfg(test)]
-use crate::jsonl::write_jsonl_file;
-use crate::jsonl::{read_jsonl_file_of, rewrite_jsonl_file};
 use crate::model::{TurnDuration, UsageRecord};
 
 /// One JSONL Artifact grain: its row type and file-name prefix. The per-day
@@ -171,7 +171,7 @@ pub(crate) fn append_jsonl(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ingest::ingest_collected;
+    use crate::collect::ingest::ingest_collected;
     use crate::model::{ServerToolUse, TokenCounts};
     use crate::pricing::seed_book;
     use crate::providers::{CollectResult, RawTurnDuration, RawUsage};

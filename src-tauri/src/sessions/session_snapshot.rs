@@ -12,10 +12,10 @@
 
 use std::path::Path;
 
+use crate::collect::jsonl::rewrite_jsonl_file;
 use crate::config::Paths;
 use crate::db::Store;
 use crate::error::{AppError, AppResult};
-use crate::jsonl::rewrite_jsonl_file;
 use crate::model::{
     SessionMessage, SessionSnapshotLine, SessionSnapshotMeta, SESSION_SNAPSHOT_VERSION,
 };

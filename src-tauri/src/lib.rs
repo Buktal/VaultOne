@@ -16,23 +16,18 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{Emitter, Manager};
 use tauri_specta::Builder;
 
-mod artifact;
 mod collect;
 mod commands;
 mod config;
 mod db;
 mod devices;
 mod error;
-mod ingest;
-mod jsonl;
 mod library;
 mod model;
 mod pricing;
 mod providers;
 mod proxy;
-mod session_snapshot;
 mod sessions;
-mod snapshot_policy;
 mod sync;
 mod time;
 mod window_geom;

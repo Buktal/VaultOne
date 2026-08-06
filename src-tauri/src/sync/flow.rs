@@ -12,7 +12,9 @@ use super::git::{
 use crate::config::{ConfigData, Paths};
 use crate::db::{DaySnapshot, SessionCounts, Store};
 use crate::error::AppResult;
-use crate::snapshot_policy::{decide_snapshot_action, presence_mismatches, SnapshotAction};
+use crate::sessions::snapshot_policy::{
+    decide_snapshot_action, presence_mismatches, SnapshotAction,
+};
 
 // ---------------------------------------------------------------------------
 // High-level sync flow: pull → import JSONL → commit → push
@@ -43,10 +45,10 @@ pub fn pull_and_import(store: &Store, paths: &Paths, cfg: &ConfigData) -> AppRes
         }
         PullOutcome::UpToDate | PullOutcome::FastForwarded => {}
     }
-    let records = crate::artifact::read_all_artifacts(paths)?;
+    let records = crate::collect::artifact::read_all_artifacts(paths)?;
     let inserted = store.ingest(&records)?;
     // Per-turn durations (separate grain, uuid-deduped).
-    let turns = crate::artifact::read_all_turn_artifacts(paths)?;
+    let turns = crate::collect::artifact::read_all_turn_artifacts(paths)?;
     store.ingest_turn_durations(&turns)?;
     // Sessions: import peers' snapshots (self is local-authoritative, skipped
     // on read) and propagate cross-device un-favorites.
@@ -58,13 +60,14 @@ pub fn pull_and_import(store: &Store, paths: &Paths, cfg: &ConfigData) -> AppRes
 
 /// Import peers' session snapshots into the store and propagate cross-device
 /// un-favorites. Self's own snapshots are skipped on read
-/// ([`crate::session_snapshot::read_all_session_snapshots`]), so self's rows are never
+/// ([`crate::sessions::session_snapshot::read_all_session_snapshots`]), so self's rows are never
 /// overwritten by a possibly-stale git copy of itself. For every peer that has
 /// (or had) a favorited session row, sessions whose snapshot file vanished since
 /// the last pull are un-favorited and their shared messages dropped — the
 /// pull-side counterpart to the push-side jsonl deletion.
 fn import_peer_sessions(store: &Store, paths: &Paths, self_device_id: &str) -> AppResult<()> {
-    let snapshots = crate::session_snapshot::read_all_session_snapshots(paths, self_device_id)?;
+    let snapshots =
+        crate::sessions::session_snapshot::read_all_session_snapshots(paths, self_device_id)?;
     // still-favorited ids per peer = the snapshot files that exist this pull.
     let mut per_device: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
         std::collections::BTreeMap::new();
@@ -158,8 +161,10 @@ pub fn push_usage(store: &Store, paths: &Paths, cfg: &ConfigData) -> AppResult<b
     // these snapshots must keep their day dirty.
     let mut day_snapshots: Vec<DaySnapshot> = Vec::with_capacity(dirty.len());
     for day in &dirty {
-        let usage = crate::artifact::recompute_usage_day(store, paths, &cfg.device_id, day)?;
-        let turns = crate::artifact::recompute_turns_day(store, paths, &cfg.device_id, day)?;
+        let usage =
+            crate::collect::artifact::recompute_usage_day(store, paths, &cfg.device_id, day)?;
+        let turns =
+            crate::collect::artifact::recompute_turns_day(store, paths, &cfg.device_id, day)?;
         day_snapshots.push(DaySnapshot {
             day: day.clone(),
             usage_rows: usage,
@@ -179,7 +184,7 @@ pub fn push_usage(store: &Store, paths: &Paths, cfg: &ConfigData) -> AppResult<b
         match decide_snapshot_action(favorited) {
             // favorited ⇒ the snapshot must exist: recompute it from the store.
             SnapshotAction::Write => {
-                let count = crate::session_snapshot::recompute_session_snapshot(
+                let count = crate::sessions::session_snapshot::recompute_session_snapshot(
                     store,
                     paths,
                     &cfg.device_id,

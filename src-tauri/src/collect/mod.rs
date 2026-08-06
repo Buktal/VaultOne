@@ -10,12 +10,16 @@
 //! minutes-level Git cadence (Synced only), so the scheduler triggers them on
 //! independent deadlines rather than chaining them.
 
+pub mod artifact;
+pub mod ingest;
+pub mod jsonl;
+
 use std::time::Duration;
 
+use self::ingest::IngestReport;
 use crate::config::ConfigStore;
 use crate::db::Store;
 use crate::error::AppResult;
-use crate::ingest::{self, IngestReport};
 use crate::sync;
 
 /// Parse Source → Local Store (+ JSONL Artifact). No network.

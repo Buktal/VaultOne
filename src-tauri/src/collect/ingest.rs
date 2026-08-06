@@ -6,9 +6,9 @@
 //! device). Here we attach the owning device_id, derive the day bucket and
 //! pricing_model, compute cost via the pure CostCalculator, and write the new
 //! rows to SQLite (deduped by the `(uuid, device_id)` primary key). The JSONL
-//! Artifact and session snapshot are derived projections owned by the `artifact`
-//! and `session_snapshot` modules — collect never touches them; push recomputes
-//! them from the store.
+//! Artifact and session snapshot are derived projections owned by the
+//! `collect::artifact` and `sessions::session_snapshot` modules — collect never
+//! touches them; push recomputes them from the store.
 
 use crate::config::Paths;
 use crate::db::Store;
@@ -16,7 +16,7 @@ use crate::error::AppResult;
 use crate::model::{RawSession, SessionMessage, TurnDuration, UsageRecord};
 use crate::pricing::{CostCalculator, PricingBook};
 use crate::providers::{CollectResult, RawTurnDuration, RawUsage};
-use crate::snapshot_policy::{decide_snapshot_action, SnapshotAction};
+use crate::sessions::snapshot_policy::{decide_snapshot_action, SnapshotAction};
 
 /// Summary of one ingest run.
 #[derive(Debug, Clone, Default, serde::Serialize, specta::Type)]
@@ -414,8 +414,10 @@ mod tests {
         )
         .unwrap();
         // Push materializes both favorited sessions' jsonl snapshots.
-        crate::session_snapshot::recompute_session_snapshot(&store, &paths, dev, "real").unwrap();
-        crate::session_snapshot::recompute_session_snapshot(&store, &paths, dev, "ghost").unwrap();
+        crate::sessions::session_snapshot::recompute_session_snapshot(&store, &paths, dev, "real")
+            .unwrap();
+        crate::sessions::session_snapshot::recompute_session_snapshot(&store, &paths, dev, "ghost")
+            .unwrap();
         assert!(
             paths.session_snapshot_path(dev, "real").exists()
                 && paths.session_snapshot_path(dev, "ghost").exists(),
@@ -504,7 +506,8 @@ mod tests {
         };
         ingest_collected(&store, &paths, dev, &book, pass1b).unwrap();
         // Push writes s2's derived jsonl (collect no longer touches it).
-        crate::session_snapshot::recompute_session_snapshot(&store, &paths, dev, "s2").unwrap();
+        crate::sessions::session_snapshot::recompute_session_snapshot(&store, &paths, dev, "s2")
+            .unwrap();
         assert!(paths.session_snapshot_path(dev, "s2").exists());
 
         // Pass 2: s2's file is gone from disk; only s1 is seen. Its row +

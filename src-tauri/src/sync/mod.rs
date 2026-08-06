@@ -48,7 +48,7 @@ use crate::config::ConfigData;
 #[cfg(test)]
 use crate::error::AppError;
 #[cfg(test)]
-use crate::snapshot_policy::presence_mismatches;
+use crate::sessions::snapshot_policy::presence_mismatches;
 #[cfg(test)]
 use flow::commit_and_push;
 #[cfg(test)]
@@ -321,8 +321,8 @@ mod tests {
         let paths_a = crate::config::Paths::resolve(&tmp.path().join("a"));
         let repo_a = open_or_clone(&url, &paths_a.repo, "").unwrap();
         let book = crate::pricing::seed_book();
-        let rec = crate::ingest::recordify(&raw_usage("import-1"), "aabbccddeeff", &book);
-        crate::artifact::append_jsonl(&paths_a, "aabbccddeeff", &[rec]).unwrap();
+        let rec = crate::collect::ingest::recordify(&raw_usage("import-1"), "aabbccddeeff", &book);
+        crate::collect::artifact::append_jsonl(&paths_a, "aabbccddeeff", &[rec]).unwrap();
         commit_all(&repo_a, "A usage", "DevA", "a@devices.vaultone").unwrap();
         push(&repo_a, "").unwrap();
 
@@ -515,7 +515,7 @@ mod tests {
         };
         let store_a = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
         let book = crate::pricing::seed_book();
-        let rec = crate::ingest::recordify(&raw_usage("a-1"), dev_a, &book);
+        let rec = crate::collect::ingest::recordify(&raw_usage("a-1"), dev_a, &book);
         store_a
             .ingest_marking_dirty(std::slice::from_ref(&rec))
             .unwrap();
@@ -658,7 +658,7 @@ mod tests {
 
         // Collect one row into the store (dirty, no file).
         let book = crate::pricing::seed_book();
-        let rec = crate::ingest::recordify(&raw_usage("a-1"), "aaaaaaaaaaaa", &book);
+        let rec = crate::collect::ingest::recordify(&raw_usage("a-1"), "aaaaaaaaaaaa", &book);
         store
             .ingest_marking_dirty(std::slice::from_ref(&rec))
             .unwrap();
@@ -757,7 +757,8 @@ mod tests {
         let cfg_a = dev_cfg(&url, dev_a);
         let _repo_a = open_or_clone(&url, &paths_a.repo, "").unwrap();
         let store_a = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
-        crate::ingest::ingest_sessions(&store_a, dev_a, &[sys("sx")], &[msg("u1", "sx")]).unwrap();
+        crate::collect::ingest::ingest_sessions(&store_a, dev_a, &[sys("sx")], &[msg("u1", "sx")])
+            .unwrap();
         store_a.set_session_favorited(dev_a, "sx", true).unwrap();
         assert!(
             push_usage(&store_a, &paths_a, &cfg_a).unwrap(),
@@ -906,8 +907,8 @@ mod tests {
         let cfg_a = synced_cfg(&url, "tok");
         let _repo_a = open_or_clone(&url, &paths_a.repo, "").unwrap();
         let book = crate::pricing::seed_book();
-        let rec = crate::ingest::recordify(&raw_usage("round-1"), "aabbccddeeff", &book);
-        crate::artifact::append_jsonl(&paths_a, "aabbccddeeff", &[rec]).unwrap();
+        let rec = crate::collect::ingest::recordify(&raw_usage("round-1"), "aabbccddeeff", &book);
+        crate::collect::artifact::append_jsonl(&paths_a, "aabbccddeeff", &[rec]).unwrap();
         let store_a = crate::db::Store::open(std::path::Path::new(":memory:")).unwrap();
         let imported_a = pull_and_import(&store_a, &paths_a, &cfg_a).unwrap();
         let pushed_a = commit_and_push(&paths_a, &cfg_a, "vaultone: usage sync").unwrap();
