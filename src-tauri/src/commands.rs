@@ -850,6 +850,47 @@ pub fn reorder_providers_cmd(
     Ok(())
 }
 
+/// 切换供应商（核心动作）：查 provider → 读 live → 受控合并 → 备份 .bak →
+/// 原子写 → 记激活状态。写盘语义见 ADR-0005——只替换受控字段（env + 少数顶层
+/// 开关），非受控字段（hooks / MCP / permissions / model 等）从 live 原地保留，
+/// 不整文件覆盖、不做 Backfill。「保存」只写 DB（save_provider_cmd），本命令
+/// 才真正写盘。
+#[tauri::command]
+#[specta::specta]
+pub async fn switch_provider_cmd(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    id: String,
+) -> AppResult<Provider> {
+    let store = state.store.clone();
+    let config = state.config.clone();
+    let provider = tauri::async_runtime::spawn_blocking(move || -> AppResult<Provider> {
+        let provider = store
+            .get_provider(&id)?
+            .ok_or_else(|| AppError::Config(format!("provider not found: {id}")))?;
+        let path = crate::provider::live::claude_settings_path()?;
+        crate::provider::live::switch_live_settings(&path, &provider.settings_config)?;
+        config.update(|c| c.active_provider_id = Some(id))?;
+        Ok(provider)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("switch_provider task failed: {e}")))??;
+    emit_providers_changed(&app_handle);
+    Ok(provider)
+}
+
+/// 当前激活的完整 provider（前端「当前使用」光卡用）。未激活、或激活的
+/// provider 已被删除 → `None`。
+#[tauri::command]
+#[specta::specta]
+pub fn get_active_provider_cmd(state: State<'_, AppState>) -> AppResult<Option<Provider>> {
+    let id = match state.config.get().active_provider_id {
+        Some(id) => id,
+        None => return Ok(None),
+    };
+    state.store.get_provider(&id)
+}
+
 // ---------------- Library ----------------
 
 #[tauri::command]

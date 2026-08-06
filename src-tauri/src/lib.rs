@@ -25,6 +25,7 @@ mod error;
 mod library;
 mod model;
 mod pricing;
+mod provider;
 mod proxy;
 mod sessions;
 mod source_parser;
@@ -99,6 +100,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::save_provider_cmd,
         commands::delete_provider_cmd,
         commands::reorder_providers_cmd,
+        commands::switch_provider_cmd,
+        commands::get_active_provider_cmd,
         window_geom::dock_window_right,
         window_geom::center_window,
         window_geom::set_window_rect,
