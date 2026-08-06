@@ -179,6 +179,11 @@ fn default_push_interval_secs() -> u32 {
     600
 }
 
+/// 通用配置片段默认内容：隐藏署名（`includeCoAuthoredBy: false`）。
+fn default_common_config_snippet() -> String {
+    r#"{"includeCoAuthoredBy": false}"#.to_string()
+}
+
 /// Display language. Serialized lowercase (`en`/`zh`/`ja`), matching
 /// the frontend locale codes. The tray "Quit" item — the only user-facing Rust
 /// string — is localized from this; all other UI text is frontend i18n.
@@ -238,6 +243,17 @@ pub struct ConfigData {
     /// 重启后保持、不进 git。未激活时为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_provider_id: Option<String>,
+    /// 通用配置片段（全局一条，跨供应商共享）：settings.json 片段原文，
+    /// 勾选启用后切换写盘时合并进受控字段。存本机 config.json——与
+    /// `active_provider_id` 同属本机配置，不进 git、不随同步仓库走；片段
+    /// 将来若要随供应商结构同步，由同步 ticket 迁移。默认
+    /// `{"includeCoAuthoredBy": false}`（隐藏署名）。
+    #[serde(default = "default_common_config_snippet")]
+    pub common_config_snippet: String,
+    /// 通用配置片段启用开关：勾选后写盘时片段合并进受控字段；取消勾选后
+    /// 下次写盘不再合并。仅本机生效。
+    #[serde(default)]
+    pub common_config_snippet_enabled: bool,
 }
 
 impl Default for ConfigData {
@@ -258,6 +274,8 @@ impl Default for ConfigData {
             lightweight_expand: LightweightExpand::Click,
             skin: Skin::Neutral,
             active_provider_id: None,
+            common_config_snippet: default_common_config_snippet(),
+            common_config_snippet_enabled: false,
         }
     }
 }
@@ -500,5 +518,28 @@ mod tests {
         assert_eq!(c.masked_token().as_deref(), Some("****"));
         c.github_token = Some("ghp_abcdefghijklmnop".into());
         assert_eq!(c.masked_token().as_deref(), Some("ghp_…mnop"));
+    }
+
+    #[test]
+    fn snippet_fields_default_and_roundtrip() {
+        // 旧 config.json 没有片段字段 → 默认：隐藏署名片段、未启用。
+        let c: ConfigData =
+            serde_json::from_str(r#"{"device_id":"abc123def456","display_name":"V"}"#).unwrap();
+        assert_eq!(c.common_config_snippet, r#"{"includeCoAuthoredBy": false}"#);
+        assert!(!c.common_config_snippet_enabled);
+
+        // 显式值经 config.json 序列化往返不丢。
+        let c2 = ConfigData {
+            common_config_snippet: r#"{"includeCoAuthoredBy": true, "attribution": "x"}"#.into(),
+            common_config_snippet_enabled: true,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&c2).unwrap();
+        let back: ConfigData = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.common_config_snippet,
+            r#"{"includeCoAuthoredBy": true, "attribution": "x"}"#
+        );
+        assert!(back.common_config_snippet_enabled);
     }
 }

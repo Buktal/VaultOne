@@ -35,6 +35,7 @@ import { useMutateWithToast } from "@/hooks/use-toast-mutation"
 import { cn } from "@/lib/utils"
 
 import type { Provider } from "@/types/generated/bindings"
+import { CommonConfigSnippetCard } from "./common-config-snippet-card"
 import { PresetSelector } from "./preset-selector"
 import { ProviderFormSheet } from "./provider-form-sheet"
 import {
@@ -212,6 +213,8 @@ export function ProvidersView() {
           )}
         </CardContent>
       </Card>
+
+      <CommonConfigSnippetCard />
 
       <ProviderFormSheet
         open={sheetOpen}

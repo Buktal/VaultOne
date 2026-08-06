@@ -44,14 +44,16 @@ pub struct ProviderExportDocument {
     pub providers: Vec<Provider>,
 }
 
-/// 导入结果计数，前端 toast 展示「导入 N 个、跳过 M 个」。
+/// 导入结果计数，前端 toast 展示「导入 N 个、跳过 M 个」。用 `u32` 而非
+/// `usize`：specta 拒绝导出 BigInt 型（usize/u64...）字段，绑定的
+/// `bindings.ts` 会生成失败（#30 遗留，合入时靠手改 bindings 绕过）。
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderImportReport {
     /// 实际写入的行数（merge = 新 id；overwrite = 全部导入行）。
-    pub imported: usize,
+    pub imported: u32,
     /// merge 模式下因 id 冲突被跳过的行数（overwrite 恒为 0）。
-    pub skipped: usize,
+    pub skipped: u32,
 }
 
 /// 一次导入的写入计划：`to_save` 是需要落库的行（existing 里没变的不重写，
@@ -59,8 +61,8 @@ pub struct ProviderImportReport {
 /// 应用、哪些被跳过。
 pub struct ImportPlan {
     pub to_save: Vec<Provider>,
-    pub imported: usize,
-    pub skipped: usize,
+    pub imported: u32,
+    pub skipped: u32,
 }
 
 /// 全部供应商 → 导出文档 JSON 文本。`include_keys=false` 时剔除每个 provider
@@ -138,7 +140,7 @@ pub fn plan_import(
         ProviderImportMode::Overwrite => {
             let to_save = incoming.to_vec();
             ImportPlan {
-                imported: to_save.len(),
+                imported: to_save.len() as u32,
                 to_save,
                 skipped: 0,
             }

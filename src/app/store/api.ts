@@ -3,6 +3,7 @@ import type {
   AlignReport,
   AppError,
   AppInfo,
+  CommonConfigSnippet,
   DeviceInfo,
   DeviceLibrarySummary,
   LibraryEntry,
@@ -443,6 +444,20 @@ export const vaultApi = createApi({
       queryFn: async (id) => run(commands.switchProviderCmd(id)),
       invalidatesTags: ["Providers"],
     }),
+    /** 全局通用配置片段（一条记录跨供应商共享）。 */
+    getCommonConfigSnippet: b.query<CommonConfigSnippet, void>({
+      queryFn: async () => run(commands.getCommonConfigSnippetCmd()),
+      providesTags: ["Providers"],
+    }),
+    /** 保存全局通用配置片段（后端校验 JSON 合法性）。 */
+    setCommonConfigSnippet: b.mutation<
+      CommonConfigSnippet,
+      CommonConfigSnippet
+    >({
+      queryFn: async (snippet) =>
+        run(commands.setCommonConfigSnippetCmd(snippet)),
+      invalidatesTags: ["Providers"],
+    }),
     /** 导出全部供应商为 JSON 文档（`includeKeys=false` 剔除 API key）到用户
      *  选的路径。手动迁移 / 留档，不走 git 同步。返回文档内供应商数。 */
     exportProviders: b.mutation<
@@ -560,6 +575,8 @@ export const {
   useDeleteProviderMutation,
   useReorderProvidersMutation,
   useSwitchProviderMutation,
+  useGetCommonConfigSnippetQuery,
+  useSetCommonConfigSnippetMutation,
   useExportProvidersMutation,
   useImportProvidersMutation,
 } = vaultApi

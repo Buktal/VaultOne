@@ -189,11 +189,11 @@ export const commands = {
 	deleteProviderCmd: (id: string) => typedError<null, AppError>(__TAURI_INVOKE("delete_provider_cmd", { id })),
 	reorderProvidersCmd: (orderedIds: string[]) => typedError<null, AppError>(__TAURI_INVOKE("reorder_providers_cmd", { orderedIds })),
 	/**
-	 *  切换供应商（核心动作）：查 provider → 读 live → 受控合并 → 备份 .bak →
-	 *  原子写 → 记激活状态。写盘语义：只替换受控字段（env + 少数顶层
-	 *  开关），非受控字段（hooks / MCP / permissions / model 等）从 live 原地保留，
-	 *  不整文件覆盖、不做 Backfill。「保存」只写 DB（save_provider_cmd），本命令
-	 *  才真正写盘。
+	 *  切换供应商（核心动作）：查 provider → 读 live → （片段启用则先合并
+	 *  片段）→ 受控合并 → 备份 .bak → 原子写 → 记激活状态。写盘语义：只替换
+	 *  受控字段（env + 少数顶层开关），非受控字段（hooks / MCP / permissions /
+	 *  model 等）从 live 原地保留，不整文件覆盖、不做 Backfill。「保存」只写
+	 *  DB（save_provider_cmd），本命令才真正写盘。
 	 */
 	switchProviderCmd: (id: string) => typedError<Provider, AppError>(__TAURI_INVOKE("switch_provider_cmd", { id })),
 	/**
@@ -215,6 +215,17 @@ export const commands = {
 	meta: string,
 	updatedAt: string,
 } | null, AppError>(__TAURI_INVOKE("get_active_provider_cmd")),
+	/**
+	 *  读全局通用配置片段（内容 + 启用开关）。一条记录跨供应商共享，存本机
+	 *  config.json。
+	 */
+	getCommonConfigSnippetCmd: () => typedError<CommonConfigSnippet, AppError>(__TAURI_INVOKE("get_common_config_snippet_cmd")),
+	/**
+	 *  保存全局通用配置片段。内容必须是合法 JSON 对象（空串视为空片段）；
+	 *  非法 JSON 拒绝保存（`AppError::Config`）。写盘合并只认受控字段，非受控
+	 *  键在写盘时被忽略。
+	 */
+	setCommonConfigSnippetCmd: (snippet: CommonConfigSnippet) => typedError<CommonConfigSnippet, AppError>(__TAURI_INVOKE("set_common_config_snippet_cmd", { snippet })),
 	/**
 	 *  导出全部供应商为 JSON 文档，写入 `target_path`（前端 save 对话框选的位置）。
 	 *  `include_keys=false` 时剔除 settingsConfig env 里的密钥键。换设备迁移 /
@@ -325,6 +336,18 @@ export type CloseBehavior =
 "minimize" | 
 /**  Always quit. */
 "quit";
+
+/**
+ *  通用配置片段（全局一条，跨供应商共享）：手写 settings.json 片段 +
+ *  勾选启用，切换写盘时合并进受控字段。存本机 config.json（不同步）；
+ *  `content` 是片段 JSON 原文，编辑器直接编辑。
+ */
+export type CommonConfigSnippet = {
+	/**  勾选「应用通用配置」启用；写盘时片段合并进受控字段。 */
+	enabled: boolean,
+	/**  片段 JSON 原文（原始文本；空串合法 = 无操作片段）。 */
+	content: string,
+};
 
 /**  A known device. `is_self` marks the device running this instance. */
 export type DeviceInfo = {
@@ -506,13 +529,21 @@ export type Provider = {
  */
 export type ProviderCategory = "official" | "cn_official" | "aggregator" | "cloud_provider" | "custom";
 
-/**  导入冲突模式：merge = 已有 id 跳过（保留双方，按 id 去重）；overwrite =
- *  同 id 以导入为准（后者胜），本地独有 id 保留（不做删除——保守迁移）。 */
+/**
+ *  导入冲突模式：merge = 已有 id 跳过（保留双方，按 id 去重）；overwrite =
+ *  同 id 以导入为准（后者胜），本地独有 id 保留（不做删除——保守迁移）。
+ */
 export type ProviderImportMode = "merge" | "overwrite";
 
-/**  导入结果计数，前端 toast 展示「导入 N 个、跳过 M 个」。 */
+/**
+ *  导入结果计数，前端 toast 展示「导入 N 个、跳过 M 个」。用 `u32` 而非
+ *  `usize`：specta 拒绝导出 BigInt 型（usize/u64...）字段，绑定的
+ *  `bindings.ts` 会生成失败（#30 遗留，合入时靠手改 bindings 绕过）。
+ */
 export type ProviderImportReport = {
+	/**  实际写入的行数（merge = 新 id；overwrite = 全部导入行）。 */
 	imported: number,
+	/**  merge 模式下因 id 冲突被跳过的行数（overwrite 恒为 0）。 */
 	skipped: number,
 };
 
