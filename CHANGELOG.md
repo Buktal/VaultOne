@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Provider management: the provider list + CRUD** — a new **Providers** top-level view (供应商) lists every saved provider (name / category / endpoint / model) with drag-to-reorder, plus an empty state that points to the upcoming preset picker. Create, edit and delete custom providers through a side-panel sheet (name / endpoint / API key); the API key and endpoint live inside the provider's `settingsConfig` snapshot, which the form preserves field-for-field. Data stays in a local SQLite `provider` table for now — switching providers (live write), presets, sync, model mapping and JSON editing land in later tickets.
 - **Jump between user turns** — opening a session now also mounts a slim panel beside the transcript listing every user message (width of ~16 Chinese characters, overflowing rows ellipsize). Click a row to jump straight to that message, the row for the message you're reading stays highlighted, and hovering any row shows its full text. The two panels open and close together.
 - **Jump flashes the target** — clicking a turn in the nav panel rings the message it lands on with three quick pulses of the accent ring, so the eye arrives exactly where the scroll did.
 

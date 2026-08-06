@@ -11,6 +11,7 @@ import type {
   LogsQuery,
   ModelStatsRow,
   PricingEntry,
+  Provider,
   RunMode,
   SessionFilter,
   SessionGroup,
@@ -120,6 +121,7 @@ export const vaultApi = createApi({
     "Pricing",
     "Library",
     "Sessions",
+    "Providers",
     "App",
   ],
   endpoints: (b) => ({
@@ -407,6 +409,29 @@ export const vaultApi = createApi({
       invalidatesTags: ["Sessions"],
     }),
 
+    // ---- providers ----
+    // Provider CRUD (local DB only for now — live write / sync / presets are
+    // later tickets). Every write emits `providers_changed`, which providers.tsx
+    // maps to a whole-`Providers` tag invalidate; the endpoint-level
+    // invalidatesTags below cover writes that go through the api anyway.
+    listProviders: b.query<Provider[], void>({
+      queryFn: async () => run(commands.listProvidersCmd()),
+      providesTags: ["Providers"],
+    }),
+    saveProvider: b.mutation<Provider, Provider>({
+      queryFn: async (provider) => run(commands.saveProviderCmd(provider)),
+      invalidatesTags: ["Providers"],
+    }),
+    deleteProvider: b.mutation<null, string>({
+      queryFn: async (id) => run(commands.deleteProviderCmd(id)),
+      invalidatesTags: ["Providers"],
+    }),
+    reorderProviders: b.mutation<null, string[]>({
+      queryFn: async (orderedIds) =>
+        run(commands.reorderProvidersCmd(orderedIds)),
+      invalidatesTags: ["Providers"],
+    }),
+
     // ---- preferences ----
     // Go through the generated `commands.*` so tauri-specta's `typedError`
     // wrapping matches what `run` expects. Raw `invoke` skips that wrapping.
@@ -498,6 +523,10 @@ export const {
   useDeleteSyncedGroupMutation,
   useReorderLocalGroupsMutation,
   useReorderSyncedGroupsMutation,
+  useListProvidersQuery,
+  useSaveProviderMutation,
+  useDeleteProviderMutation,
+  useReorderProvidersMutation,
 } = vaultApi
 
 export type VaultApi = typeof vaultApi

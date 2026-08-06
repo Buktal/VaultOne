@@ -23,6 +23,7 @@ mod store_dirty_days;
 mod store_groups;
 mod store_ingest;
 mod store_pricing;
+mod store_providers;
 mod store_reads;
 mod store_sessions;
 mod store_transcript;

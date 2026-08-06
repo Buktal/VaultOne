@@ -179,6 +179,15 @@ export const commands = {
 	reorderSyncedGroupsCmd: (orderedIds: string[]) => typedError<null, AppError>(__TAURI_INVOKE("reorder_synced_groups_cmd", { orderedIds })),
 	/**  Unified groups list (local + synced) for one-shot UI fetch. */
 	listGroupsCmd: () => typedError<SessionGroup[], AppError>(__TAURI_INVOKE("list_groups_cmd")),
+	listProvidersCmd: () => typedError<Provider[], AppError>(__TAURI_INVOKE("list_providers_cmd")),
+	/**
+	 *  Upsert a provider (empty id = create, non-empty = edit). Returns the
+	 *  persisted row so the caller learns the assigned id / sort position without
+	 *  a second read.
+	 */
+	saveProviderCmd: (provider: Provider) => typedError<Provider, AppError>(__TAURI_INVOKE("save_provider_cmd", { provider })),
+	deleteProviderCmd: (id: string) => typedError<null, AppError>(__TAURI_INVOKE("delete_provider_cmd", { id })),
+	reorderProvidersCmd: (orderedIds: string[]) => typedError<null, AppError>(__TAURI_INVOKE("reorder_providers_cmd", { orderedIds })),
 	/**
 	 *  Dock the given window against the right edge of its current monitor.
 	 * 
@@ -429,6 +438,34 @@ export type PricingEntry = {
 	/**  True when seeded from LiteLLM upstream, false when user-defined/edited. */
 	is_builtin: boolean,
 };
+
+/**
+ *  A provider (供应商): `settingsConfig` is a Claude Code `settings.json`
+ *  snapshot (raw JSON text); `meta` carries app-side info the live file never
+ *  sees. `sortIndex` is the user-ordered display rank.
+ */
+export type Provider = {
+	id: string,
+	name: string,
+	websiteUrl: string,
+	category: ProviderCategory,
+	icon: string,
+	iconColor: string,
+	sortIndex: number,
+	notes: string,
+	/**  Claude Code `settings.json` snapshot, raw JSON text. */
+	settingsConfig: string,
+	/**  App-side extras, raw JSON text. Never written to the live file. */
+	meta: string,
+	updatedAt: string,
+};
+
+/**
+ *  Provider category. `Custom` is the value for user-created providers; the
+ *  rest describe the built-in presets (added by the preset ticket) so the
+ *  list view can label and theme them.
+ */
+export type ProviderCategory = "official" | "cn_official" | "aggregator" | "cloud_provider" | "custom";
 
 /**  Run mode: default Standalone; Synced once a repo is configured. */
 export type RunMode = "standalone" | "synced";

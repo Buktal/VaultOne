@@ -205,6 +205,24 @@ pub(super) const SESSION_MESSAGES_INDEXES: &str = "\
     CREATE INDEX IF NOT EXISTS idx_session_messages_session \
         ON session_messages(device_id, session_id);";
 
+/// `provider` — user-created providers (供应商). `settings_config` and `meta`
+/// are raw JSON *text* (the store round-trips them without parsing); the API
+/// key lives inside `settings_config`'s `env` block. Local-only for now —
+/// sync (`providers.json`) and live write are later tickets. `sort_index` is
+/// the user-ordered display rank.
+pub(super) const PROVIDERS_COLS_DDL: &str = "\
+    id TEXT PRIMARY KEY, \
+    name TEXT NOT NULL, \
+    website_url TEXT NOT NULL DEFAULT '', \
+    category TEXT NOT NULL DEFAULT 'custom', \
+    icon TEXT NOT NULL DEFAULT '', \
+    icon_color TEXT NOT NULL DEFAULT '', \
+    sort_index INTEGER NOT NULL DEFAULT 0, \
+    notes TEXT NOT NULL DEFAULT '', \
+    settings_config TEXT NOT NULL DEFAULT '{}', \
+    meta TEXT NOT NULL DEFAULT '{}', \
+    updated_at TEXT NOT NULL";
+
 /// All `CREATE TABLE IF NOT EXISTS` statements (no indexes). [`Store::open`]
 /// runs this FIRST so every table shell exists before
 /// [`migrate::migrate_schema`] ALTERs legacy columns onto them — and before any
@@ -228,6 +246,7 @@ pub(super) fn schema_tables_sql() -> String {
         create_table("sessions", SESSIONS_COLS_DDL),
         create_table("local_groups", LOCAL_GROUPS_COLS_DDL),
         create_table("session_messages", SESSION_MESSAGES_COLS_DDL),
+        create_table("provider", PROVIDERS_COLS_DDL),
     ]
     .join("\n")
 }
@@ -327,6 +346,7 @@ mod tests {
             "sessions",
             "local_groups",
             "session_messages",
+            "provider",
         ] {
             assert!(tables.contains(expected), "schema missing table {expected}");
         }

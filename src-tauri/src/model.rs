@@ -21,10 +21,12 @@
 //! The model-key normalizer lives in this file (single source of truth).
 
 mod device;
+mod provider;
 mod session;
 mod usage;
 
 pub use device::*;
+pub use provider::*;
 pub use session::*;
 pub use usage::*;
 

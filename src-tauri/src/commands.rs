@@ -17,9 +17,9 @@ use crate::db::Store;
 use crate::error::{AppError, AppResult};
 use crate::library::{self, DeviceLibrarySummary, LibraryEntry, UploadItem};
 use crate::model::{
-    DeviceInfo, LocalGroup, LogsQuery, ModelStatsRow, PricingEntry, RunMode, SessionFilter,
-    SessionGroup, SessionMessage, SessionRow, SyncedGroup, TrendBucket, TrendPoint, UsageFilter,
-    UsageLogRow, UsageStats,
+    DeviceInfo, LocalGroup, LogsQuery, ModelStatsRow, PricingEntry, Provider, RunMode,
+    SessionFilter, SessionGroup, SessionMessage, SessionRow, SyncedGroup, TrendBucket, TrendPoint,
+    UsageFilter, UsageLogRow, UsageStats,
 };
 use crate::pricing;
 use crate::sessions;
@@ -796,6 +796,58 @@ pub async fn reorder_synced_groups_cmd(
 #[specta::specta]
 pub fn list_groups_cmd(state: State<'_, AppState>) -> AppResult<Vec<SessionGroup>> {
     sessions::list_groups_dto(&state.store, &state.config.paths())
+}
+
+// ---------------- Providers (供应商) ----------------
+
+/// Emit `providers_changed` so the frontend's provider queries invalidate.
+fn emit_providers_changed(app_handle: &tauri::AppHandle) {
+    let _ = app_handle.emit("providers_changed", ());
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn list_providers_cmd(state: State<'_, AppState>) -> AppResult<Vec<Provider>> {
+    state.store.list_providers()
+}
+
+/// Upsert a provider (empty id = create, non-empty = edit). Returns the
+/// persisted row so the caller learns the assigned id / sort position without
+/// a second read.
+#[tauri::command]
+#[specta::specta]
+pub fn save_provider_cmd(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    provider: Provider,
+) -> AppResult<Provider> {
+    let saved = state.store.save_provider(provider)?;
+    emit_providers_changed(&app_handle);
+    Ok(saved)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn delete_provider_cmd(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    id: String,
+) -> AppResult<()> {
+    state.store.delete_provider(&id)?;
+    emit_providers_changed(&app_handle);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn reorder_providers_cmd(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    ordered_ids: Vec<String>,
+) -> AppResult<()> {
+    state.store.reorder_providers(&ordered_ids)?;
+    emit_providers_changed(&app_handle);
+    Ok(())
 }
 
 // ---------------- Library ----------------

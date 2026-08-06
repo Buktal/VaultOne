@@ -16,6 +16,7 @@ import {
   MessagesSquare,
   PanelLeftClose,
   PanelLeftOpen,
+  Server,
   Settings,
   Tags,
 } from "lucide-react"
@@ -47,6 +48,7 @@ const NAV: Array<{ id: ViewId; key: string; icon: typeof Gauge }> = [
   { id: "logs", key: "nav.logs", icon: List },
   { id: "pricing", key: "nav.pricing", icon: Tags },
   { id: "library", key: "nav.library", icon: Library },
+  { id: "providers", key: "nav.providers", icon: Server },
   { id: "settings", key: "nav.settings", icon: Settings },
 ]
 
@@ -227,7 +229,7 @@ function useIsPortrait() {
 
 // Portrait navigation bar — replaces the left sidebar when the window is
 // taller than it is wide. Same card surface and accent-tint selected state as
-// the sidebar, but spans the full width: logo, the six views as icon buttons
+// the sidebar, but spans the full width: logo, the seven views as icon buttons
 // (label on hover), then collect + theme on the right with the device-status
 // dot beside them.
 function TopNav({
@@ -385,40 +387,36 @@ export function Shell({ children }: { children: React.ReactNode }) {
     <div className="bg-background text-foreground flex h-screen w-screen flex-col overflow-hidden">
       <TitleBar />
       {portrait ? (
-        <>
-          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden px-4 pb-4">
-            <TopNav
-              view={view}
-              onNavigate={(id) => dispatch(setView(id))}
-              collecting={collecting}
-              onCollect={onCollect}
-              collectLabel={collectLabel}
-              synced={synced}
-              modeLabel={modeLabel}
-              deviceName={deviceName}
-            />
-            {/* min-h-0: the main is a flex item on the column's main axis
-                (portrait), where min-height:auto would let tall content stretch
-                it past the viewport instead of scrolling internally. */}
-            <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-              <div className="flex-1 overflow-auto">
-                {/* px-4: symmetric insets keep the content centered and clear
-                    of the scrollbar (the landscape column uses pr-4 only — it
-                    sits beside the sidebar, so centering is already implied). */}
-                <div className="flex h-full w-full flex-col px-4">
-                  {children}
-                </div>
-              </div>
-            </main>
-            <StatusBar
-              synced={synced}
-              modeLabel={modeLabel}
-              deviceName={deviceName}
-              version={info?.version}
-              openReleases={openReleases}
-            />
-          </div>
-        </>
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden px-4 pb-4">
+          <TopNav
+            view={view}
+            onNavigate={(id) => dispatch(setView(id))}
+            collecting={collecting}
+            onCollect={onCollect}
+            collectLabel={collectLabel}
+            synced={synced}
+            modeLabel={modeLabel}
+            deviceName={deviceName}
+          />
+          {/* min-h-0: the main is a flex item on the column's main axis
+              (portrait), where min-height:auto would let tall content stretch
+              it past the viewport instead of scrolling internally. */}
+          <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <div className="flex-1 overflow-auto">
+              {/* px-4: symmetric insets keep the content centered and clear
+                  of the scrollbar (the landscape column uses pr-4 only — it
+                  sits beside the sidebar, so centering is already implied). */}
+              <div className="flex h-full w-full flex-col px-4">{children}</div>
+            </div>
+          </main>
+          <StatusBar
+            synced={synced}
+            modeLabel={modeLabel}
+            deviceName={deviceName}
+            version={info?.version}
+            openReleases={openReleases}
+          />
+        </div>
       ) : (
         <div className="flex min-h-0 flex-1 items-stretch gap-4 overflow-hidden pb-4 pl-4">
           <aside

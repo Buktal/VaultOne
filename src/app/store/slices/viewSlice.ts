@@ -8,10 +8,11 @@ import { createSlice } from "@reduxjs/toolkit"
 
 export type ViewId =
   | "dashboard"
+  | "sessions"
   | "logs"
   | "pricing"
   | "library"
-  | "sessions"
+  | "providers"
   | "settings"
 
 /** Full dashboard ⇄ lightweight glance card. Same window, two skins. */

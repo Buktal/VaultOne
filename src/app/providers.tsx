@@ -67,6 +67,18 @@ export function AppProviders({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  // Mirror of `usage_changed` for provider CRUD. Backend emits
+  // `providers_changed` after each provider write; invalidate the whole
+  // `Providers` tag so the active provider list refetches in place.
+  useEffect(() => {
+    const off = listen("providers_changed", () => {
+      store.dispatch(vaultApi.util.invalidateTags(["Providers"]))
+    })
+    return () => {
+      off.then((unlisten) => unlisten())
+    }
+  }, [])
+
   // Tray left-click means "show the full dashboard". If the
   // window is in lightweight mode, morph back — setMode("full") is a no-op when
   // already full, and useWindowMode restores the window geometry on the change.

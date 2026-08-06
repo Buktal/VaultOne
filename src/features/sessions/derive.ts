@@ -275,24 +275,11 @@ export function canCreateSyncedGroup(
 }
 
 /**
- * The new track order after a drag: move `activeId` to `overId`'s slot —
- * everything between shifts by one (dnd-kit's arrayMove semantics, so the
- * result matches the live visual). Returns null when the drag landed where
- * it started, so callers can skip the backend round trip.
+ * The new track order after a drag — moved to `src/lib/reorder.ts` when the
+ * providers list needed the same arrayMove semantics; re-exported here under
+ * the sessions name so existing call sites keep working.
  */
-export function reorderGroupIds(
-  ids: readonly string[],
-  activeId: string,
-  overId: string,
-): string[] | null {
-  const from = ids.indexOf(activeId)
-  const to = ids.indexOf(overId)
-  if (from < 0 || to < 0 || from === to) return null
-  const next = ids.slice()
-  const [moved] = next.splice(from, 1)
-  next.splice(to, 0, moved)
-  return next
-}
+export { reorderIds as reorderGroupIds } from "@/lib/reorder"
 
 /**
  * Apply an optimistic drag-override to the track groups: `orderedIds` is the
