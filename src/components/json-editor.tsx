@@ -141,7 +141,10 @@ export function JsonEditor({
   // Create the editor once, with an empty doc — the value-sync effect below
   // pushes the real initial value right after (same commit, no visible flash).
   // Everything reactive reconfigures through the compartments in the effects
-  // below, so the editor mounts exactly once.
+  // below, so the editor mounts exactly once. The onChange callback lives in a
+  // ref so this mount-once closure always sees the latest prop.
+  const onChangeRef = useRef(onChange)
+  onChangeRef.current = onChange
   // biome-ignore lint/correctness/useExhaustiveDependencies: mount-once CodeMirror view; all reactive inputs reconfigure through compartments below
   useEffect(() => {
     if (!containerRef.current) return
@@ -162,7 +165,7 @@ export function JsonEditor({
           ),
           EditorView.updateListener.of((update) => {
             if (!update.docChanged || pushingRef.current) return
-            onChange(update.state.doc.toString())
+            onChangeRef.current(update.state.doc.toString())
           }),
         ],
       }),

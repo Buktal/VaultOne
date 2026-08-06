@@ -70,20 +70,16 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     icon: "aws",
     iconColor: "#FF9900",
     notes: "以 API Key 走 Bedrock；AWS_REGION 为模板变量，保存前需填写。",
-    settingsConfig: snapshot(
-      {
-        ANTHROPIC_BASE_URL:
-          "https://bedrock-runtime.${AWS_REGION}.amazonaws.com",
-        AWS_REGION: "${AWS_REGION}",
-        ANTHROPIC_MODEL: "global.anthropic.claude-opus-5",
-        ANTHROPIC_DEFAULT_HAIKU_MODEL:
-          "global.anthropic.claude-haiku-4-5-20251001-v1:0",
-        ANTHROPIC_DEFAULT_SONNET_MODEL: "global.anthropic.claude-sonnet-5",
-        ANTHROPIC_DEFAULT_OPUS_MODEL: "global.anthropic.claude-opus-5",
-        CLAUDE_CODE_USE_BEDROCK: "1",
-      },
-      { apiKey: "" },
-    ),
+    settingsConfig: snapshot({
+      ANTHROPIC_BASE_URL: "https://bedrock-runtime.${AWS_REGION}.amazonaws.com",
+      AWS_REGION: "${AWS_REGION}",
+      ANTHROPIC_MODEL: "global.anthropic.claude-opus-5",
+      ANTHROPIC_DEFAULT_HAIKU_MODEL:
+        "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "global.anthropic.claude-sonnet-5",
+      ANTHROPIC_DEFAULT_OPUS_MODEL: "global.anthropic.claude-opus-5",
+      CLAUDE_CODE_USE_BEDROCK: "1",
+    }),
   },
 
   // ── 国内大厂 11 ──

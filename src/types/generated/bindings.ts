@@ -190,7 +190,7 @@ export const commands = {
 	reorderProvidersCmd: (orderedIds: string[]) => typedError<null, AppError>(__TAURI_INVOKE("reorder_providers_cmd", { orderedIds })),
 	/**
 	 *  切换供应商（核心动作）：查 provider → 读 live → 受控合并 → 备份 .bak →
-	 *  原子写 → 记激活状态。写盘语义见 ADR-0005——只替换受控字段（env + 少数顶层
+	 *  原子写 → 记激活状态。写盘语义：只替换受控字段（env + 少数顶层
 	 *  开关），非受控字段（hooks / MCP / permissions / model 等）从 live 原地保留，
 	 *  不整文件覆盖、不做 Backfill。「保存」只写 DB（save_provider_cmd），本命令
 	 *  才真正写盘。

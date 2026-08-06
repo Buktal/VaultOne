@@ -1,6 +1,6 @@
 //! Provider 写盘（live）：受控合并 + 备份 + 原子写。
 //!
-//! 写盘语义（ADR-0005，必须精确实现）：
+//! 写盘语义（必须精确实现）：
 //! - **受控字段**（Provider 接管，切换时整块替换/合并）：`env` 块 +
 //!   `includeCoAuthoredBy` / `attribution` / `effortLevel` / `enabledPlugins` /
 //!   `skipWebFetchPreflight`。`env` 走整块替换（端点/key/模型映射都住在 env
@@ -9,13 +9,13 @@
 //!   `enableAllProjectMcpServers` / `model` / `extraKnownMarketplaces` /
 //!   `statusLine` 等一切其他字段）：切换时从 live **原地保留**；目标配置里的
 //!   非受控字段被忽略，绝不写 live。
-//! - 写盘顺序：读当前 live → 备份 `settings.json.bak`（单份覆盖）→ 受控合并 →
+//! - 写盘顺序：读当前 live → 受控合并 → 备份 `settings.json.bak`（单份覆盖）→
 //!   原子写（临时文件 + 改名，进程中断不产生半截文件）。
 //! - 清洗：写 live 前剥掉配置里的应用内部 meta 字段（`api_format` /
 //!   `apiFormat` 等，类比 cc-switch `sanitize_claude_settings_for_live`）。
 //! - **不做** cc-switch 的整文件覆盖 + Backfill。
 //!
-//! `merge_live_settings` 是纯函数（spec §5 测试接缝 1，最高价值）：输入
+//! `merge_live_settings` 是纯函数（本项目最高价值的测试接缝）：输入
 //! (当前 live JSON 字符串, 目标 settingsConfig 字符串, 清洗规则) → 输出合并后的
 //! JSON 字符串，不碰文件系统。文件 IO（读/备份/原子写）是薄壳，直接调用它。
 //! 「非受控字段保留」这个关键不变量靠它落进可测代码，而不是散文注释。
@@ -36,7 +36,7 @@ pub const LIVE_INTERNAL_KEYS: &[&str] = &[
     "openrouterCompatMode",
 ];
 
-/// 受控字段（ADR-0005）：切换时整块替换/合并。除这些键之外的任何字段
+/// 受控字段：切换时整块替换/合并。除这些键之外的任何字段
 /// （permissions / hooks / mcpServers / ...）都不是受控字段，切换时一律从
 /// live 原地保留。
 pub const CONTROLLED_FIELDS: &[&str] = &[
@@ -58,7 +58,7 @@ pub fn claude_settings_path() -> AppResult<PathBuf> {
 /// Merge 纯函数（测试接缝 1）：把目标 settingsConfig 的**受控字段**合并进当前
 /// live 配置，非受控字段从 live 原样保留，不碰文件系统。
 ///
-/// 语义（ADR-0005）：
+/// 语义：
 /// - `env` 整块替换：目标有 `env`（哪怕是空对象）→ live 的 env 被整体覆盖；
 ///   目标没有 `env` → live 的 env 原样保留。
 /// - 其余受控顶层开关：目标存在则替换，缺失则保留 live 原值。
