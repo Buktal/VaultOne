@@ -1,8 +1,8 @@
 // Update Check orchestration. Exposes the side-effect surface:
 //   - checkNow:    probe GitHub Releases for a newer version (startup silent
-//                  probe is 24h-throttled via a localStorage stamp; Settings
-//                  calls this manually). A check() failure is silent (back to
-//                  idle; the indicator never shows).
+//                  probe on launch + a re-probe every POLL_INTERVAL_MS while the
+//                  app stays open; Settings calls this manually). A check()
+//                  failure is silent (back to idle; the indicator never shows).
 //   - applyUpdate: downloadAndInstall the pending Update. Progress → slice;
 //                  success → ready; failure → Manual Fallback (failed).
 //   - restartNow:  restart after a ready install (process:allow-restart).
@@ -28,32 +28,27 @@ import {
   setUpToDate,
 } from "@/app/store/slices/updateSlice"
 import { toStructuredError } from "@/lib/error"
-import { usePersistedState } from "@/lib/persistence"
-
-const LAST_CHECK_KEY = "vaultone:update-last-check"
-const THROTTLE_MS = 24 * 60 * 60 * 1000
 
 const RELEASES_URL = "https://github.com/Buktal/VaultOne/releases/latest"
+// While the app stays open, re-probe this often so a long-lived session still
+// catches a new release (startup always probes immediately).
+const POLL_INTERVAL_MS = 6 * 60 * 60 * 1000
 
 /** Singleton: the Update found by the last check (holds downloadAndInstall).
- *  This is the documented exception to usePersistedState — a Tauri `Update`
- *  carries a non-serializable side-effect (`downloadAndInstall`) and must be
- *  shared app-wide across the App / footer / Settings hook instances; it stays
- *  a module-level `let`, not persisted state. Only the throttle timestamp
- *  below is serializable leaf state. */
+ *  A Tauri `Update` carries a non-serializable side-effect
+ *  (`downloadAndInstall`) and must be shared app-wide across the App / footer /
+ *  Settings hook instances, so it stays a module-level `let`, not persisted
+ *  state. */
 let pendingUpdate: Update | null = null
-/** Singleton: the startup probe runs exactly once app-wide, even though
- *  useUpdateCheck is mounted in App + footer + Settings. */
+/** Singleton: the startup probe (and the re-probe interval armed by it) runs
+ *  exactly once app-wide, even though useUpdateCheck is mounted in App + footer
+ *  + Settings. */
 let startupProbed = false
 
 export function useUpdateCheck() {
   const dispatch = useAppDispatch()
   // Guard against a probe already in flight (startup fire + manual click).
   const inFlight = useRef(false)
-  // 24h-throttle stamp for the silent startup probe. Plain number →
-  // usePersistedState. The legacy raw-numeric-string format JSON-parses to the
-  // same number, so an upgrade carries the old stamp over.
-  const [lastCheck, setLastCheck] = usePersistedState<number>(LAST_CHECK_KEY, 0)
 
   const checkNow = useCallback(async () => {
     if (inFlight.current) return
@@ -122,18 +117,20 @@ export function useUpdateCheck() {
     await openUrl(RELEASES_URL)
   }, [])
 
-  // Startup silent probe, 24h-throttled. Guarded app-wide so the
-  // many useUpdateCheck mounts (App + footer + Settings) fire it exactly once.
-  // The stamp write is debounced via usePersistedState and flushed on unmount,
-  // so it still lands before a close even if checkNow() never returns.
+  // Startup silent probe — fires once app-wide on every launch (a fresh import
+  // per startup resets the module-level guard), then re-probes every
+  // POLL_INTERVAL_MS while the app stays open. The interval is armed without a
+  // cleanup on purpose: under StrictMode the effect runs mount→unmount→remount,
+  // and a cleanup would clear the timer while the guarded remount re-arms
+  // nothing — leaving a long-running session with no polling. The root App keeps
+  // this hook mounted for the app's lifetime, so the timer lives with the
+  // process, not a component. The many mounts share one probe + one interval.
   useEffect(() => {
     if (startupProbed) return
     startupProbed = true
-    if (Date.now() - lastCheck >= THROTTLE_MS) {
-      setLastCheck(Date.now())
-      void checkNow()
-    }
-  }, [checkNow, lastCheck, setLastCheck])
+    void checkNow()
+    void setInterval(() => void checkNow(), POLL_INTERVAL_MS)
+  }, [checkNow])
 
   return { checkNow, applyUpdate, restartNow, openReleases }
 }

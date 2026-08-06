@@ -27,8 +27,9 @@
 //   • `useUpdateCheck` (src/app/shell/use-update-check.ts) — holds a
 //     non-serializable Tauri `Update` object (it carries the `downloadAndInstall`
 //     side effect) that must outlive any single hook instance and be shared
-//     app-wide; that singleton stays a module-level `let`. Only its throttled
-//     "last check" timestamp (a plain number) goes through `usePersistedState`.
+//     app-wide; that singleton stays a module-level `let`, and the startup
+//     probe is a fire-once-per-launch module-level flag. Nothing here is
+//     persisted.
 //
 // `window-geometry` (src/app/shell/window-geometry.ts) is NOT an exception — it
 // is an imperative consumer of these primitives, not a React state hook: its

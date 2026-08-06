@@ -1,8 +1,9 @@
 // Update indicator + popover card + Settings row.
 //
 // UpdateIndicator: the footer ⓘ. Shows only when a probe surfaced a new
-//   version (available / downloading / ready / failed); clicking opens the
-//   UpdateCard popover, which renders one body per status. [稍后] and
+//   version (available / downloading / ready / failed); it auto-opens the
+//   UpdateCard popover on the first new-version probe of a launch, and
+//   clicking re-opens it. The card renders one body per status. [稍后] and
 //   post-action close it via the controlled `open` state owned here.
 // UpdateControl: the Settings「版本与更新」row — current version + a manual
 //   「检查更新」button + a one-line status echo.
@@ -14,7 +15,7 @@ import {
   PartyPopper,
   RotateCw,
 } from "lucide-react"
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { useUpdateCheck } from "@/app/shell/use-update-check"
 import { useAppInfoQuery } from "@/app/store/api"
@@ -52,6 +53,15 @@ export function UpdateIndicator() {
   const status = useAppSelector((s) => s.update.status)
   const { applyUpdate, restartNow, openReleases } = useUpdateCheck()
   const [open, setOpen] = useState(false)
+  // Auto-pop once per launch when a probe surfaces a new version; a manual
+  // dismiss ([稍后] / close) never re-opens it within the same session.
+  const autoOpened = useRef(false)
+  useEffect(() => {
+    if (status === "available" && !autoOpened.current) {
+      autoOpened.current = true
+      setOpen(true)
+    }
+  }, [status])
 
   // Idle / checking / up-to-date never surface the indicator —
   // only a real new-version state shows the ⓘ.
