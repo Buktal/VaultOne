@@ -218,70 +218,76 @@ function GroupRow({
           <FolderTree className="size-3.5 shrink-0" />
         )}
         <span className="flex-1 truncate">{g.name}</span>
-        <span className="text-muted-foreground/70 text-xs tabular-nums">
-          {count}
-        </span>
       </button>
-      <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
-        <PopoverTrigger
-          render={
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              className="opacity-0 group-hover/grow:opacity-100 aria-expanded:opacity-100"
-              aria-label={t("common.edit")}
-              disabled={busy}
-            />
-          }
-        >
-          <MoreHorizontal />
-        </PopoverTrigger>
-        <PopoverContent className="w-56 p-2" align="end">
-          {renaming ? (
-            <div className="flex items-center gap-1">
-              <Input
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                className="h-7"
-                autoFocus
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void commitRename()
-                  if (e.key === "Escape") setRenaming(false)
-                }}
-              />
-              <Button variant="ghost" size="icon-sm" onClick={commitRename}>
-                <Check />
-              </Button>
+      {/* The count always sits flush right, matching the plain rows. The
+        action slot next to it starts at zero width and stays clipped, so the
+        ⋮ occupies no space at rest; on hover the slot expands and the count
+        yields to it with a slide. Focus also expands the slot, keeping the
+        trigger reachable by keyboard. */}
+      <span className="text-muted-foreground/70 text-xs tabular-nums">
+        {count}
+      </span>
+      <div className="w-0 overflow-hidden transition-[width] duration-150 ease-out group-hover/grow:w-6 group-focus-within/grow:w-6">
+        <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
+          <PopoverTrigger
+            render={
               <Button
                 variant="ghost"
-                size="icon-sm"
-                onClick={() => setRenaming(false)}
-              >
-                <X />
-              </Button>
-            </div>
-          ) : (
-            <div className="flex flex-col gap-0.5">
-              <button
-                type="button"
-                className="hover:bg-muted flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm"
-                onClick={startRename}
-              >
-                <Pencil className="size-3.5" />
-                {t("sessions.group.rename")}
-              </button>
-              <button
-                type="button"
-                className="text-destructive hover:bg-destructive/10 flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm"
-                onClick={confirmDelete}
-              >
-                <Trash2 className="size-3.5" />
-                {t("sessions.group.delete")}
-              </button>
-            </div>
-          )}
-        </PopoverContent>
-      </Popover>
+                size="icon-xs"
+                aria-label={t("common.edit")}
+                disabled={busy}
+              />
+            }
+          >
+            <MoreHorizontal />
+          </PopoverTrigger>
+          <PopoverContent className="w-56 p-2" align="end">
+            {renaming ? (
+              <div className="flex items-center gap-1">
+                <Input
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  className="h-7"
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void commitRename()
+                    if (e.key === "Escape") setRenaming(false)
+                  }}
+                />
+                <Button variant="ghost" size="icon-sm" onClick={commitRename}>
+                  <Check />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => setRenaming(false)}
+                >
+                  <X />
+                </Button>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-0.5">
+                <button
+                  type="button"
+                  className="hover:bg-muted flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm"
+                  onClick={startRename}
+                >
+                  <Pencil className="size-3.5" />
+                  {t("sessions.group.rename")}
+                </button>
+                <button
+                  type="button"
+                  className="text-destructive hover:bg-destructive/10 flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm"
+                  onClick={confirmDelete}
+                >
+                  <Trash2 className="size-3.5" />
+                  {t("sessions.group.delete")}
+                </button>
+              </div>
+            )}
+          </PopoverContent>
+        </Popover>
+      </div>
     </div>
   )
 }

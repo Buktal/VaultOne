@@ -1,8 +1,11 @@
 // Session detail Sheet — the signature element of the sessions view. Header
 // carries the title (inline-renameable), source / project / timing / usage
 // stats, the favorite star, and the move-to-group picker. Body renders the
-// transcript as a role-differentiated timeline (assistant with a model badge,
-// user in its own tone, tool rows collapsible, system muted).
+// transcript as a three-voice timeline: assistant bubbles sit left, user
+// bubbles right (mirrored, corner-cut toward the edge), tool / system rows
+// span full width in the middle as the "workbench". Position encodes who spoke
+// — assistant with a model badge, user in its own tone, tool rows collapsible,
+// system muted. Every message collapses on click (expanded by default).
 //
 // Pure rendering — all state + queries live in useSessionsBrowser. The
 // per-message expand state for tool rows is the only local state here; it is
@@ -12,6 +15,7 @@ import dayjs from "dayjs"
 import relativeTime from "dayjs/plugin/relativeTime"
 import {
   Bot,
+  ChevronDown,
   ChevronRight,
   Info,
   Loader2,
@@ -108,7 +112,13 @@ export function SessionDetailSheet(props: SessionDetailSheetProps) {
     <Sheet open={true} onOpenChange={(o) => !o && onClose()}>
       <SheetContent
         showClose={false}
-        className="flex w-[640px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[640px]"
+        // Width tracks the window: `100vw - 32rem` leaves the sidebar + the
+        // full title column of the list visible in the background (~70% of
+        // the window), so the user can still tell which session is open.
+        // `min-w` keeps narrow windows from squeezing the transcript below a
+        // readable size; `sm:max-w-none` overrides the sheet primitive's
+        // default 24rem cap.
+        className="flex w-[calc(100vw-32rem)] min-w-[32rem] flex-col gap-0 overflow-hidden p-0 sm:max-w-none"
       >
         {/* Header: title + meta + actions */}
         <SheetHeader className="border-border gap-2 border-b p-4 pr-10">
@@ -269,30 +279,53 @@ function TranscriptBody({
 }
 
 function MessageRow({ message: m }: { message: SessionMessage }) {
+  // Per-message collapse state, expanded by default. Clicking a bubble
+  // collapses it to a one-line summary (the model badge hides too, keeping
+  // the collapsed strip readable).
+  const [open, setOpen] = useState(true)
+  const toggle = () => setOpen((o) => !o)
   switch (m.role) {
     case "assistant":
       return (
-        <BaseRow icon={Bot} tone="assistant" time={m.ts}>
-          {m.model ? (
+        <BaseRow
+          icon={Bot}
+          tone="assistant"
+          time={m.ts}
+          open={open}
+          onToggle={toggle}
+        >
+          {open && m.model ? (
             <Badge variant="secondary" className="mb-1 font-mono text-[10px]">
               {m.model}
             </Badge>
           ) : null}
-          <Content text={m.content} />
+          <Content text={m.content} className={cn(!open && "line-clamp-1")} />
         </BaseRow>
       )
     case "user":
       return (
-        <BaseRow icon={UserIcon} tone="user" time={m.ts}>
-          <Content text={m.content} />
+        <BaseRow
+          icon={UserIcon}
+          tone="user"
+          time={m.ts}
+          open={open}
+          onToggle={toggle}
+        >
+          <Content text={m.content} className={cn(!open && "line-clamp-1")} />
         </BaseRow>
       )
     case "tool":
       return <ToolRow message={m} />
     case "system":
       return (
-        <BaseRow icon={Info} tone="system" time={m.ts}>
-          <Content text={m.content} />
+        <BaseRow
+          icon={Info}
+          tone="system"
+          time={m.ts}
+          open={open}
+          onToggle={toggle}
+        >
+          <Content text={m.content} className={cn(!open && "line-clamp-1")} />
         </BaseRow>
       )
     default:
@@ -301,10 +334,12 @@ function MessageRow({ message: m }: { message: SessionMessage }) {
 }
 
 function ToolRow({ message: m }: { message: SessionMessage }) {
-  const [open, setOpen] = useState(false)
+  // Expanded by default, like every other message; clicking the header
+  // collapses the output back to the tool name alone.
+  const [open, setOpen] = useState(true)
   const name = m.name || m.content?.split("\n")[0] || "tool"
   return (
-    <div className="bg-muted/40 rounded-md border border-dashed px-2.5 py-1.5 text-xs">
+    <div className="bg-muted/40 rounded-md border border-dashed px-3 py-2 text-xs">
       <button
         type="button"
         className="hover:text-foreground text-muted-foreground flex w-full items-center gap-1.5 text-left"
@@ -334,22 +369,38 @@ function BaseRow({
   icon: Icon,
   tone,
   time,
+  open,
+  onToggle,
   children,
 }: {
   icon: typeof Bot
   tone: "assistant" | "user" | "system"
   time: string
+  open: boolean
+  onToggle: () => void
   children: ReactNode
 }) {
-  const toneClass =
+  // Voice layout: assistant floats left, user floats right (mirrored so its
+  // icon faces the edge), system stays full-width in the middle. The corner
+  // cut toward each edge is the chat-bubble gesture; max-w caps line length
+  // once the sheet fills the window. The whole bubble is the collapse toggle
+  // — the timestamp row carries the chevron (down = expanded, rotated right
+  // = collapsed).
+  const voiceClass =
     tone === "assistant"
-      ? "bg-muted/60"
+      ? "mr-auto max-w-[72ch] rounded-lg rounded-bl-sm bg-muted/60"
       : tone === "user"
-        ? "bg-accent-tint"
+        ? "ml-auto max-w-[72ch] flex-row-reverse rounded-lg rounded-br-sm bg-accent-tint"
         : "bg-transparent"
   return (
-    <div
-      className={cn("flex gap-2 rounded-md px-2.5 py-1.5 text-sm", toneClass)}
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={open}
+      className={cn(
+        "focus-visible:ring-ring/40 flex cursor-pointer gap-2 px-3 py-2 text-left text-sm focus-visible:ring-2 focus-visible:outline-none",
+        voiceClass,
+      )}
     >
       <Icon
         className={cn(
@@ -358,17 +409,20 @@ function BaseRow({
         )}
       />
       <div className="min-w-0 flex-1">
-        <div
-          className={cn(
-            "text-muted-foreground mb-0.5 flex items-center gap-1 text-[10px]",
-            tone === "system" && "text-[10px]",
-          )}
-        >
-          <span>{dayjs(time).format("MM/DD HH:mm")}</span>
+        <div className="text-muted-foreground mb-0.5 flex items-center gap-1 text-[10px]">
+          {/* ts can be an empty string (codex/claude pass through whatever the
+            source file has), so guard it like last_active_at elsewhere. */}
+          <span>{time ? dayjs(time).format("MM/DD HH:mm") : "—"}</span>
+          <ChevronDown
+            className={cn(
+              "ml-auto size-3 transition-transform",
+              !open && "rotate-90",
+            )}
+          />
         </div>
         {children}
       </div>
-    </div>
+    </button>
   )
 }
 
