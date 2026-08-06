@@ -367,12 +367,25 @@ export function withRoleOneMInText(
   )
 }
 
+/** Write one model to every role — the shared engine behind the one-click
+ *  apply and the fetched-model picker refill. Same per-role semantics as a
+ *  typed model (display-name sync, Haiku marker strip, small-fast key
+ *  deletion), so the two entry points can never drift apart. */
+export function withAllRolesInText(configText: string, model: string): string {
+  let next = configText
+  for (const def of MODEL_ROLES) {
+    next = withRoleModelInText(next, def.id, model)
+  }
+  return next
+}
+
 /**
  * One-click apply: take the first filled model — the primary model, then the
- * roles in display order — and write it to every role, syncing display names
- * (marker-free) and stripping the marker for Haiku. A picked model that
- * carries `[1M]` propagates the marker to the roles that support it. Returns
- * null when no model is filled anywhere (callers disable the button).
+ * roles in display order — and write it to every role via
+ * `withAllRolesInText`, syncing display names (marker-free) and stripping the
+ * marker for Haiku. A picked model that carries `[1M]` propagates the marker
+ * to the roles that support it. Returns null when no model is filled anywhere
+ * (callers disable the button).
  */
 export function withAllRolesFromFirstInText(configText: string): string | null {
   const env = parseSettingsConfig(configText).env ?? {}
@@ -382,11 +395,7 @@ export function withAllRolesFromFirstInText(configText: string): string | null {
   ]
   const picked = candidates.find((m) => m?.trim())
   if (!picked) return null
-  let next = configText
-  for (const def of MODEL_ROLES) {
-    next = withRoleModelInText(next, def.id, picked)
-  }
-  return next
+  return withAllRolesInText(configText, picked)
 }
 
 /** A blank provider for the "new provider" sheet (custom category, empty env).

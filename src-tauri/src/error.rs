@@ -27,6 +27,12 @@ pub enum AppError {
     /// Sync (git2 / network) error — only raised in Synced mode.
     #[error("sync error: {0}")]
     Sync(String),
+    /// 模型列表获取失败（OpenAI 兼容 GET /v1/models，前端「获取模型列表」
+    /// 按钮）。串内带稳定前缀标签（AUTH_FAILED / ENDPOINT_CLOSED / TIMEOUT /
+    /// BAD_FORMAT / NETWORK），前端按标签分桶成对应的 toast 提示——分桶
+    /// 契约见 `provider::model_fetch` 的模块文档。
+    #[error("model fetch failed: {0}")]
+    FetchModels(String),
     /// Catch-all for anything not covered above.
     #[error("internal error: {0}")]
     Internal(String),

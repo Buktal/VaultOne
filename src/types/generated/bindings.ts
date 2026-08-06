@@ -239,6 +239,15 @@ export const commands = {
 	 */
 	importProvidersCmd: (sourcePath: string, mode: ProviderImportMode) => typedError<ProviderImportReport, AppError>(__TAURI_INVOKE("import_providers_cmd", { sourcePath, mode })),
 	/**
+	 *  获取供应商的可用模型列表（OpenAI 兼容 `GET /v1/models`）。WebView fetch
+	 *  撞 CORS，所以请求由后端发（ureq）。`models_url` 非空时精确覆写候选列表
+	 * （只试这一个）；否则对 baseURL 构造候选 URL（版本段识别 + 兼容子路径
+	 *  剥离，见 `provider::model_fetch::candidate_models_urls`），按序尝试首个
+	 *  成功。错误串带稳定前缀标签（AUTH_FAILED / ENDPOINT_CLOSED / TIMEOUT /
+	 *  BAD_FORMAT / NETWORK），前端按标签分桶提示。
+	 */
+	fetchModelsCmd: (baseUrl: string, apiKey: string, modelsUrl: string | null) => typedError<string[], AppError>(__TAURI_INVOKE("fetch_models_cmd", { baseUrl, apiKey, modelsUrl })),
+	/**
 	 *  Dock the given window against the right edge of its current monitor.
 	 * 
 	 *  `client_logical_w/h` is the desired CLIENT (visible content) size in logical
@@ -312,7 +321,12 @@ export type AppError =
 /**  Pricing lookup / cost calc error. */
 { type: "Pricing"; data: string } | 
 /**  Sync (git2 / network) error — only raised in Synced mode. */
-{ type: "Sync"; data: string } | 
+{ type: "Sync"; data: string } |
+/**  模型列表获取失败（OpenAI 兼容 GET /v1/models，前端「获取模型列表」
+ *  按钮）。串内带稳定前缀标签（AUTH_FAILED / ENDPOINT_CLOSED / TIMEOUT /
+ *  BAD_FORMAT / NETWORK），前端按标签分桶成对应的 toast 提示——分桶
+ *  契约见 `provider::model_fetch` 的模块文档。 */
+{ type: "FetchModels"; data: string } |
 /**  Catch-all for anything not covered above. */
 { type: "Internal"; data: string };
 

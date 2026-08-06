@@ -4,7 +4,10 @@
 // spellings), plus the template-variable inputs on top when the snapshot
 // carries `${VAR}` placeholders (the Bedrock presets); the model mapping
 // section owns the five role models (Sonnet / Opus / Haiku / Fable / Subagent),
-// their display names and the 1M toggles, plus the one-click apply button. On
+// their display names and the 1M toggles, plus the one-click apply button and
+// the model-list fetch button (fetches the current provider's models into a
+// dropdown; picking one refills all five roles, failures are bucketed into a
+// toast). On
 // save the form maps everything onto the provider's settingsConfig snapshot via
 // the derive.ts helpers (withBasicFields preserves every field the form
 // doesn't own), then calls the upsert mutation and closes.
@@ -19,11 +22,11 @@
 // so the field values win for the keys they own and everything else survives
 // verbatim.
 
-import { Wand2 } from "lucide-react"
+import { RefreshCw, Wand2 } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
-import { useSaveProviderMutation } from "@/app/store/api"
+import { useFetchModelsMutation, useSaveProviderMutation } from "@/app/store/api"
 import { JsonEditor } from "@/components/json-editor"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -63,6 +66,7 @@ import {
   stripOneM,
   switchAuthField,
   withAllRolesFromFirstInText,
+  withAllRolesInText,
   withBasicFields,
   withBasicFieldsInText,
   withMetaTemplateValues,
@@ -70,6 +74,11 @@ import {
   withRoleNameInText,
   withRoleOneMInText,
 } from "@/features/providers/derive"
+import {
+  bucketFetchModelsError,
+  presetModelsUrl,
+} from "@/features/providers/model-fetch"
+import { PROVIDER_PRESETS } from "@/features/providers/presets"
 import type { ProviderPreset } from "@/features/providers/presets"
 import { useMutateWithToast } from "@/hooks/use-toast-mutation"
 import { parseJsonObject } from "@/lib/json"
@@ -108,6 +117,8 @@ export function ProviderFormSheet({
     metaTemplateValues(base.meta),
   )
   const [save, { isLoading: saving }] = useSaveProviderMutation()
+  const [fetchModels, { isLoading: fetching }] = useFetchModelsMutation()
+  const [fetchedModels, setFetchedModels] = useState<string[]>([])
   const runWithToast = useMutateWithToast()
 
   useEffect(() => {
@@ -126,6 +137,8 @@ export function ProviderFormSheet({
     setApiKey(providerApiKey(b))
     setAuthField(configAuthField(b.settingsConfig))
     setTemplateValues(values)
+    // 上次会话拉到的模型列表属于旧表单状态，重开时清掉。
+    setFetchedModels([])
   }, [editing, preset, open])
 
   // JSON → form fields: whenever the snapshot text changes (editor edit or a
@@ -161,6 +174,8 @@ export function ProviderFormSheet({
 
   function onEndpointChange(value: string) {
     setEndpoint(value)
+    // 端点变了，旧端点拉到的模型列表不再可靠，清空下拉。
+    setFetchedModels([])
     if (parseJsonObject(configText).ok) {
       setConfigText((prev) =>
         withBasicFieldsInText(prev, { endpoint: value, apiKey, authField }),
@@ -200,6 +215,48 @@ export function ProviderFormSheet({
     const next = withAllRolesFromFirstInText(configText)
     if (next === null) return
     setConfigText(next)
+    toast.success(t("providers.toast.applyAllSuccess"))
+  }
+
+  /** 拉当前供应商的模型列表：端点与 key 缺任一 → 对应提示；失败按后端
+   *  错误串分桶提示（认证失败 / 端点未开放 / 超时 / 格式不支持 / 兜底）。 */
+  async function onFetchModels() {
+    if (!endpoint.trim()) {
+      toast.error(t("providers.toast.fetchModels.endpointRequired"))
+      return
+    }
+    if (!apiKey.trim()) {
+      toast.error(t("providers.toast.fetchModels.keyRequired"))
+      return
+    }
+    const result = await fetchModels({
+      baseUrl: endpoint.trim(),
+      apiKey: apiKey.trim(),
+      // 端点等于某预设默认值时，带上该预设声明的 modelsUrl 覆写（如火山
+      // /api/compatible 拼不出正确候选，必须精确指路）。
+      modelsUrl: presetModelsUrl(endpoint, PROVIDER_PRESETS),
+    })
+    if (result.error) {
+      const { kind, detail } = bucketFetchModelsError(result.error.data)
+      toast.error(t(`providers.toast.fetchModels.${kind}`), {
+        description: detail,
+      })
+      return
+    }
+    setFetchedModels(result.data)
+    if (result.data.length === 0) {
+      toast.warning(t("providers.toast.fetchModels.empty"))
+    } else {
+      toast.success(
+        t("providers.toast.fetchModels.fetched", { count: result.data.length }),
+      )
+    }
+  }
+
+  /** 下拉选中一个模型 → 回填五个角色（与「一键设置」同一写入引擎）。 */
+  function onPickModel(model: string) {
+    if (!parseJsonObject(configText).ok) return
+    setConfigText((prev) => withAllRolesInText(prev, model))
     toast.success(t("providers.toast.applyAllSuccess"))
   }
 
@@ -383,23 +440,63 @@ export function ProviderFormSheet({
             </div>
           ) : null}
           <div className="rounded-md border p-3">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <Label className="text-muted-foreground text-xs">
                 {t("providers.form.modelMapping")}
               </Label>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={onApplyAll}
-                disabled={!canApplyAll}
-              >
-                <Wand2 className="size-3.5" />
-                {t("providers.form.applyAll")}
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={onFetchModels}
+                  disabled={fetching}
+                >
+                  <RefreshCw
+                    className={cn("size-3.5", fetching && "animate-spin")}
+                  />
+                  {fetching
+                    ? t("providers.form.fetchModels.fetching")
+                    : t("providers.form.fetchModels.fetch")}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={onApplyAll}
+                  disabled={!canApplyAll}
+                >
+                  <Wand2 className="size-3.5" />
+                  {t("providers.form.applyAll")}
+                </Button>
+              </div>
             </div>
             <p className="mt-1.5 mb-2 text-xs text-muted-foreground">
               {t("providers.form.modelMappingHint")}
             </p>
+            {fetchedModels.length > 0 ? (
+              <div className="mb-2">
+                <Select onValueChange={onPickModel}>
+                  <SelectTrigger
+                    className="font-mono text-xs"
+                    aria-label={t("providers.form.fetchModels.placeholder")}
+                  >
+                    <SelectValue
+                      placeholder={t("providers.form.fetchModels.placeholder")}
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {fetchedModels.map((model) => (
+                      <SelectItem
+                        key={model}
+                        value={model}
+                        className="font-mono text-xs"
+                      >
+                        {model}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : null}
             <div className="space-y-3">
               {roleRows.map(({ role, fields }) => (
                 <div key={role.id} className="space-y-1">
