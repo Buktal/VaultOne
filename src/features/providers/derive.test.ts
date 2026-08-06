@@ -294,9 +294,9 @@ describe("snippetMissingKeys", () => {
 
   it("reports env only when at least one snippet env key is missing", () => {
     const cfg = JSON.stringify({ env: { ANTHROPIC_MODEL: "m" } })
-    expect(snippetMissingKeys(cfg, JSON.stringify({ env: { A: "1" } }))).toEqual(
-      ["env"],
-    )
+    expect(
+      snippetMissingKeys(cfg, JSON.stringify({ env: { A: "1" } })),
+    ).toEqual(["env"])
     // 片段 env 全被配置覆盖 → 空。
     expect(
       snippetMissingKeys(

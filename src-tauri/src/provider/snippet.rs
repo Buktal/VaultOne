@@ -25,7 +25,7 @@
 //! 空/纯空白合法（合并时视为 `{}`，即无操作）。写盘时启用的片段解析不了 →
 //! `Err`（切换失败）：宁可显式失败，也不静默丢片段效果。
 
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use crate::provider::live::{parse_object, CONTROLLED_FIELDS};
 
 /// 写盘入口（纯函数）：片段启用 → 把片段合并进 settingsConfig；未启用 →
@@ -100,6 +100,7 @@ fn parse_snippet_or_empty(snippet: &str) -> AppResult<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::AppError;
     use crate::provider::live::merge_live_settings;
 
     fn parsed(s: &str) -> serde_json::Value {
@@ -191,9 +192,8 @@ mod tests {
 
     #[test]
     fn snippet_non_object_env_is_ignored() {
-        let out = parsed(
-            &merge_snippet_into_settings(r#"{"env":{}}"#, r#"{"env": "garbage"}"#).unwrap(),
-        );
+        let out =
+            parsed(&merge_snippet_into_settings(r#"{"env":{}}"#, r#"{"env": "garbage"}"#).unwrap());
         assert_eq!(out["env"], serde_json::json!({}), "垃圾 env 不合并");
     }
 
@@ -291,7 +291,13 @@ mod tests {
 
     #[test]
     fn validate_snippet_rejects_invalid_and_non_object() {
-        assert!(matches!(validate_snippet("{nope"), Err(AppError::Config(_))));
-        assert!(matches!(validate_snippet(r#"[1]"#), Err(AppError::Config(_))));
+        assert!(matches!(
+            validate_snippet("{nope"),
+            Err(AppError::Config(_))
+        ));
+        assert!(matches!(
+            validate_snippet(r#"[1]"#),
+            Err(AppError::Config(_))
+        ));
     }
 }

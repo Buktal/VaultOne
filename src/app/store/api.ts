@@ -448,8 +448,12 @@ export const vaultApi = createApi({
       providesTags: ["Providers"],
     }),
     /** 保存全局通用配置片段（后端校验 JSON 合法性）。 */
-    setCommonConfigSnippet: b.mutation<CommonConfigSnippet, CommonConfigSnippet>({
-      queryFn: async (snippet) => run(commands.setCommonConfigSnippetCmd(snippet)),
+    setCommonConfigSnippet: b.mutation<
+      CommonConfigSnippet,
+      CommonConfigSnippet
+    >({
+      queryFn: async (snippet) =>
+        run(commands.setCommonConfigSnippetCmd(snippet)),
       invalidatesTags: ["Providers"],
     }),
 

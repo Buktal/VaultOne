@@ -186,21 +186,51 @@ const CONTROLLED_FIELDS = [
   "skipWebFetchPreflight",
 ] as const
 
+/** 片段子集判定的严格解析：空串 → `{}`；非空但非法 JSON 或非对象 → `null`
+ *  ——解析不了的输入没法可靠判定缺失，调用方对 `null` 一律报 `[]`，不误导
+ *  （与 `parseSettingsConfig` 的宽容契约不同：它把垃圾吞成 `{}` 以让表单
+ *  不崩，而这里空与垃圾必须分得清，否则垃圾配置会误报「片段将补 X」）。 */
+function parseSnippetInput(text: string): Record<string, unknown> | null {
+  if (!text) return {}
+  try {
+    const parsed: unknown = JSON.parse(text)
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      return null
+    }
+    return parsed as Record<string, unknown>
+  } catch {
+    return null
+  }
+}
+
+/** env 非对象（手写垃圾）按空对象处理——与后端合并语义一致：非对象 env
+ *  被跳过、不参与键级判定。 */
+function envRecordOf(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {}
+}
+
 /** 片段对 settingsConfig 的补充（子集判定）：片段里出现、而配置里缺失的
  *  受控字段键——这些是切换写盘时片段会补上的部分。`env` 按键级判定：片段
  *  env 有任一键缺失即报告 `env`。非受控键不算（写盘合并时被忽略，报了是
- *  误导）。配置/片段为空或解析不了 → `[]`。 */
+ *  误导）。配置/片段为空 → `[]`；非空但解析不了或不是对象 → `[]`。 */
 export function snippetMissingKeys(
   configText: string,
   snippetText: string,
 ): string[] {
-  const config = parseSettingsConfig(configText)
-  const snippet = parseSettingsConfig(snippetText)
+  const config = parseSnippetInput(configText)
+  const snippet = parseSnippetInput(snippetText)
+  if (config === null || snippet === null) return []
   const missing: string[] = []
   for (const key of CONTROLLED_FIELDS) {
     if (key === "env") {
-      const configEnv = config.env ?? {}
-      const snippetEnv = snippet.env ?? {}
+      const configEnv = envRecordOf(config.env)
+      const snippetEnv = envRecordOf(snippet.env)
       if (Object.keys(snippetEnv).some((k) => !(k in configEnv))) {
         missing.push("env")
       }

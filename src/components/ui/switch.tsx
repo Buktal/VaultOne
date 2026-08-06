@@ -5,7 +5,7 @@
 // which drive the thumb's transform and the track's color.
 
 import { Switch as SwitchPrimitive } from "@base-ui/react/switch"
-import * as React from "react"
+import type * as React from "react"
 
 import { cn } from "@/lib/utils"
 

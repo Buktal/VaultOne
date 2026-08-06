@@ -68,7 +68,9 @@ export function CommonConfigSnippetCard() {
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between gap-2">
-        <CardTitle className="text-sm">{t("providers.snippet.title")}</CardTitle>
+        <CardTitle className="text-sm">
+          {t("providers.snippet.title")}
+        </CardTitle>
         <div className="flex items-center gap-2">
           <Label
             htmlFor="common-snippet-enabled"

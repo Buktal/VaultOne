@@ -519,9 +519,11 @@ mod tests {
         assert!(!c.common_config_snippet_enabled);
 
         // 显式值经 config.json 序列化往返不丢。
-        let mut c2 = ConfigData::default();
-        c2.common_config_snippet = r#"{"includeCoAuthoredBy": true, "attribution": "x"}"#.into();
-        c2.common_config_snippet_enabled = true;
+        let c2 = ConfigData {
+            common_config_snippet: r#"{"includeCoAuthoredBy": true, "attribution": "x"}"#.into(),
+            common_config_snippet_enabled: true,
+            ..Default::default()
+        };
         let json = serde_json::to_string(&c2).unwrap();
         let back: ConfigData = serde_json::from_str(&json).unwrap();
         assert_eq!(
