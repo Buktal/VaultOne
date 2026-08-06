@@ -12,6 +12,8 @@ import type {
   ModelStatsRow,
   PricingEntry,
   Provider,
+  ProviderImportMode,
+  ProviderImportReport,
   RunMode,
   SessionFilter,
   SessionGroup,
@@ -441,6 +443,25 @@ export const vaultApi = createApi({
       queryFn: async (id) => run(commands.switchProviderCmd(id)),
       invalidatesTags: ["Providers"],
     }),
+    /** 导出全部供应商为 JSON 文档（`includeKeys=false` 剔除 API key）到用户
+     *  选的路径。手动迁移 / 留档，不走 git 同步。返回文档内供应商数。 */
+    exportProviders: b.mutation<
+      number,
+      { includeKeys: boolean; targetPath: string }
+    >({
+      queryFn: async ({ includeKeys, targetPath }) =>
+        run(commands.exportProvidersCmd(includeKeys, targetPath)),
+    }),
+    /** 从用户选的 JSON 文档导入供应商（合并 / 覆盖模式）。只写本机 DB，
+     *  不触发 providers.json 同步写。 */
+    importProviders: b.mutation<
+      ProviderImportReport,
+      { sourcePath: string; mode: ProviderImportMode }
+    >({
+      queryFn: async ({ sourcePath, mode }) =>
+        run(commands.importProvidersCmd(sourcePath, mode)),
+      invalidatesTags: ["Providers"],
+    }),
 
     // ---- preferences ----
     // Go through the generated `commands.*` so tauri-specta's `typedError`
@@ -539,6 +560,8 @@ export const {
   useDeleteProviderMutation,
   useReorderProvidersMutation,
   useSwitchProviderMutation,
+  useExportProvidersMutation,
+  useImportProvidersMutation,
 } = vaultApi
 
 export type VaultApi = typeof vaultApi
