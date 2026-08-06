@@ -22,6 +22,7 @@ import {
   Copy,
   Info,
   Loader2,
+  Pencil,
   Star,
   User as UserIcon,
   Wrench,
@@ -124,6 +125,10 @@ export function SessionDetailSheet(props: SessionDetailSheetProps) {
       >
         {/* Header: title + meta + actions */}
         <SheetHeader className="border-border gap-2 border-b p-4 pr-10">
+          {/* Rename trigger: only the title text + pencil icon are clickable
+            (w-fit), not the rest of the row. The pencil makes the affordance
+            visible; the whole button is a native <button> so it stays
+            keyboard-accessible. */}
           {editTitle ? (
             <div className="flex items-center gap-1">
               <Input
@@ -144,16 +149,22 @@ export function SessionDetailSheet(props: SessionDetailSheetProps) {
               </Button>
             </div>
           ) : (
-            <SheetTitle
-              className="truncate hover:text-accent-brand-strong cursor-pointer text-base"
-              onClick={onStartTitle}
-              title={t("sessions.detail.renameHint")}
-            >
-              {s.title || t("sessions.untitled")}
+            <SheetTitle className="text-base">
+              <button
+                type="button"
+                onClick={onStartTitle}
+                title={t("sessions.detail.renameHint")}
+                className="hover:text-accent-brand-strong group flex w-fit max-w-full cursor-pointer items-center gap-1.5 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+              >
+                <span className="max-w-[24rem] truncate">
+                  {s.title || t("sessions.untitled")}
+                </span>
+                <Pencil className="text-muted-foreground size-3.5 shrink-0 opacity-60 transition-opacity group-hover:opacity-100" />
+              </button>
             </SheetTitle>
           )}
           <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-            <span>{sessionSourceLabel(s.source)}</span>
+            <Badge variant="secondary">{sessionSourceLabel(s.source)}</Badge>
             <span className="truncate" title={s.project_dir}>
               {s.project_dir || "—"}
             </span>
@@ -173,6 +184,7 @@ export function SessionDetailSheet(props: SessionDetailSheetProps) {
             <Button
               variant={favorited ? "default" : "outline"}
               size="sm"
+              className="h-7"
               onClick={onToggleFavorite}
             >
               <Star className={cn("size-4", favorited && "fill-current")} />
@@ -426,16 +438,17 @@ function BaseRow({
 }) {
   // Voice layout: assistant floats left, user floats right (mirrored so its
   // icon faces the edge), system stays full-width in the middle. The corner
-  // cut toward each edge is the chat-bubble gesture; max-w caps line length
-  // once the sheet fills the window. The whole bubble is the collapse toggle;
-  // the header row lines up icon + time + model on the voice side (the user
-  // voice mirrors it to the bubble's right edge) with the collapse chevron
-  // and copy button on the far side.
+  // cut toward each edge is the chat-bubble gesture; max-w = min(72ch, 80%)
+  // caps line length on wide sheets and keeps narrow windows from filling the
+  // whole row (72ch alone exceeds the content width once the sheet shrinks).
+  // The whole bubble is the collapse toggle; the header row lines up icon +
+  // time + model on the voice side (the user voice mirrors it to the bubble's
+  // right edge) with the collapse chevron and copy button on the far side.
   const voiceClass =
     tone === "assistant"
-      ? "mr-auto max-w-[72ch] rounded-lg rounded-bl-sm bg-muted/60"
+      ? "mr-auto max-w-[min(72ch,80%)] rounded-lg rounded-bl-sm bg-muted/60"
       : tone === "user"
-        ? "ml-auto max-w-[72ch] rounded-lg rounded-br-sm bg-accent-tint"
+        ? "ml-auto max-w-[min(72ch,80%)] rounded-lg rounded-br-sm bg-accent-tint"
         : "bg-transparent"
   return (
     <>
