@@ -32,10 +32,14 @@ use tauri::LogicalSize;
 /// Declared at window creation (`tauri.conf.json` minWidth/minHeight) and
 /// re-applied by the full-mode restore commands; the lightweight dock clears it
 /// (min 0 ⇒ no constraint) so the glance card can reach its fixed small size.
+///
+/// Must match `window-shapes.ts` `MIN_FULL` (front-end restore clamp) and
+/// `tauri.conf.json` minWidth/minHeight (creation-time OS floor) — the restore
+/// commands re-apply this value with `set_min_size`, overriding all three.
 #[cfg(target_os = "windows")]
-const FULL_MIN_W: f64 = 720.0;
+const FULL_MIN_W: f64 = 840.0;
 #[cfg(target_os = "windows")]
-const FULL_MIN_H: f64 = 520.0;
+const FULL_MIN_H: f64 = 600.0;
 
 /// Dock the given window against the right edge of its current monitor.
 ///
@@ -300,4 +304,38 @@ fn set_window_rect_win(
     let outer_x = raw_x.clamp(lo_x.min(hi_x), lo_x.max(hi_x));
     let outer_y = raw_y.clamp(lo_y.min(hi_y), lo_y.max(hi_y));
     set_outer_rect(&p, outer_x, outer_y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The full-mode restore commands re-apply `set_min_size(FULL_MIN_W, FULL_MIN_H)`
+    /// (clearing it first in the lightweight dock), which overrides the OS floor
+    /// declared at window creation — so this constant must agree with the
+    /// `minWidth`/`minHeight` in `tauri.conf.json`, or the dashboard can be
+    /// restored smaller than the declared minimum. (It drifted to 720×520 once
+    /// while the conf already said 840×600.) Mirrors `window-shapes.test.ts`,
+    /// which pins the front-end `MIN_FULL` to the same declaration.
+    #[test]
+    fn full_min_matches_tauri_conf_declaration() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+            .expect("tauri.conf.json parses");
+        let windows = conf["app"]["windows"]
+            .as_array()
+            .expect("app.windows array");
+        let main = windows
+            .iter()
+            .find(|w| w["label"] == "main")
+            .expect("main window entry");
+        let min_w = main["minWidth"].as_f64().expect("minWidth numeric");
+        let min_h = main["minHeight"].as_f64().expect("minHeight numeric");
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(FULL_MIN_W, min_w);
+            assert_eq!(FULL_MIN_H, min_h);
+        }
+        // On non-Windows builds the constant is compiled out; the conf declaration
+        // is the only floor, and the assertion above can't run.
+    }
 }

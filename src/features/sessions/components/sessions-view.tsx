@@ -218,8 +218,13 @@ function SessionsTable({
     <div className="min-h-0 flex-1 -mr-2.5 overflow-auto pr-2.5">
       {/* table-fixed: column widths come from the header row, so the narrow
           numeric columns (w-20/w-24) are never stretched by extra horizontal
-          space — the title column (no explicit width) absorbs the remainder. */}
-      <Table className="table-fixed">
+          space — the title column (no explicit width) absorbs the remainder.
+          min-w: the fixed columns sum to 584px (incl. the header row's w-10
+          star column); below ~768px the auto title column would collapse to
+          ~0 and its header text overflows into the Project column. The floor
+          keeps the title readable and lets the outer overflow-auto scroll
+          horizontally instead of squeezing columns into overlap. */}
+      <Table className="table-fixed min-w-[48rem]">
         <TableHeader>
           <TableRow>
             <TableHead className="w-10" />
