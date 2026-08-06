@@ -2,13 +2,22 @@
 // here. The basic form owns three fields (name / endpoint / API key); on save
 // it maps them onto the provider's settingsConfig snapshot via the derive.ts
 // helpers (withBasicFields preserves every field the form doesn't own), then
-// calls the upsert mutation and closes. Model mapping / JSON editing are later
-// tickets.
+// calls the upsert mutation and closes.
+//
+// The settings.json editor at the bottom makes the JSON snapshot the single
+// source of truth: editing the JSON re-derives the endpoint / API key fields
+// (they are a quick view of `env`), and editing a field merges it back into
+// the JSON. The merge is guarded by `parseJsonObject` — while the JSON text
+// does not parse to an object, field edits only update the field state and the
+// in-progress JSON edit is never clobbered; once it parses again the fields
+// re-derive. Save still goes through withBasicFields, so the field values win
+// for the two keys they own and everything else survives verbatim.
 
 import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 import { useSaveProviderMutation } from "@/app/store/api"
+import { JsonEditor } from "@/components/json-editor"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -20,12 +29,16 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import {
+  configApiKey,
+  configEndpoint,
   emptyProvider,
   providerApiKey,
   providerEndpoint,
   withBasicFields,
+  withBasicFieldsInText,
 } from "@/features/providers/derive"
 import { useMutateWithToast } from "@/hooks/use-toast-mutation"
+import { parseJsonObject } from "@/lib/json"
 
 import type { Provider } from "@/types/generated/bindings"
 
@@ -44,6 +57,7 @@ export function ProviderFormSheet({
   const { t } = useTranslation()
   const base = editing ?? emptyProvider()
   const [name, setName] = useState(base.name)
+  const [configText, setConfigText] = useState(base.settingsConfig)
   const [endpoint, setEndpoint] = useState(providerEndpoint(base))
   const [apiKey, setApiKey] = useState(providerApiKey(base))
   const [save, { isLoading: saving }] = useSaveProviderMutation()
@@ -53,20 +67,60 @@ export function ProviderFormSheet({
     if (!open) return
     const b = editing ?? emptyProvider()
     setName(b.name)
+    setConfigText(b.settingsConfig)
     setEndpoint(providerEndpoint(b))
     setApiKey(providerApiKey(b))
   }, [editing, open])
+
+  // JSON → form fields: whenever the snapshot text changes (editor edit or a
+  // field merge), the env-backed fields mirror it. A text that doesn't parse
+  // to an object keeps the fields as-is — the linter flags the red line, and
+  // clobbering the fields with an empty derive would hide a broken edit.
+  useEffect(() => {
+    const result = parseJsonObject(configText)
+    if (!result.ok) return
+    setEndpoint(configEndpoint(configText))
+    setApiKey(configApiKey(configText))
+  }, [configText])
+
+  function onEndpointChange(value: string) {
+    setEndpoint(value)
+    if (parseJsonObject(configText).ok) {
+      setConfigText((prev) =>
+        withBasicFieldsInText(prev, { endpoint: value, apiKey }),
+      )
+    }
+  }
+
+  function onApiKeyChange(value: string) {
+    setApiKey(value)
+    if (parseJsonObject(configText).ok) {
+      setConfigText((prev) =>
+        withBasicFieldsInText(prev, { endpoint, apiKey: value }),
+      )
+    }
+  }
 
   async function onSave() {
     if (!name.trim()) {
       toast.error(t("providers.toast.nameRequired"))
       return
     }
-    // Rebuild the snapshot from the current one (preserving everything the
-    // form doesn't own), then attach the edited name and ship the upsert. The
-    // endpoint is trimmed here, not on every keystroke, so typing an
+    const snapshot = parseJsonObject(configText)
+    if (!snapshot.ok) {
+      toast.error(t("providers.toast.invalidConfig"), {
+        description: snapshot.error,
+      })
+      return
+    }
+    // Rebuild the snapshot from the working JSON text (preserving everything
+    // the form doesn't own), then attach the edited name and ship the upsert.
+    // The endpoint is trimmed here, not on every keystroke, so typing an
     // in-progress value (trailing spaces mid-edit) isn't fought by the input.
-    const next = withBasicFields(base, { endpoint: endpoint.trim(), apiKey })
+    const next = withBasicFields(
+      { ...base, settingsConfig: configText },
+      { endpoint: endpoint.trim(), apiKey },
+    )
     const ok = await runWithToast(
       save,
       { ...next, name: name.trim() },
@@ -80,7 +134,7 @@ export function ProviderFormSheet({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent>
+      <SheetContent className="max-w-lg">
         <SheetHeader>
           <SheetTitle>
             {editing
@@ -89,7 +143,7 @@ export function ProviderFormSheet({
           </SheetTitle>
         </SheetHeader>
 
-        <div className="flex flex-col gap-3">
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-0.5">
           <Field label={t("providers.form.name")}>
             <Input
               value={name}
@@ -100,7 +154,7 @@ export function ProviderFormSheet({
           <Field label={t("providers.form.endpoint")}>
             <Input
               value={endpoint}
-              onChange={(e) => setEndpoint(e.target.value)}
+              onChange={(e) => onEndpointChange(e.target.value)}
               placeholder="https://api.example.com"
               spellCheck={false}
             />
@@ -109,9 +163,17 @@ export function ProviderFormSheet({
             <Input
               type="password"
               value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
+              onChange={(e) => onApiKeyChange(e.target.value)}
               placeholder={t("providers.form.apiKeyPlaceholder")}
               spellCheck={false}
+            />
+          </Field>
+          <Field label={t("providers.form.settingsJson")}>
+            <JsonEditor
+              value={configText}
+              onChange={setConfigText}
+              placeholder={t("providers.form.settingsJsonPlaceholder")}
+              className="h-72"
             />
           </Field>
         </div>

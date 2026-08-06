@@ -1,0 +1,274 @@
+// Reusable CodeMirror 6 JSON editor, used by the provider form sheet (and any
+// future settings-snapshot editor). Wraps CodeMirror as a controlled component:
+// the editor emits `onChange` only for its own user edits, and an external
+// `value` change is pushed in without echoing back — the two-way-sync loop is
+// broken by a `pushingRef` flag (set only around programmatic dispatches).
+// Syntax colors + red-line linter follow the active mode (next-themes `.dark`),
+// reconfiguring CodeMirror via Compartments so the document and undo history
+// survive a theme switch.
+
+import { json, jsonParseLinter } from "@codemirror/lang-json"
+import { linter } from "@codemirror/lint"
+import { Compartment, EditorState } from "@codemirror/state"
+import { oneDark } from "@codemirror/theme-one-dark"
+import { placeholder } from "@codemirror/view"
+import { basicSetup, EditorView } from "codemirror"
+import { Wand2 } from "lucide-react"
+import { useTheme } from "next-themes"
+import { useEffect, useMemo, useRef } from "react"
+import { useTranslation } from "react-i18next"
+import { toast } from "sonner"
+
+import { Button } from "@/components/ui/button"
+import { formatJson } from "@/lib/json"
+import { cn } from "@/lib/utils"
+
+export interface JsonEditorProps {
+  /** The current JSON text (controlled). */
+  value: string
+  /** Emitted with the new text on user edits and after formatting. */
+  onChange: (value: string) => void
+  disabled?: boolean
+  placeholder?: string
+  /** Height / width classes for the wrapping block (e.g. `h-72`). */
+  className?: string
+}
+
+// Chrome shared by both modes — border/radius from the shadcn CSS variables so
+// the editor sits inside a Sheet like any other input. Background is left to
+// the mode theme (transparent in light, oneDark's panel in dark).
+const cmChrome = EditorView.theme({
+  "&": {
+    height: "100%",
+    minHeight: "10rem",
+    fontSize: "13px",
+    border: "1px solid hsl(var(--border))",
+    borderRadius: "calc(var(--radius) - 2px)",
+  },
+  "&.cm-focused": {
+    outline: "none",
+    borderColor: "hsl(var(--ring))",
+  },
+  ".cm-scroller": {
+    overflow: "auto",
+    fontFamily:
+      "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+    lineHeight: "1.5",
+  },
+  ".cm-gutters": {
+    backgroundColor: "transparent",
+    borderRight: "1px solid hsl(var(--border))",
+    color: "hsl(var(--muted-foreground) / 0.6)",
+  },
+  ".cm-content": {
+    caretColor: "hsl(var(--foreground))",
+  },
+  ".cm-cursor": {
+    borderLeftColor: "hsl(var(--foreground))",
+  },
+  "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection":
+    {
+      backgroundColor: "hsl(var(--primary) / 0.16)",
+    },
+  ".cm-activeLine": {
+    backgroundColor: "hsl(var(--primary) / 0.06)",
+  },
+  ".cm-activeLineGutter": {
+    backgroundColor: "hsl(var(--primary) / 0.06)",
+  },
+})
+
+/** Lint source: the non-object check (syntax errors are already reported by
+ *  `jsonParseLinter` with precise positions, so it runs its own JSON.parse). */
+function objectLinter(mustBeObject: string) {
+  return linter((view) => {
+    const doc = view.state.doc.toString()
+    if (!doc.trim()) return []
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(doc)
+    } catch {
+      return []
+    }
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      return [
+        { from: 0, to: doc.length, severity: "error", message: mustBeObject },
+      ]
+    }
+    return []
+  })
+}
+
+export function JsonEditor({
+  value,
+  onChange,
+  disabled = false,
+  placeholder: placeholderText,
+  className,
+}: JsonEditorProps) {
+  const { t } = useTranslation()
+  const { resolvedTheme } = useTheme()
+  // Default to dark before next-themes resolves — the app default theme is
+  // dark, so a dark-first render avoids flashing the light editor.
+  const isDark = (resolvedTheme ?? "dark") === "dark"
+
+  const containerRef = useRef<HTMLDivElement>(null)
+  const viewRef = useRef<EditorView | null>(null)
+  // True only while a programmatic dispatch is pushing an external value in —
+  // the update listener skips emitting while this is set, breaking the echo.
+  const pushingRef = useRef(false)
+
+  const themeCompartment = useMemo(() => new Compartment(), [])
+  const langCompartment = useMemo(() => new Compartment(), [])
+  const editableCompartment = useMemo(() => new Compartment(), [])
+  const placeholderCompartment = useMemo(() => new Compartment(), [])
+
+  // Language + linters. Rebuilt when the translated message changes so a
+  // language switch never leaves a stale string in the linter.
+  const langExtensions = useMemo(
+    () => [
+      json(),
+      linter(jsonParseLinter()),
+      objectLinter(t("jsonEditor.mustBeObject")),
+    ],
+    [t],
+  )
+
+  // Create the editor once, with an empty doc — the value-sync effect below
+  // pushes the real initial value right after (same commit, no visible flash).
+  // Everything reactive reconfigures through the compartments in the effects
+  // below, so the editor mounts exactly once.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-once CodeMirror view; all reactive inputs reconfigure through compartments below
+  useEffect(() => {
+    if (!containerRef.current) return
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "",
+        extensions: [
+          basicSetup,
+          cmChrome,
+          themeCompartment.of(isDark ? [oneDark] : []),
+          langCompartment.of(langExtensions),
+          editableCompartment.of([
+            EditorState.readOnly.of(disabled),
+            EditorView.editable.of(!disabled),
+          ]),
+          placeholderCompartment.of(
+            placeholderText ? [placeholder(placeholderText)] : [],
+          ),
+          EditorView.updateListener.of((update) => {
+            if (!update.docChanged || pushingRef.current) return
+            onChange(update.state.doc.toString())
+          }),
+        ],
+      }),
+      parent: containerRef.current,
+    })
+    viewRef.current = view
+    return () => {
+      view.destroy()
+      viewRef.current = null
+    }
+  }, [])
+
+  // External value → push into the editor without echoing back. No-op when the
+  // doc already holds the value (covers the editor's own edits round-tripping
+  // through the parent).
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    const cur = view.state.doc.toString()
+    if (cur === value) return
+    pushingRef.current = true
+    try {
+      view.dispatch({ changes: { from: 0, to: cur.length, insert: value } })
+    } finally {
+      pushingRef.current = false
+    }
+  }, [value])
+
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    view.dispatch({
+      effects: themeCompartment.reconfigure(isDark ? [oneDark] : []),
+    })
+  }, [isDark, themeCompartment])
+
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    view.dispatch({ effects: langCompartment.reconfigure(langExtensions) })
+  }, [langExtensions, langCompartment])
+
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    view.dispatch({
+      effects: editableCompartment.reconfigure([
+        EditorState.readOnly.of(disabled),
+        EditorView.editable.of(!disabled),
+      ]),
+    })
+  }, [disabled, editableCompartment])
+
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    view.dispatch({
+      effects: placeholderCompartment.reconfigure(
+        placeholderText ? [placeholder(placeholderText)] : [],
+      ),
+    })
+  }, [placeholderText, placeholderCompartment])
+
+  function handleFormat() {
+    const view = viewRef.current
+    if (!view) return
+    const text = view.state.doc.toString()
+    if (!text.trim()) return
+    try {
+      const formatted = formatJson(text)
+      if (formatted !== text) {
+        pushingRef.current = true
+        try {
+          view.dispatch({
+            changes: { from: 0, to: text.length, insert: formatted },
+          })
+        } finally {
+          pushingRef.current = false
+        }
+      }
+      onChange(formatted)
+    } catch (err) {
+      toast.error(t("jsonEditor.formatError"), {
+        description: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
+  return (
+    <div className={cn("flex flex-col gap-1.5", className)}>
+      <div
+        ref={containerRef}
+        className="min-h-40 min-w-0 flex-1 overflow-hidden"
+      />
+      <div className="flex items-center gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="xs"
+          disabled={disabled}
+          onClick={handleFormat}
+        >
+          <Wand2 />
+          {t("jsonEditor.format")}
+        </Button>
+      </div>
+    </div>
+  )
+}
