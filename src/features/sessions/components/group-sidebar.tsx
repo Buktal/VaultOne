@@ -17,7 +17,6 @@ import {
 import { useSortable } from "@dnd-kit/react/sortable"
 import {
   Check,
-  FolderTree,
   Loader2,
   MoreHorizontal,
   Pencil,
@@ -105,7 +104,7 @@ export function GroupSidebar({
   }
 
   return (
-    <div className="border-border bg-card flex min-h-0 w-52 shrink-0 flex-col gap-1 rounded-lg border p-2">
+    <div className="border-border bg-card flex min-h-0 w-44 shrink-0 flex-col gap-1 rounded-lg border p-2">
       <div className="text-muted-foreground px-2 py-1 text-xs font-medium">
         {track === "local"
           ? t("sessions.group.localTitle")
@@ -189,7 +188,6 @@ function SidebarItem({
         !active && "text-muted-foreground",
       )}
     >
-      <FolderTree className="size-3.5 shrink-0" />
       <span className="flex-1 truncate">{label}</span>
       <span className="text-muted-foreground/70 text-xs tabular-nums">
         {count}
@@ -222,7 +220,7 @@ function GroupRow({
   const [draft, setDraft] = useState(g.name)
   const [popoverOpen, setPopoverOpen] = useState(false)
   // The whole row is the drag handle (no separate grip icon — the sidebar is
-  // 208px wide); the sortable plugin applies the drag/shift transforms to the
+  // 176px wide); the sortable plugin applies the drag/shift transforms to the
   // ref'd element automatically. Busy rows are disabled: a rename/delete in
   // flight can't be reordered out from under.
   const { ref, isDragging } = useSortable({
@@ -268,11 +266,7 @@ function GroupRow({
         onClick={onSelect}
         disabled={busy}
       >
-        {busy ? (
-          <Loader2 className="size-3.5 shrink-0 animate-spin" />
-        ) : (
-          <FolderTree className="size-3.5 shrink-0" />
-        )}
+        {busy ? <Loader2 className="size-3.5 shrink-0 animate-spin" /> : null}
         <span className="flex-1 truncate">{g.name}</span>
       </button>
       {/* The count always sits flush right, matching the plain rows. The

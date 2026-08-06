@@ -11,7 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Update checks on launch** — VaultOne probes GitHub Releases for a newer version on every launch and re-checks every 6 hours while it stays open; the footer shows when one is available.
+
 - **Drag to reorder groups** — grab any custom group in the sessions sidebar and drag it to a new spot; the list keeps your order, and on the Favorites tab that order follows the group to every other device. Order lives per track — a `position` column in the local database for local groups, a `position` field in the synced-groups artifact for the Favorites tab — and new groups always land at the end. The All / Ungrouped rows stay pinned.
+
+### Changed
+
+- **Roomier minimum window** — the main window's floor rises to 840×600 so the session list never cramps against the group sidebar; the session card title now ellipsizes on narrow windows.
+
+- **Cleaner group sidebar** — group rows drop their folder icons and the sidebar narrows, giving the session table more room.
+
+- **Session detail sheet polish** — the title's rename trigger is just the title plus a pencil icon (blank space no longer starts editing), the source renders as a tag chip, the favorite button matches the group picker's height, and chat bubbles cap at 80% width on narrow windows while keeping the 72ch line-length cap wide.
 
 ## [1.7.0] - 2026-08-06
 

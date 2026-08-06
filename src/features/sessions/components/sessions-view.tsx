@@ -129,9 +129,12 @@ export function SessionsView() {
           track={b.effectiveTrack}
         />
 
-        <Card className="flex min-h-0 flex-1 flex-col">
+        <Card className="flex min-h-0 min-w-0 flex-1 flex-col">
           <CardHeader>
-            <CardTitle>{t("sessions.title")}</CardTitle>
+            {/* truncate: on a narrow window the card is squeezed beside the
+              group sidebar; a long localized title must ellipsize instead of
+              wrapping into the sidebar area. */}
+            <CardTitle className="truncate">{t("sessions.title")}</CardTitle>
           </CardHeader>
           <CardContent className="flex min-h-0 flex-1 flex-col">
             <QueryState

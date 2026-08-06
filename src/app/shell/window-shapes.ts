@@ -17,11 +17,11 @@
 
 /** Default full-mode window size (logical px), kept in sync with tauri.conf.json.
  *  Used only on the very first entry, before the user has shaped full mode. */
-export const DEFAULT_SIZE = { w: 800, h: 600 }
+export const DEFAULT_SIZE = { w: 920, h: 680 }
 
 /** Minimum full-mode client size (logical px). Enforced as an OS min-size in
  *  full mode, and via `clampToMinFull` / `meetsMinFull` on restore + record. */
-export const MIN_FULL = { w: 720, h: 520 }
+export const MIN_FULL = { w: 840, h: 600 }
 
 /** Expanded glance-card window width. The reused TokenHero card sits inside a
  *  p-3 inset so its rounded corners clear the square window edge, so the card
