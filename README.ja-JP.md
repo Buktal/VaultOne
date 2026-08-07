@@ -165,3 +165,6 @@ issue と提案は歓迎します。PR の前には `yarn check` と `yarn test`
 ## ライセンス
 
 [MIT](./LICENSE) © VaultOne Contributors
+
+- [LINUX DO コミュニティ](https://linux.do) - 誠実・親切・団結・専門的な Linux & 技术交流コミュニティ
+
