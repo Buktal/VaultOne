@@ -5,7 +5,7 @@ All notable changes to VaultOne are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.8.0] - 2026-08-07
 
 ### Added
 
@@ -213,7 +213,7 @@ First public, open-source release.
 - **macOS**: Apple Silicon (arm64) only; builds are unsigned — right-click → **Open** on first launch (or `xattr -dr com.apple.quarantine /Applications/VaultOne.app`). Intel Mac users can build from source.
 - **Providers**: Claude Code only; additional providers (Codex, Cursor, …) are planned.
 
-[Unreleased]: https://github.com/Buktal/VaultOne/compare/v1.7.1...HEAD
+[1.8.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.8.0
 [1.6.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.6.0
 [1.5.1]: https://github.com/Buktal/VaultOne/releases/tag/v1.5.1
 [1.5.0]: https://github.com/Buktal/VaultOne/releases/tag/v1.5.0
