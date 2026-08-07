@@ -322,17 +322,21 @@ mod tests {
     /// which pins the front-end `MIN_FULL` to the same declaration.
     #[test]
     fn full_min_matches_tauri_conf_declaration() {
-        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
-            .expect("tauri.conf.json parses");
-        let windows = conf["app"]["windows"]
-            .as_array()
-            .expect("app.windows array");
-        let main = windows
-            .iter()
-            .find(|w| w["label"] == "main")
-            .expect("main window entry");
+        // FULL_MIN_W / FULL_MIN_H exist only on Windows; on other targets the
+        // whole assertion is meaningless (nothing to verify), so the parse is
+        // Windows-only too — an unused `main` elsewhere would trip
+        // `-D warnings` on non-Windows CI.
         #[cfg(target_os = "windows")]
         {
+            let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+                .expect("tauri.conf.json parses");
+            let windows = conf["app"]["windows"]
+                .as_array()
+                .expect("app.windows array");
+            let main = windows
+                .iter()
+                .find(|w| w["label"] == "main")
+                .expect("main window entry");
             let min_w = main["minWidth"].as_f64().expect("minWidth numeric");
             let min_h = main["minHeight"].as_f64().expect("minHeight numeric");
             assert_eq!(FULL_MIN_W, min_w);
