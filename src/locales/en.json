@@ -84,6 +84,8 @@
   "nav.logs": "Request Logs",
   "nav.pricing": "Pricing",
   "nav.providers": "Providers",
+  "nav.beta": "Beta",
+  "nav.betaTitle": "Provider management is in beta — switch with care.",
   "nav.sessions": "Sessions",
   "nav.settings": "Settings",
   "pricing.add": "Add",

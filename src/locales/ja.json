@@ -79,6 +79,8 @@
   "nav.logs": "リクエストログ",
   "nav.pricing": "料金",
   "nav.providers": "プロバイダー",
+  "nav.beta": "Beta",
+  "nav.betaTitle": "プロバイダー管理はベータ版です。切り替えは慎重に行ってください。",
   "nav.sessions": "セッション",
   "nav.settings": "設定",
   "pricing.add": "追加",

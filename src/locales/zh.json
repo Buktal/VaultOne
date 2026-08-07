@@ -81,6 +81,8 @@
   "nav.logs": "请求日志",
   "nav.pricing": "成本定价",
   "nav.providers": "供应商",
+  "nav.beta": "Beta",
+  "nav.betaTitle": "供应商管理处于 Beta 阶段，切换前请谨慎确认。",
   "nav.sessions": "会话管理",
   "nav.settings": "设置",
   "pricing.add": "新增",

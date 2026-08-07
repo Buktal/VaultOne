@@ -42,13 +42,20 @@ import { TitleBar } from "./title-bar"
 import { UpdateIndicator } from "./update-card"
 import { useUpdateCheck } from "./use-update-check"
 
-const NAV: Array<{ id: ViewId; key: string; icon: typeof Gauge }> = [
+const NAV: Array<{
+  id: ViewId
+  key: string
+  icon: typeof Gauge
+  beta?: boolean
+}> = [
   { id: "dashboard", key: "nav.dashboard", icon: Gauge },
   { id: "sessions", key: "nav.sessions", icon: MessagesSquare },
   { id: "logs", key: "nav.logs", icon: List },
   { id: "pricing", key: "nav.pricing", icon: Tags },
   { id: "library", key: "nav.library", icon: Library },
-  { id: "providers", key: "nav.providers", icon: Server },
+  // 供应商管理整体处于 beta：写盘/同步等核心链路已合入但未经过大规模真实
+  // 环境验证，标记出来提醒用户谨慎切换。
+  { id: "providers", key: "nav.providers", icon: Server, beta: true },
   { id: "settings", key: "nav.settings", icon: Settings },
 ]
 
@@ -91,7 +98,7 @@ function NavItem({
   tooltipSide = "right",
   accentBar = "left",
 }: {
-  item: { id: ViewId; key: string; icon: typeof Gauge }
+  item: { id: ViewId; key: string; icon: typeof Gauge; beta?: boolean }
   active: boolean
   collapsed: boolean
   onClick: () => void
@@ -123,14 +130,28 @@ function NavItem({
       )}
     >
       <Icon className={cn("shrink-0", collapsed ? "size-5" : "size-4")} />
-      {collapsed ? null : label}
+      {collapsed ? null : (
+        <span className="flex min-w-0 flex-1 items-center gap-1.5">
+          <span className="truncate">{label}</span>
+          {item.beta ? (
+            <span
+              className="text-accent-brand/80 text-[9px] font-semibold tracking-wider"
+              title={t("nav.betaTitle")}
+            >
+              BETA
+            </span>
+          ) : null}
+        </span>
+      )}
     </button>
   )
   if (!collapsed) return button
   return (
     <Tooltip>
       <TooltipTrigger render={button} />
-      <TooltipContent side={tooltipSide}>{label}</TooltipContent>
+      <TooltipContent side={tooltipSide}>
+        {item.beta ? `${label} (${t("nav.beta")})` : label}
+      </TooltipContent>
     </Tooltip>
   )
 }
