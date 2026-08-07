@@ -166,5 +166,5 @@ Issues and suggestions are welcome. Before a PR, run `yarn check` and `yarn test
 
 [MIT](./LICENSE) © VaultOne Contributors
 
-## 友情链接 / 特别鸣谢
-- [LINUX DO 社区](https://linux.do)
+[![LINUX DO](https://img.shields.io/badge/LINUX%20DO-Recognized%20Community-blue?style=flat-square&logo=linux)](https://linux.do)
+
