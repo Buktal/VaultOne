@@ -308,7 +308,10 @@ fn set_window_rect_win(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // FULL_MIN_W / FULL_MIN_H exist only on Windows (compiled out elsewhere);
+    // import them conditionally so non-Windows CI has no unused import.
+    #[cfg(target_os = "windows")]
+    use super::{FULL_MIN_H, FULL_MIN_W};
 
     /// The full-mode restore commands re-apply `set_min_size(FULL_MIN_W, FULL_MIN_H)`
     /// (clearing it first in the lightweight dock), which overrides the OS floor
@@ -328,10 +331,10 @@ mod tests {
             .iter()
             .find(|w| w["label"] == "main")
             .expect("main window entry");
-        let min_w = main["minWidth"].as_f64().expect("minWidth numeric");
-        let min_h = main["minHeight"].as_f64().expect("minHeight numeric");
         #[cfg(target_os = "windows")]
         {
+            let min_w = main["minWidth"].as_f64().expect("minWidth numeric");
+            let min_h = main["minHeight"].as_f64().expect("minHeight numeric");
             assert_eq!(FULL_MIN_W, min_w);
             assert_eq!(FULL_MIN_H, min_h);
         }
