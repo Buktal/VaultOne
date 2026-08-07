@@ -334,5 +334,5 @@ Issues and suggestions are welcome. Before a PR, run `yarn check` and `yarn test
 
 [MIT](./LICENSE) © VaultOne Contributors
 
-[![LINUX DO](https://img.shields.io/badge/LINUX%20DO-社区认可-blue?style=flat-square&logo=linux)](https://linux.do)
+[![LINUX DO](https://img.shields.io/badge/LINUX%20DO-%E7%A4%BE%E5%8C%BA%E8%AE%A4%E5%8F%AF-blue?style=flat-square&logo=linux)](https://linux.do)
   
