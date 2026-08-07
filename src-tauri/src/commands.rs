@@ -879,6 +879,9 @@ pub async fn switch_provider_cmd(
             &cfg.common_config_snippet,
             cfg.common_config_snippet_enabled,
         )?;
+        // 未物化的模板变量不能进 live（前端保存时已拦截，但导入/手改的
+        // 配置可能绕过）：字面量 `${VAR}` 写进 settings.json 等于写一份废配置。
+        crate::provider::live::validate_no_unfilled_template_vars(&settings_config)?;
         crate::provider::live::switch_live_settings(&path, &settings_config)?;
         config.update(|c| c.active_provider_id = Some(id))?;
         Ok(provider)

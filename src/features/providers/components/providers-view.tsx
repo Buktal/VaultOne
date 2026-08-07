@@ -12,7 +12,7 @@ import {
   PointerSensor,
 } from "@dnd-kit/react"
 import { useSortable } from "@dnd-kit/react/sortable"
-import { Download, Pencil, Plus, Trash2, Upload } from "lucide-react"
+import { Download, Pencil, Plus, Search, Trash2, Upload } from "lucide-react"
 import { useState } from "react"
 import { useTranslation } from "react-i18next"
 import {
@@ -24,11 +24,34 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { providerEndpoint, providerModel } from "@/features/providers/derive"
+import {
+  configRoleHasOneM,
+  filterProviders,
+  MODEL_ROLES,
+  providerEndpoint,
+  providerMissingRequired,
+  providerModel,
+} from "@/features/providers/derive"
 import type { ProviderPreset } from "@/features/providers/presets"
 import { useProvidersBrowser } from "@/features/providers/use-providers-browser"
 import { useMutateWithToast } from "@/hooks/use-toast-mutation"
@@ -63,6 +86,10 @@ export function ProvidersView() {
   const [editing, setEditing] = useState<Provider | null>(null)
   const [preset, setPreset] = useState<ProviderPreset | null>(null)
   const [transfer, setTransfer] = useState<TransferKind | null>(null)
+  const [query, setQuery] = useState("")
+  // 切换确认对话框：切到缺必填项（端点/key/模板变量）的供应商前先问一句，
+  // 用户确认后照切不误（「我已经知道它缺东西，就是要切」）。
+  const [confirmSwitch, setConfirmSwitch] = useState<Provider | null>(null)
 
   // Whole-row drag handle: 6px of movement before a press becomes a drag —
   // clicks keep opening the edit sheet; moves reorder. Same constraints as the
@@ -106,15 +133,39 @@ export function ProvidersView() {
     })
   }
 
-  async function onSwitch(p: Provider) {
+  async function doSwitch(p: Provider) {
     await runWithToast(switchProvider, p.id, {
       success: { key: "providers.toast.switched", vars: { name: p.name } },
       failed: { key: "providers.toast.switchFailed" },
     })
   }
 
+  /** 切换入口：缺必填项 → 先弹确认；齐全 → 直接切。 */
+  function onSwitch(p: Provider) {
+    const missing = providerMissingRequired(p)
+    if (missing.length > 0) setConfirmSwitch(p)
+    else void doSwitch(p)
+  }
+
+  function confirmMissing(): string[] {
+    return confirmSwitch ? providerMissingRequired(confirmSwitch) : []
+  }
+
+  const visibleProviders = filterProviders(providers, query)
   const activeEndpoint = activeProvider ? providerEndpoint(activeProvider) : ""
   const activeModel = activeProvider ? providerModel(activeProvider) : ""
+  // 激活供应商哪些模型角色声明了 1M 上下文（角色名 i18n 化，如 "Sonnet"）。
+  // 只有带 1M 标记的角色才显示，角色行从快照派生（configRoleFields）。
+  const activeOneMRoles = activeProvider
+    ? MODEL_ROLES.filter(
+        (role) =>
+          role.supportsOneM &&
+          configRoleHasOneM(activeProvider.settingsConfig, role.id),
+      ).map((role) => t(`providers.form.role.${role.id}`))
+    : []
+  // 光卡「切换」下拉：列出除激活供应商外的所有供应商（搜索过滤后的可见
+  // 列表可能为空，因此用全量列表）。
+  const switchable = providers.filter((p) => p.id !== activeProvider?.id)
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
@@ -155,7 +206,16 @@ export function ProvidersView() {
             </div>
           ) : activeProvider ? (
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-              <span className="font-medium">{activeProvider.name}</span>
+              <span className="flex items-center gap-2">
+                {activeProvider.iconColor ? (
+                  <span
+                    aria-hidden
+                    className="size-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: activeProvider.iconColor }}
+                  />
+                ) : null}
+                <span className="font-medium">{activeProvider.name}</span>
+              </span>
               <span
                 className="text-muted-foreground font-mono text-xs truncate"
                 title={activeEndpoint}
@@ -165,6 +225,43 @@ export function ProvidersView() {
               <span className="text-muted-foreground text-xs truncate">
                 {activeModel || "—"}
               </span>
+              {activeOneMRoles.length > 0 ? (
+                <span className="text-muted-foreground text-xs">
+                  {activeOneMRoles.join(" · ")} 1M
+                </span>
+              ) : null}
+              <div className="ml-auto flex items-center gap-1.5">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => openEdit(activeProvider)}
+                >
+                  <Pencil />
+                  {t("common.edit")}
+                </Button>
+                <Select
+                  value={null}
+                  onValueChange={(id) => {
+                    const target = providers.find((p) => p.id === id)
+                    if (target) onSwitch(target)
+                  }}
+                  disabled={switchable.length === 0}
+                >
+                  <SelectTrigger
+                    className="w-auto gap-1.5 font-normal"
+                    aria-label={t("providers.active.switchTo")}
+                  >
+                    <SelectValue placeholder={t("providers.active.switchTo")} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {switchable.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           ) : (
             <div className="text-muted-foreground text-sm">
@@ -174,18 +271,31 @@ export function ProvidersView() {
         </CardContent>
       </Card>
       <PresetSelector onSelect={openFromPreset} />
-      <Card className="min-h-0 flex-1">
-        <CardHeader>
+      {/* 列表卡片不再 flex-1 撑满剩余高度：上方卡片组（active / presets /
+          通用配置）高度不固定，内部滚动会把下面的卡片挤出视口且无法滚到。
+          整页内容自然排布，由 Shell 的滚动容器统一滚动。 */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between gap-2">
           <CardTitle>{t("providers.title")}</CardTitle>
+          <div className="relative w-56">
+            <Search className="text-muted-foreground absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={t("providers.searchPlaceholder")}
+              aria-label={t("providers.searchAria")}
+              className="pl-8"
+            />
+          </div>
         </CardHeader>
-        <CardContent className="flex min-h-0 flex-1 flex-col">
+        <CardContent className="flex flex-col">
           {isLoading ? (
             <div className="text-muted-foreground py-12 text-center text-sm">
               {t("common.loading")}
             </div>
-          ) : providers.length === 0 ? (
+          ) : visibleProviders.length === 0 ? (
             <div className="text-muted-foreground py-12 text-center text-sm">
-              {t("providers.empty")}
+              {query.trim() ? t("providers.noMatch") : t("providers.empty")}
             </div>
           ) : (
             <div className="min-h-0 flex-1 -mr-2.5 overflow-auto pr-2.5">
@@ -197,7 +307,7 @@ export function ProvidersView() {
                 <span className="w-40" />
               </div>
               <DragDropProvider sensors={sensors} onDragEnd={handleDragEnd}>
-                {providers.map((p, i) => (
+                {visibleProviders.map((p, i) => (
                   <ProviderRow
                     key={p.id}
                     provider={p}
@@ -205,7 +315,7 @@ export function ProvidersView() {
                     isActive={activeProvider?.id === p.id}
                     onEdit={() => openEdit(p)}
                     onDelete={() => void onDelete(p)}
-                    onSwitch={() => void onSwitch(p)}
+                    onSwitch={() => onSwitch(p)}
                   />
                 ))}
               </DragDropProvider>
@@ -223,6 +333,38 @@ export function ProvidersView() {
         preset={preset}
         onSaved={() => setSheetOpen(false)}
       />
+      <Dialog
+        open={confirmSwitch !== null}
+        onOpenChange={(open) => !open && setConfirmSwitch(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("providers.switchConfirm.title")}</DialogTitle>
+            <DialogDescription>
+              {t("providers.switchConfirm.description", {
+                name: confirmSwitch?.name ?? "",
+                missing: confirmMissing()
+                  .map((m) => t(`providers.switchConfirm.missing.${m}`))
+                  .join(", "),
+              })}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmSwitch(null)}>
+              {t("common.cancel")}
+            </Button>
+            <Button
+              onClick={() => {
+                const p = confirmSwitch
+                setConfirmSwitch(null)
+                if (p) void doSwitch(p)
+              }}
+            >
+              {t("providers.switchConfirm.switch")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <ProviderTransferDialog
         kind={transfer}
         transferring={transferring}
@@ -261,7 +403,16 @@ function ProviderRow({
         isDragging && "bg-muted opacity-70 shadow-sm",
       )}
     >
-      <span className="truncate font-medium">{p.name}</span>
+      <span className="flex min-w-0 items-center gap-2">
+        {p.iconColor ? (
+          <span
+            aria-hidden
+            className="size-2 shrink-0 rounded-full"
+            style={{ backgroundColor: p.iconColor }}
+          />
+        ) : null}
+        <span className="truncate font-medium">{p.name}</span>
+      </span>
       <Badge variant="secondary">{t(`providers.category.${p.category}`)}</Badge>
       <span
         className="text-muted-foreground truncate font-mono text-xs"

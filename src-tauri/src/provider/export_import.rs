@@ -5,11 +5,11 @@
 //! providers.json 同步文件——导入的 key 只进本机库。「不触发同步写」是结构性的
 //! （本模块没有同步文件路径，命令只调 `apply_import`），不用测试守。
 //!
-//! 纯函数（测试接缝）：`export_document`（provider 列表 → 文档文本）、
-//! `parse_export_document`（文档文本 → provider 列表，版本校验）、
-//! `plan_import`（merge / overwrite 冲突规划）、`strip_provider_secrets`
-//! （settingsConfig 文本剔除密钥 env 键）。`apply_import` 是 store 层全流程，
-//! 命令直接调它，测试也直接调它——测试跑的就是生产路径。
+//! 纯函数（测试接缝）：`export_document`（provider 列表 → 文档文本，可选走
+//! [`Provider::redacted`] 剥密钥）、`parse_export_document`（文档文本 →
+//! provider 列表，版本校验）、`plan_import`（merge / overwrite 冲突规划）。
+//! `apply_import` 是 store 层全流程，命令直接调它，测试也直接调它——测试跑
+//! 的就是生产路径。
 
 use std::collections::HashSet;
 
@@ -18,7 +18,7 @@ use specta::Type;
 
 use crate::db::Store;
 use crate::error::{AppError, AppResult};
-use crate::model::{Provider, SECRET_ENV_KEYS};
+use crate::model::Provider;
 
 /// 当前导出文档版本。导入只认这个版本——未来格式演进时，旧版 app 读到新文档
 /// 会明确报错而不是静默错解。
@@ -68,9 +68,11 @@ pub struct ImportPlan {
     pub skipped: u32,
 }
 
-/// 全部供应商 → 导出文档 JSON 文本。`include_keys=false` 时剔除每个 provider
-/// settingsConfig `env` 块里的密钥键（`SECRET_ENV_KEYS`）；`include_keys=true`
-/// 时 settingsConfig 原样保留（往返后字节一致）。
+/// 全部供应商 → 导出文档 JSON 文本。`include_keys=false` 时对每个 provider
+/// 调 [`Provider::redacted`]（剥 `SECRET_ENV_KEYS`，覆盖 settingsConfig 的
+/// `env` 与 meta.templateValues 两处；剥不了 → `Err` 拒绝导出——宁可不导，
+/// 不能导出无法证明无密钥的配置）；`include_keys=true` 时 settingsConfig
+/// 原样保留（往返后字节一致）。
 pub fn export_document(
     providers: &[Provider],
     include_keys: bool,
@@ -81,11 +83,8 @@ pub fn export_document(
     } else {
         providers
             .iter()
-            .map(|p| Provider {
-                settings_config: strip_provider_secrets(&p.settings_config),
-                ..p.clone()
-            })
-            .collect()
+            .map(|p| p.redacted())
+            .collect::<AppResult<Vec<Provider>>>()?
     };
     let doc = ProviderExportDocument {
         version: EXPORT_VERSION,
@@ -151,28 +150,6 @@ pub fn plan_import(
     }
 }
 
-/// 从 settingsConfig 文本剔除密钥 env 键。settingsConfig 是原样 JSON 文本，
-/// 这里解析一次：解析失败、非对象、或 `env` 不是对象 → 原样返回（剥不了就不
-/// 动，含 key 与否由用户导出时决定）；`env` 是对象 → 剥掉 `SECRET_ENV_KEYS`
-/// 后重序列化（2 空格缩进，与 live merge 的输出一致）。`env` 里没有密钥时也
-/// 原样返回，保证不含 key 的配置往返字节一致。
-pub fn strip_provider_secrets(settings_config: &str) -> String {
-    let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(settings_config) else {
-        return settings_config.to_string();
-    };
-    let Some(env) = doc.get_mut("env").and_then(|e| e.as_object_mut()) else {
-        return settings_config.to_string();
-    };
-    let mut removed = false;
-    for key in SECRET_ENV_KEYS {
-        removed |= env.remove(*key).is_some();
-    }
-    if !removed {
-        return settings_config.to_string();
-    }
-    serde_json::to_string_pretty(&doc).unwrap_or_else(|_| settings_config.to_string())
-}
-
 /// 导入全流程（store 层，命令直接调这个）：解析文档 → 读现有列表 → 按模式
 /// 规划 → 逐条 `save_provider` 写回本机 DB。只写 DB——不碰任何同步文件，
 /// 导入的 key 只进本机库。
@@ -197,7 +174,7 @@ pub fn apply_import(
 mod tests {
     use super::*;
     use crate::db::testutil::mem;
-    use crate::model::ProviderCategory;
+    use crate::model::{ProviderCategory, SECRET_ENV_KEYS};
 
     /// 构造一份带 env 密钥的 settingsConfig 文本（含非密钥 env 键和顶层字段，
     /// 模拟真实快照）。
@@ -217,6 +194,10 @@ mod tests {
     }
 
     fn provider(id: &str, name: &str, settings_config: &str) -> Provider {
+        provider_with_meta(id, name, settings_config, r#"{}"#)
+    }
+
+    fn provider_with_meta(id: &str, name: &str, settings_config: &str, meta: &str) -> Provider {
         Provider {
             id: id.into(),
             name: name.into(),
@@ -227,7 +208,7 @@ mod tests {
             sort_index: 0,
             notes: String::new(),
             settings_config: settings_config.into(),
-            meta: r#"{}"#.into(),
+            meta: meta.into(),
             updated_at: String::new(),
         }
     }
@@ -298,15 +279,35 @@ mod tests {
     }
 
     #[test]
-    fn strip_provider_secrets_leaves_corrupt_or_secretless_config_untouched() {
-        // 非法 JSON：剥不了就不动。
-        assert_eq!(strip_provider_secrets("{not json"), "{not json");
-        // env 不是对象（字符串）：不动。
-        let env_str = r#"{"env": "ANTHROPIC_AUTH_TOKEN=sk-x"}"#;
-        assert_eq!(strip_provider_secrets(env_str), env_str);
-        // env 是对象但没有密钥：原样返回（字节一致）。
-        let clean = r#"{"env":{"ANTHROPIC_MODEL":"m"}}"#;
-        assert_eq!(strip_provider_secrets(clean), clean);
+    fn export_without_keys_strips_secret_template_values_from_meta() {
+        // Bedrock 供应商的 AK/SK 走 `${VAR}` 模板变量，填值记录在
+        // meta.templateValues——导出剥 key 时必须一并剥掉。
+        let ps = [provider_with_meta(
+            "a",
+            "Bedrock",
+            r#"{"env":{"ANTHROPIC_BASE_URL":"https://bedrock-runtime.${AWS_REGION}.amazonaws.com","AWS_REGION":"us-east-1"}}"#,
+            r#"{"templateValues":{"AWS_REGION":"us-east-1","AWS_ACCESS_KEY_ID":"AKIA123","AWS_SECRET_ACCESS_KEY":"top-secret"}}"#,
+        )];
+        let doc = parsed(&export_document(&ps, false, "ts").unwrap());
+        let meta: serde_json::Value = serde_json::from_str(&doc.providers[0].meta).unwrap();
+        let values = &meta["templateValues"];
+        assert!(values.get("AWS_ACCESS_KEY_ID").is_none(), "AK 必须被剥");
+        assert!(values.get("AWS_SECRET_ACCESS_KEY").is_none(), "SK 必须被剥");
+        assert_eq!(values["AWS_REGION"], serde_json::json!("us-east-1"));
+        // 密钥名不出现在整个导出文档里。
+        let text = export_document(&ps, false, "ts").unwrap();
+        for key in SECRET_ENV_KEYS {
+            assert!(!text.contains(key), "{key} 不得出现在导出文档");
+        }
+    }
+
+    #[test]
+    fn export_without_keys_rejects_unparseable_meta() {
+        // 剥不了（无法证明无密钥）→ 拒绝导出，宁可不导。
+        let ps = [provider_with_meta("a", "Broken", r#"{"env":{}}"#, "{oops")];
+        assert!(export_document(&ps, false, "ts").is_err());
+        // 含 key 导出不剥 meta，原样放行。
+        assert!(export_document(&ps, true, "ts").is_ok());
     }
 
     #[test]

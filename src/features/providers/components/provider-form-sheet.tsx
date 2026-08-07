@@ -356,7 +356,9 @@ export function ProviderFormSheet({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="max-w-lg">
+      {/* w-[60vw]: 与会话详情弹窗同宽；表单含模型映射与 JSON 编辑器，24rem 的
+          默认上限太挤；sm:max-w-none 覆写原语的 max-w-sm 上限。 */}
+      <SheetContent className="w-[60vw] sm:max-w-none">
         <SheetHeader>
           <SheetTitle>
             {editing

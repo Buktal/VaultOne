@@ -10,11 +10,13 @@ import {
   configRoleName,
   emptyProvider,
   extractTemplateVars,
+  filterProviders,
   hasOneM,
   metaTemplateValues,
   providerApiKey,
   providerEndpoint,
   providerFromPreset,
+  providerMissingRequired,
   providerModel,
   replaceTemplateVarsInText,
   restoreTemplatePlaceholders,
@@ -1112,5 +1114,98 @@ describe("snippetMissingKeys", () => {
     expect(snippetMissingKeys("", "")).toEqual([])
     expect(snippetMissingKeys("{nope", snippet)).toEqual([])
     expect(snippetMissingKeys('{"env":{}}', "{nope")).toEqual([])
+  })
+})
+
+describe("providerMissingRequired", () => {
+  function p(
+    config: string,
+    category: Provider["category"] = "custom",
+  ): Provider {
+    return { ...provider(config), category }
+  }
+
+  it("reports nothing for a fully configured provider", () => {
+    const pv = p(
+      JSON.stringify({
+        env: {
+          ANTHROPIC_BASE_URL: "https://api.example.com",
+          ANTHROPIC_AUTH_TOKEN: "sk-x",
+        },
+      }),
+    )
+    expect(providerMissingRequired(pv)).toEqual([])
+  })
+
+  it("reports missing endpoint and API key", () => {
+    expect(providerMissingRequired(p('{"env":{}}'))).toEqual([
+      "endpoint",
+      "apiKey",
+    ])
+  })
+
+  it("reads the key from either auth spelling (AUTH_TOKEN first)", () => {
+    const apiKeyOnly = p(
+      JSON.stringify({
+        env: {
+          ANTHROPIC_BASE_URL: "https://x.dev",
+          ANTHROPIC_API_KEY: "sk-legacy",
+        },
+      }),
+    )
+    expect(providerMissingRequired(apiKeyOnly)).toEqual([])
+  })
+
+  it("skips endpoint/key checks for official and cloud-provider presets", () => {
+    // Claude Official 走默认端点；Bedrock 用模板变量认证——都不要求端点/key。
+    const official = p('{"env":{}}', "official")
+    expect(providerMissingRequired(official)).toEqual([])
+    const cloud = p('{"env":{}}', "cloud_provider")
+    expect(providerMissingRequired(cloud)).toEqual([])
+  })
+
+  it("reports unfilled template variables for any category", () => {
+    const cloud = p(
+      JSON.stringify({
+        env: {
+          // biome-ignore-all lint/suspicious/noTemplateCurlyInString: 模板变量占位符
+          ANTHROPIC_BASE_URL:
+            "https://bedrock-runtime.${AWS_REGION}.amazonaws.com",
+        },
+      }),
+      "cloud_provider",
+    )
+    expect(providerMissingRequired(cloud)).toEqual(["templateVars"])
+  })
+})
+
+describe("filterProviders", () => {
+  const all: Provider[] = [
+    { ...provider('{"env":{}}'), name: "Kimi", category: "cn_official" },
+    { ...provider('{"env":{}}'), name: "DeepSeek", category: "cn_official" },
+    { ...provider('{"env":{}}'), name: "My Custom", category: "custom" },
+  ]
+
+  it("returns the list unchanged for an empty query", () => {
+    expect(filterProviders(all, "")).toEqual(all)
+    expect(filterProviders(all, "   ")).toEqual(all)
+  })
+
+  it("matches by name, case-insensitive, contains", () => {
+    expect(filterProviders(all, "kimi").map((p) => p.name)).toEqual(["Kimi"])
+    expect(filterProviders(all, "CUSTOM").map((p) => p.name)).toEqual([
+      "My Custom",
+    ])
+  })
+
+  it("matches by category identifier", () => {
+    expect(filterProviders(all, "cn_official").map((p) => p.name)).toEqual([
+      "Kimi",
+      "DeepSeek",
+    ])
+  })
+
+  it("returns empty for no matches", () => {
+    expect(filterProviders(all, "zzz")).toEqual([])
   })
 })

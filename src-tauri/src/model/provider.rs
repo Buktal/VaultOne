@@ -86,13 +86,11 @@ pub struct CommonConfigSnippet {
     pub content: String,
 }
 
-/// A short random id for a user-created provider (8 lowercase hex chars, the
-/// same shape as `sessions::generate_local_group_id` — each module owns its own
-/// id space so a prefix is unnecessary).
+/// A short random id for a user-created provider (8 lowercase hex chars — the
+/// same generator as the sessions' local group ids; both are device-local id
+/// spaces that never leave the machine, so a prefix is unnecessary).
 pub(crate) fn generate_provider_id() -> String {
-    use rand::Rng;
-    let bytes: [u8; 4] = rand::thread_rng().gen();
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    crate::sessions::generate_local_group_id()
 }
 
 /// Secret env-var keys stripped from `settingsConfig` before it leaves this
@@ -110,14 +108,19 @@ pub const SECRET_ENV_KEYS: &[&str] = &[
 ];
 
 impl Provider {
-    /// The sync-safe projection: `settingsConfig` with [`SECRET_ENV_KEYS`]
-    /// removed from its `env` object. Blank config passes through unchanged
-    /// (nothing to strip); config with a secret key is re-serialized
-    /// deterministically (serde_json's default `Value` map sorts keys), so the
-    /// written file is byte-stable across pushes. Returns `Err` when the
-    /// config is not valid JSON / not an object / has a non-object `env` — a
-    /// provider whose secrets cannot be proven absent must not be published
-    /// (the sync writer skips it).
+    /// The sync-safe projection: [`SECRET_ENV_KEYS`] removed from two places —
+    /// the `settingsConfig` `env` object and the `meta.templateValues` object.
+    /// The `env` block is where API keys normally live; `meta.templateValues`
+    /// is the frontend's record of filled `${VAR}` template variables, and the
+    /// Bedrock presets route AK/SK through those, so a redaction that stops at
+    /// `env` would still publish credentials. Blank config passes through
+    /// unchanged (nothing to strip); a config or meta that carries a secret key
+    /// is re-serialized deterministically (serde_json's default `Value` map
+    /// sorts keys), so the written file is byte-stable across pushes. Returns
+    /// `Err` when the config is not valid JSON / not an object / has a
+    /// non-object `env`, or the meta cannot be parsed to an object — a provider
+    /// whose secrets cannot be proven absent must not be published (the sync
+    /// writer skips it).
     pub fn redacted(&self) -> AppResult<Provider> {
         let trimmed = self.settings_config.trim();
         if trimmed.is_empty() {
@@ -129,33 +132,65 @@ impl Provider {
         let obj = v.as_object_mut().ok_or_else(|| {
             AppError::Config("provider settingsConfig is not a JSON object".into())
         })?;
-        let Some(env) = obj.get_mut("env") else {
-            // No env block ⇒ no key location ⇒ nothing to strip.
-            return Ok(self.clone());
-        };
-        let env = env.as_object_mut().ok_or_else(|| {
-            AppError::Config("provider settingsConfig env is not a JSON object".into())
-        })?;
         let mut stripped = false;
-        for key in SECRET_ENV_KEYS {
-            if env.remove(*key).is_some() {
-                stripped = true;
+        if let Some(env) = obj.get_mut("env") {
+            let env = env.as_object_mut().ok_or_else(|| {
+                AppError::Config("provider settingsConfig env is not a JSON object".into())
+            })?;
+            for key in SECRET_ENV_KEYS {
+                if env.remove(*key).is_some() {
+                    stripped = true;
+                }
             }
         }
-        if !stripped {
+        // Template variables recorded in meta (raw JSON text, frontend-owned)
+        // can carry the same secret keys — strip them too. Unparseable meta
+        // never proves them absent.
+        let meta_trimmed = self.meta.trim();
+        let mut meta: serde_json::Value = if meta_trimmed.is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(meta_trimmed)
+                .map_err(|e| AppError::Config(format!("provider meta is not valid JSON: {e}")))?
+        };
+        let mut meta_stripped = false;
+        if let Some(values) = meta
+            .get_mut("templateValues")
+            .and_then(|tv| tv.as_object_mut())
+        {
+            for key in SECRET_ENV_KEYS {
+                if values.remove(*key).is_some() {
+                    meta_stripped = true;
+                }
+            }
+            // Stripped everything ⇒ drop the now-empty record instead of
+            // publishing `{"templateValues":{}}` noise.
+            if meta_stripped && values.is_empty() {
+                if let Some(meta_obj) = meta.as_object_mut() {
+                    meta_obj.remove("templateValues");
+                }
+            }
+        }
+        if !stripped && !meta_stripped {
             return Ok(self.clone());
         }
         let mut p = self.clone();
-        p.settings_config = serde_json::to_string_pretty(&v)?;
+        if stripped {
+            p.settings_config = serde_json::to_string_pretty(&v)?;
+        }
+        if meta_stripped {
+            p.meta = serde_json::to_string_pretty(&meta)?;
+        }
         Ok(p)
     }
 
     /// True iff two rows carry identical syncable structure: every field that
-    /// syncs — including the key-stripped `settingsConfig` — except
-    /// `sort_index` (never set through save) and `updated_at` (the computed
-    /// freshness). Secret keys don't count (stripped before compare), so a
-    /// key-only edit compares equal. A provider whose config cannot be parsed
-    /// never compares equal — treat that as a structural change, never assume.
+    /// syncs — including the key-stripped `settingsConfig` and key-stripped
+    /// `meta` — except `sort_index` (never set through save) and `updated_at`
+    /// (the computed freshness). Secret keys don't count (stripped before
+    /// compare, in both surfaces), so a key-only edit compares equal. A
+    /// provider whose config cannot be parsed never compares equal — treat
+    /// that as a structural change, never assume.
     pub fn structure_equals(&self, other: &Provider) -> bool {
         if self.id != other.id
             || self.name != other.name
@@ -164,17 +199,35 @@ impl Provider {
             || self.icon != other.icon
             || self.icon_color != other.icon_color
             || self.notes != other.notes
-            || self.meta != other.meta
         {
             return false;
         }
-        // The fields above are already compared; the key-stripped config is
-        // all that remains. Compare the config strings only — the redacted
-        // clones still carry each row's `updated_at`, which must not count.
+        // The fields above are already compared; the key-stripped config and
+        // meta are all that remains. Compare the redacted values — parsed as
+        // JSON so redaction's re-serialization (pretty-printed when a key was
+        // stripped on one side only) can't make an equal pair look different.
+        // The clones still carry each row's `updated_at`, which must not
+        // count.
         match (self.redacted(), other.redacted()) {
-            (Ok(a), Ok(b)) => a.settings_config == b.settings_config,
+            (Ok(a), Ok(b)) => {
+                json_text_eq(&a.settings_config, &b.settings_config)
+                    && json_text_eq(&a.meta, &b.meta)
+            }
             _ => false,
         }
+    }
+}
+
+/// Compare two raw-JSON-text fields for structural equality: parsed values
+/// when both sides parse (robust to redaction re-serialization), verbatim
+/// otherwise — a blank or unparseable field only equals itself.
+fn json_text_eq(a: &str, b: &str) -> bool {
+    match (
+        serde_json::from_str::<serde_json::Value>(a),
+        serde_json::from_str::<serde_json::Value>(b),
+    ) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => a == b,
     }
 }
 
@@ -290,6 +343,58 @@ mod tests {
     }
 
     #[test]
+    fn redacted_strips_secret_template_values_from_meta() {
+        // Bedrock presets route AK/SK through `${VAR}` template variables,
+        // whose filled values are recorded in meta.templateValues — those are
+        // credentials and must be stripped from the sync projection too.
+        let mut p = keyed_provider();
+        p.meta = r#"{"templateValues":{"AWS_REGION":"us-east-1","AWS_ACCESS_KEY_ID":"AKIA123","AWS_SECRET_ACCESS_KEY":"top-secret","ANTHROPIC_AUTH_TOKEN":"sk-token"}}"#.into();
+        let r = p.redacted().unwrap();
+        let meta: serde_json::Value = serde_json::from_str(&r.meta).unwrap();
+        let values = &meta["templateValues"];
+        assert!(values.get("AWS_ACCESS_KEY_ID").is_none(), "AK stripped");
+        assert!(values.get("AWS_SECRET_ACCESS_KEY").is_none(), "SK stripped");
+        assert!(values.get("ANTHROPIC_AUTH_TOKEN").is_none());
+        // Non-secret template values survive.
+        assert_eq!(values["AWS_REGION"], serde_json::json!("us-east-1"));
+        // The stripped names never appear anywhere in the projection.
+        for key in SECRET_ENV_KEYS {
+            assert!(!r.meta.contains(key), "{key} must not appear in meta");
+        }
+        assert!(!r.settings_config.contains("ANTHROPIC_AUTH_TOKEN"));
+    }
+
+    #[test]
+    fn redacted_meta_template_values_alone_triggers_rewrite() {
+        // A provider whose env has no secrets but whose meta carries AK/SK:
+        // the meta is rewritten while the config stays byte-identical.
+        let mut p = keyed_provider();
+        p.settings_config = r#"{"env":{"ANTHROPIC_BASE_URL":"https://api.bedrock"}}"#.into();
+        p.meta = r#"{"templateValues":{"AWS_SECRET_ACCESS_KEY":"s3cret"}}"#.into();
+        let r = p.redacted().unwrap();
+        assert_eq!(
+            r.settings_config, p.settings_config,
+            "config without secrets stays verbatim"
+        );
+        let meta: serde_json::Value = serde_json::from_str(&r.meta).unwrap();
+        assert!(meta.get("templateValues").is_none());
+    }
+
+    #[test]
+    fn redacted_rejects_unparseable_meta() {
+        let mut p = keyed_provider();
+        p.meta = "{oops".into();
+        assert!(
+            p.redacted().is_err(),
+            "unparseable meta cannot prove secrets absent"
+        );
+        // But an empty meta (no template values at all) is fine.
+        let mut q = keyed_provider();
+        q.meta = "  ".into();
+        assert!(q.redacted().is_ok());
+    }
+
+    #[test]
     fn redacted_passes_through_blank_config_and_config_without_secrets() {
         let mut blank = keyed_provider();
         blank.settings_config = "  ".into();
@@ -331,6 +436,16 @@ mod tests {
         keyed.settings_config = r#"{"env":{"ANTHROPIC_BASE_URL":"https://api.bedrock","ANTHROPIC_AUTH_TOKEN":"sk-NEW-token","AWS_REGION":"us-east-1","ANTHROPIC_MODEL":"claude-sonnet"},"includeCoAuthoredBy":false}"#.into();
         keyed.updated_at = "2026-08-02T00:00:00.000Z".into();
         assert!(base.structure_equals(&keyed), "key edit is not structural");
+
+        // A template-value key edit in meta is not structural either (the
+        // original auth_field entry is preserved so only the key differs).
+        let mut keyed_meta = base.clone();
+        keyed_meta.meta =
+            r#"{"auth_field":"aws","templateValues":{"AWS_SECRET_ACCESS_KEY":"s3cret"}}"#.into();
+        assert!(
+            base.structure_equals(&keyed_meta),
+            "meta template-value key edit is not structural"
+        );
 
         // A structural edit (name, endpoint, model…) differs.
         let mut renamed = base.clone();

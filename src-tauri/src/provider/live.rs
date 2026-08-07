@@ -165,6 +165,40 @@ pub fn switch_live_settings(path: &Path, settings_config: &str) -> AppResult<()>
     Ok(())
 }
 
+/// 拒绝写盘前的未物化模板变量：settingsConfig 里残留 `${VAR}` 占位符（保存时
+/// 前端已拦截，但导入的 JSON 或手改的元数据可能绕过）会以字面量形式写进用户
+/// 的 settings.json——端点/密钥位置全是占位符，等于写一份废配置。宁可切换
+/// 失败，也不静默写废。空串 → 无占位符（写盘按 `{}` 处理）。
+pub fn validate_no_unfilled_template_vars(settings_config: &str) -> AppResult<()> {
+    let Some(name) = find_unfilled_template_var(settings_config) else {
+        return Ok(());
+    };
+    Err(AppError::Config(format!(
+        "provider settingsConfig has an unfilled template variable: ${{{name}}}"
+    )))
+}
+
+/// 第一个 `${VAR}` 占位符名；无 → `None`。与前端 `derive.ts` 的
+/// `TEMPLATE_VAR_RE` 同一形状（`${` + 标识符 + `}`）。
+fn find_unfilled_template_var(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'$' && bytes[i + 1] == b'{' {
+            let start = i + 2;
+            let mut j = start;
+            while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                j += 1;
+            }
+            if j > start && j < bytes.len() && bytes[j] == b'}' {
+                return Some(String::from_utf8_lossy(&bytes[start..j]).into_owned());
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
 /// 解析 live 输入：空串/纯空白 → `{}`；非空但非法 JSON 或非对象 → `Err`。
 fn parse_live_or_empty(live: &str) -> AppResult<serde_json::Value> {
     let trimmed = live.trim();
@@ -500,5 +534,20 @@ mod tests {
             claude_settings_path().unwrap(),
             home.join(".claude").join("settings.json")
         );
+    }
+
+    #[test]
+    fn validate_no_unfilled_template_vars_rejects_placeholders() {
+        // 未物化的占位符 → 拒绝写盘。
+        let bad = r#"{"env":{"ANTHROPIC_BASE_URL":"https://bedrock-runtime.${AWS_REGION}.amazonaws.com"}}"#;
+        let err = validate_no_unfilled_template_vars(bad).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("AWS_REGION"), "报错要指出是哪个变量: {msg}");
+        // 物化后 → 通过；空串 → 通过。
+        assert!(validate_no_unfilled_template_vars(
+            r#"{"env":{"ANTHROPIC_BASE_URL":"https://bedrock-runtime.us-east-1.amazonaws.com"}}"#
+        )
+        .is_ok());
+        assert!(validate_no_unfilled_template_vars("  ").is_ok());
     }
 }

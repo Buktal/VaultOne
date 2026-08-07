@@ -44,11 +44,9 @@ export function PresetSelector({
 
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="flex flex-row items-center justify-between gap-2">
         <CardTitle>{t("providers.presets.title")}</CardTitle>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        <div className="relative">
+        <div className="relative w-56">
           <Search className="text-muted-foreground absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
           <Input
             value={query}
@@ -58,6 +56,8 @@ export function PresetSelector({
             className="pl-8"
           />
         </div>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
         {groups.length === 0 ? (
           <div className="text-muted-foreground py-4 text-center text-xs">
             {t("providers.presets.noMatch")}

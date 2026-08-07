@@ -439,7 +439,7 @@ export const vaultApi = createApi({
         run(commands.reorderProvidersCmd(orderedIds)),
       invalidatesTags: ["Providers"],
     }),
-    /** 切换供应商：写盘 + 备份 + 记激活（ADR-0005 受控合并）。 */
+    /** 切换供应商：写盘 + 备份 + 记激活（只合并受控字段，非受控字段原地保留）。 */
     switchProvider: b.mutation<Provider, string>({
       queryFn: async (id) => run(commands.switchProviderCmd(id)),
       invalidatesTags: ["Providers"],

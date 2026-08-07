@@ -95,6 +95,48 @@ export function providerModel(provider: Provider): string {
   return envValue(provider.settingsConfig, ENV_MODEL)
 }
 
+/** 切换前必填项检查：缺失的部分（端点、API key、未物化的模板变量）。
+ *  「缺失」与表单收集语义一致——端点取 `ANTHROPIC_BASE_URL`、key 取
+ *  AUTH_TOKEN 优先后 API_KEY。官方 / 云厂商预设供应商不要求端点/key
+ *  （Claude Official 走默认端点，Bedrock 用模板变量认证，见 presets）；
+ *  它们和自定义供应商一样，仍受模板变量残留检查约束。空数组 = 没有缺失。 */
+export function providerMissingRequired(provider: Provider): string[] {
+  const missing: string[] = []
+  if (
+    provider.category !== "official" &&
+    provider.category !== "cloud_provider" &&
+    !providerEndpoint(provider).trim()
+  ) {
+    missing.push("endpoint")
+  }
+  if (
+    provider.category !== "official" &&
+    provider.category !== "cloud_provider" &&
+    !providerApiKey(provider).trim()
+  ) {
+    missing.push("apiKey")
+  }
+  if (extractTemplateVars(provider.settingsConfig).length > 0) {
+    missing.push("templateVars")
+  }
+  return missing
+}
+
+/** 按名称（不区分大小写，contains）或分类标识过滤供应商；空查询 → 原列表。
+ *  纯函数供列表搜索框用（可测试），分类按 `providers.category.<id>` 的
+ *  i18n 键对应的标识匹配。 */
+export function filterProviders(
+  providers: Provider[],
+  query: string,
+): Provider[] {
+  const q = query.trim().toLowerCase()
+  if (!q) return providers
+  return providers.filter(
+    (p) =>
+      p.name.toLowerCase().includes(q) || p.category.toLowerCase().includes(q),
+  )
+}
+
 /**
  * Merge the basic form fields (endpoint / API key) into a settingsConfig JSON
  * text, keeping every field the form does not own (extra env keys, non-env

@@ -49,7 +49,8 @@ const NAV: Array<{
   beta?: boolean
 }> = [
   { id: "dashboard", key: "nav.dashboard", icon: Gauge },
-  { id: "sessions", key: "nav.sessions", icon: MessagesSquare },
+  // 会话管理处于 beta：跨设备同步等核心链路已合入但未经过大规模真实环境验证。
+  { id: "sessions", key: "nav.sessions", icon: MessagesSquare, beta: true },
   { id: "logs", key: "nav.logs", icon: List },
   { id: "pricing", key: "nav.pricing", icon: Tags },
   { id: "library", key: "nav.library", icon: Library },
@@ -426,8 +427,13 @@ export function Shell({ children }: { children: React.ReactNode }) {
             <div className="flex-1 overflow-auto">
               {/* px-4: symmetric insets keep the content centered and clear
                   of the scrollbar (the landscape column uses pr-4 only — it
-                  sits beside the sidebar, so centering is already implied). */}
-              <div className="flex h-full w-full flex-col px-4">{children}</div>
+                  sits beside the sidebar, so centering is already implied).
+                  min-h-full: 内容至少占满滚动容器，但允许更高——超高内容
+                  （如 providers 的多卡片堆叠）由外层 overflow-auto 滚动，
+                  而不是被 h-full 锁死在视口高度上裁掉。 */}
+              <div className="flex min-h-full w-full flex-col px-4">
+                {children}
+              </div>
             </div>
           </main>
           <StatusBar
@@ -590,7 +596,9 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
           <main className="flex min-h-0 min-w-0 flex-1 flex-col">
             <div className="flex-1 overflow-auto">
-              <div className="flex h-full w-full flex-col pr-4">{children}</div>
+              <div className="flex min-h-full w-full flex-col pr-4">
+                {children}
+              </div>
             </div>
           </main>
         </div>

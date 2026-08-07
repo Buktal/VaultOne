@@ -5,13 +5,13 @@
 //! (ties → first seen). This is the structure half of provider sync.
 //!
 //! **API keys never enter the file.** Every provider is
-//! [`Provider::redacted`] on write (the four `SECRET_ENV_KEYS` are stripped
-//! from `settingsConfig`'s `env`; `AWS_REGION` — a region code or `${VAR}`
-//! template placeholder — is not a credential and stays). Each device's keys
-//! live only in its local DB; the active provider is local-only too
-//! (config.json) and never touches this file. `meta` rides along as-is — the
-//! model keeps secrets exclusively in `settingsConfig`'s `env`, which is
-//! exactly the surface this module redacts.
+//! [`Provider::redacted`] on write: the four `SECRET_ENV_KEYS` are stripped
+//! from `settingsConfig`'s `env` **and** from `meta.templateValues` — the
+//! frontend's record of filled `${VAR}` template variables, which is how the
+//! Bedrock presets carry AK/SK (`AWS_REGION` — a region code or a `${VAR}`
+//! placeholder — is not a credential and stays). Each device's keys live only
+//! in its local DB; the active provider is local-only too (config.json) and
+//! never touches this file.
 //!
 //! Sync orchestration lives in `sync::flow` (this module holds no git
 //! knowledge): **push** (`push_usage`) calls [`write_own_providers`] to
@@ -36,9 +36,9 @@ use crate::db::Store;
 use crate::error::{AppError, AppResult};
 use crate::model::{Provider, SECRET_ENV_KEYS};
 
-/// One device's provider-file wrapper: a stable JSON object with one array
-/// (extensible without a wire break later — same shape as the synced-groups
-/// doc). Missing file ⇒ empty doc.
+/// One device's provider-file wrapper: a stable JSON object with one
+/// `providers` array (a versioned wrapper object — adding a sibling key later
+/// won't break old readers). Missing file ⇒ empty doc.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 struct SyncedProvidersDoc {
     #[serde(default)]
@@ -130,7 +130,10 @@ pub fn read_all_peer_providers(paths: &Paths, self_device_id: &str) -> AppResult
 /// the pull-side key guard. The peer's structure wins, but this device's
 /// locally-filled keys are merged back in — an import can update structure
 /// but never leave the local key empty by overwriting it with the peer's
-/// keyless copy.
+/// keyless copy. The same guard covers `meta.templateValues` (the frontend's
+/// record of filled `${VAR}` template variables — the Bedrock presets route
+/// AK/SK through those, and the sync write strips them, so the peer's copy is
+/// keyless there too).
 ///
 /// Both configs must parse (a blank/unparseable side ⇒ `Err`, and the caller
 /// skips that import): a peer version we can't merge into is not imported
@@ -139,7 +142,9 @@ pub fn read_all_peer_providers(paths: &Paths, self_device_id: &str) -> AppResult
 /// contributes no keys instead of erroring: secret keys live only inside an
 /// `env` object, so a missing one means there is nothing to preserve — and
 /// refusing the import would freeze this row forever behind any peer edit,
-/// so its structure would never receive the peer's later updates.
+/// so its structure would never receive the peer's later updates. The same
+/// tolerance applies to `meta.templateValues` — a missing or non-object
+/// template-values record contributes nothing and never blocks the import.
 fn merge_local_keys(local: &Provider, peer: &Provider) -> AppResult<Provider> {
     let parse = |raw: &str, what: &str| -> AppResult<serde_json::Value> {
         serde_json::from_str(raw.trim())
@@ -160,6 +165,47 @@ fn merge_local_keys(local: &Provider, peer: &Provider) -> AppResult<Provider> {
                     env.insert((*key).to_string(), v.clone());
                 }
             }
+        }
+    }
+    // 同一 guard 覆盖 meta.templateValues。peer meta 解析失败 → 无法证明其
+    // 无密钥，拒绝导入（宁可不导）；本机 meta 解析失败同理——本机 key 位置
+    // 不可见就不替换。
+    let parse_meta = |raw: &str, what: &str| -> AppResult<serde_json::Value> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Ok(serde_json::json!({}));
+        }
+        serde_json::from_str(trimmed)
+            .map_err(|e| AppError::Config(format!("{what} meta is not valid JSON: {e}")))
+    };
+    let mut peer_meta = parse_meta(&peer.meta, "peer provider")?;
+    let peer_meta_obj = peer_meta
+        .as_object_mut()
+        .ok_or_else(|| AppError::Config("peer provider meta is not a JSON object".into()))?;
+    let mut meta_changed = false;
+    let local_meta = parse_meta(&local.meta, "local provider")?;
+    if let (Some(peer_values), Some(local_values)) = (
+        peer_meta_obj
+            .get_mut("templateValues")
+            .and_then(|tv| tv.as_object_mut()),
+        local_meta
+            .get("templateValues")
+            .and_then(|tv| tv.as_object()),
+    ) {
+        for key in SECRET_ENV_KEYS {
+            if let Some(v) = local_values.get(*key) {
+                peer_values.insert((*key).to_string(), v.clone());
+                meta_changed = true;
+            }
+        }
+        if meta_changed {
+            if peer_values.is_empty() {
+                peer_meta_obj.remove("templateValues");
+            }
+            let mut merged = peer.clone();
+            merged.settings_config = serde_json::to_string_pretty(&config)?;
+            merged.meta = serde_json::to_string_pretty(&peer_meta)?;
+            return Ok(merged);
         }
     }
     let mut merged = peer.clone();
@@ -205,6 +251,16 @@ mod tests {
     use std::path::PathBuf;
 
     fn provider(id: &str, name: &str, settings_config: &str, updated_at: &str) -> Provider {
+        provider_with_meta(id, name, settings_config, r#"{}"#, updated_at)
+    }
+
+    fn provider_with_meta(
+        id: &str,
+        name: &str,
+        settings_config: &str,
+        meta: &str,
+        updated_at: &str,
+    ) -> Provider {
         Provider {
             id: id.into(),
             name: name.into(),
@@ -215,7 +271,7 @@ mod tests {
             sort_index: 0,
             notes: String::new(),
             settings_config: settings_config.into(),
-            meta: r#"{}"#.into(),
+            meta: meta.into(),
             updated_at: updated_at.into(),
         }
     }
@@ -284,6 +340,35 @@ mod tests {
         let cfg: serde_json::Value = serde_json::from_str(&kimi.settings_config).unwrap();
         assert_eq!(cfg["env"]["ANTHROPIC_BASE_URL"], "https://api.kimi.com");
         assert!(cfg["env"].get("ANTHROPIC_AUTH_TOKEN").is_none());
+    }
+
+    #[test]
+    fn write_own_providers_strips_secret_template_values_from_meta() {
+        let s = mem();
+        s.save_provider(provider_with_meta(
+            "aaaaaaaa",
+            "Bedrock",
+            r#"{"env":{"ANTHROPIC_BASE_URL":"https://bedrock-runtime.${AWS_REGION}.amazonaws.com","AWS_REGION":"us-east-1"}}"#,
+            r#"{"templateValues":{"AWS_REGION":"us-east-1","AWS_ACCESS_KEY_ID":"AKIA123","AWS_SECRET_ACCESS_KEY":"top-secret"}}"#,
+            "2026-08-01T00:00:00.000Z",
+        ))
+        .unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        write_own_providers(&s, &paths, "aabbccddeeff").unwrap();
+
+        let text = std::fs::read_to_string(paths.providers_json_path("aabbccddeeff")).unwrap();
+        // The secret key NAMES never appear in the file — from env or meta.
+        for key in SECRET_ENV_KEYS {
+            assert!(!text.contains(key), "{key} must not appear in the file");
+        }
+        assert!(!text.contains("top-secret"));
+        assert!(!text.contains("AKIA123"));
+        // Non-secret template values survive.
+        let doc: SyncedProvidersDoc = serde_json::from_str(&text).unwrap();
+        let meta: serde_json::Value = serde_json::from_str(&doc.providers[0].meta).unwrap();
+        assert_eq!(meta["templateValues"]["AWS_REGION"], "us-east-1");
     }
 
     #[test]
@@ -534,6 +619,50 @@ mod tests {
         assert!(!fresh.settings_config.contains("ANTHROPIC_AUTH_TOKEN"));
         // The key-filled row's sort_index stayed local (import preserves it).
         assert_eq!(kimi.sort_index, local.sort_index);
+    }
+
+    #[test]
+    fn import_peer_providers_merges_local_template_value_keys_back() {
+        let s = mem();
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(tmp.path());
+        // Local row: old endpoint + filled AK/SK as template values in meta.
+        let local = provider_with_meta(
+            "aaaaaaaa",
+            "Bedrock",
+            r#"{"env":{"ANTHROPIC_BASE_URL":"https://bedrock-runtime.${AWS_REGION}.amazonaws.com","AWS_REGION":"us-east-1"}}"#,
+            r#"{"templateValues":{"AWS_REGION":"us-east-1","AWS_ACCESS_KEY_ID":"AKIA123","AWS_SECRET_ACCESS_KEY":"top-secret"}}"#,
+            "2026-08-01T00:00:00.000Z",
+        );
+        s.import_provider(&local).unwrap();
+        // Peer file: NEWER structure (new region), meta.templateValues keyless
+        // (the sync write strips secrets from it).
+        write_file(
+            &paths,
+            "bbccddee0011",
+            &[provider_with_meta(
+                "aaaaaaaa",
+                "Bedrock",
+                r#"{"env":{"ANTHROPIC_BASE_URL":"https://bedrock-runtime.${AWS_REGION}.amazonaws.com","AWS_REGION":"eu-west-1"}}"#,
+                r#"{"templateValues":{"AWS_REGION":"eu-west-1"}}"#,
+                "2026-08-02T00:00:00.000Z",
+            )],
+        );
+
+        import_peer_providers(&s, &paths, "aabbccddeeff").unwrap();
+
+        let row = s.get_provider("aaaaaaaa").unwrap().unwrap();
+        // Peer structure imported (new region)…
+        let cfg: serde_json::Value = serde_json::from_str(&row.settings_config).unwrap();
+        assert_eq!(cfg["env"]["AWS_REGION"], "eu-west-1");
+        // …but the local AK/SK template values merged back into meta.
+        let meta: serde_json::Value = serde_json::from_str(&row.meta).unwrap();
+        assert_eq!(meta["templateValues"]["AWS_REGION"], "eu-west-1");
+        assert_eq!(meta["templateValues"]["AWS_ACCESS_KEY_ID"], "AKIA123");
+        assert_eq!(
+            meta["templateValues"]["AWS_SECRET_ACCESS_KEY"], "top-secret",
+            "local secret template values never overwritten"
+        );
     }
 
     #[test]
